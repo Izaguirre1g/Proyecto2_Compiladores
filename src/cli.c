@@ -8,6 +8,7 @@
 #include "memory.h"
 #include "enlace_funciones.h"
 #include "codificacion_binaria.h"
+#include "diagnosticos.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -169,6 +170,7 @@ typedef struct {
     int ensamblador;        /* -s */
     int ast;                /* -t */
     int ast_json;           /* exportacion sin compilacion */
+    int diagnosticos;       /* --diagnosticos: solo revisa errores y los da en JSON */
     int simbolos;           /* -m */
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
@@ -192,7 +194,9 @@ static void usage(FILE *out) {
           "-m            imprime la tabla de simbolos y genera <fuente>.simbolos.md\n"
           "-x            toma un archivo de ensamblador y genera el binario\n"
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
-          "--ast-json    exporta solamente el AST como JSON por stdout\n", out);
+          "--ast-json    exporta solamente el AST como JSON por stdout\n"
+          "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
+          "              stdout; no genera ningun archivo\n", out);
 }
 
 static int parse_compilacion(int argc, char **argv, Compilacion *c)
@@ -201,6 +205,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
+        if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -229,6 +234,12 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
                         c->desde_ensamblador || c->paquetes || c->salida)) {
         fputs("--ast-json solo admite -t; no se combina con -v, -m, -s, -x, -p ni -o\n", stderr);
+        return -1;
+    }
+    /* --diagnosticos solo revisa errores, asi que no se mezcla con opciones que generan salidas. */
+    if (c->diagnosticos && (c->ast_json || c->detallado || c->ensamblador || c->ast ||
+                            c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
+        fputs("--diagnosticos no se combina con otras opciones\n", stderr);
         return -1;
     }
     if (c->desde_ensamblador && (c->ensamblador || c->ast || c->simbolos)) {
@@ -579,11 +590,49 @@ static int exportar_ast_json(const char *ruta)
     return estado;
 }
 
+/*
+ * --diagnosticos: revisa el archivo (lexico, sintactico y semantico,
+ * incluidos los archivos que importa) SIN generar codigo.
+ *
+ * Como funciona:
+ *   1. Las fases normalmente escriben sus errores en la pantalla (stderr).
+ *      Aqui les damos un archivo temporal para que escriban ahi.
+ *   2. Leemos ese archivo y separamos cada error en sus partes.
+ *   3. Imprimimos todos los errores como JSON.
+ *
+ * Valor de salida: 0 = sin errores, 1 = el codigo tiene errores,
+ *                  2 = fallo interno (memoria o archivos).
+ */
+static int exportar_diagnosticos(const char *ruta)
+{
+    /* Paso 1: analizar el fuente escribiendo los errores en un archivo temporal. */
+    FILE *temporal = tmpfile();
+    if (!temporal) { perror("tmpfile"); return 2; }
+    int estado = sem_analizar_proyecto(ruta, temporal);
+
+    /* Paso 2: volver al inicio del archivo temporal y leer los errores. */
+    DiagLista lista = {0};
+    rewind(temporal);
+    if (diag_leer_flujo(temporal, &lista) != 0) {
+        fputs("Memoria insuficiente\n", stderr);
+        estado = 2;
+    }
+    /* Paso 3: imprimir los errores como JSON. */
+    else if (diag_escribir_json(ruta, &lista, stdout) != 0) {
+        estado = 2;
+    }
+
+    diag_liberar(&lista);
+    fclose(temporal);
+    return estado;
+}
+
 int cli_run(int argc, char **argv) {
     Compilacion op = {0};
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
+    if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }
 
