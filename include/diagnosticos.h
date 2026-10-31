@@ -78,6 +78,15 @@ int diag_leer_flujo(FILE *flujo, DiagLista *lista);
 int diag_escribir_json(const char *archivo_principal, const DiagLista *lista,
                        FILE *salida);
 
+/*
+ * Agrega un error nuevo a la lista. Guarda una copia del archivo y del
+ * mensaje, así que quien llama puede liberar o reutilizar los suyos.
+ *
+ * Devuelve 0 si funcionó, o -1 si no hubo memoria suficiente.
+ */
+int diag_agregar(DiagLista *lista, DiagFase fase, const char *archivo,
+                 size_t linea, size_t columna, const char *mensaje);
+
 /* Libera toda la memoria de la lista y la deja vacía otra vez. */
 void diag_liberar(DiagLista *lista);
 

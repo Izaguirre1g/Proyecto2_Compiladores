@@ -298,6 +298,24 @@ int diag_escribir_json(const char *archivo_principal, const DiagLista *lista,
     return ferror(salida) ? -1 : 0;
 }
 
+int diag_agregar(DiagLista *lista, DiagFase fase, const char *archivo,
+                 size_t linea, size_t columna, const char *mensaje)
+{
+    Diagnostico d;
+    d.fase = fase;
+    d.linea = linea;
+    d.columna = columna;
+    d.archivo = copiar_texto(archivo, strlen(archivo));
+    d.mensaje = copiar_texto(mensaje, strlen(mensaje));
+
+    if (d.archivo == NULL || d.mensaje == NULL || agregar_a_lista(lista, d) != 0) {
+        free(d.archivo);
+        free(d.mensaje);
+        return -1;
+    }
+    return 0;
+}
+
 void diag_liberar(DiagLista *lista)
 {
     for (size_t i = 0; i < lista->cantidad; ++i) {
