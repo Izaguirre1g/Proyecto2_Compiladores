@@ -665,5 +665,5 @@ GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
 ide: balc-ide
 
-balc-ide: src/ide_gtk.c $(IDE_ANALISIS_SRC) include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h Analisis_Sintactico/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) src/ide_gtk.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
+balc-ide: src/ide_gtk.c src/clones.c $(IDE_ANALISIS_SRC) include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h Analisis_Sintactico/parser.h
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) src/ide_gtk.c src/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
