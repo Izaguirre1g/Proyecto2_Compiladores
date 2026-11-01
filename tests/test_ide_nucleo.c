@@ -135,6 +135,25 @@ int main(void)
     }
     diag_liberar(&l);
 
+    /* Prueba 3.4b: un '(' sin cerrar dentro de llaves. El '}' es de la '{',
+     * así que el error es el '(' abierto, no un cierre equivocado. */
+    l = revisar("{\n  x : (1;\n}");
+    VERIFICAR(l.cantidad == 1);
+    if (l.cantidad == 1) {
+        VERIFICAR(l.elementos[0].linea == 2 && l.elementos[0].columna == 7);
+        VERIFICAR(strcmp(l.elementos[0].mensaje, "falta cerrar este '(' con ')'") == 0);
+    }
+    diag_liberar(&l);
+
+    /* Prueba 3.4c: un ')' que sobra dentro de llaves (en otra línea que la '{'). */
+    l = revisar("{\n  x : 1);\n}");
+    VERIFICAR(l.cantidad == 1);
+    if (l.cantidad == 1) {
+        VERIFICAR(l.elementos[0].linea == 2 && l.elementos[0].columna == 8);
+        VERIFICAR(strstr(l.elementos[0].mensaje, "sobra") != NULL);
+    }
+    diag_liberar(&l);
+
     /* Prueba 3.5: los delimitadores dentro de cadenas y comentarios no cuentan. */
     l = revisar("t * declare_text : \"(((\";\n%% }}} comentario\n");
     VERIFICAR(l.cantidad == 0);

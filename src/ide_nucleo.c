@@ -296,35 +296,57 @@ int ide_revisar_delimitadores(const char *texto, size_t largo,
             if (apilar(&pila, a) != 0) { resultado = -1; break; }
 
         } else if (cierra != '\0') {
-            if (pila.cantidad == 0) {
-                /* Caso 2: se cierra algo, pero no había nada abierto. */
-                snprintf(mensaje, sizeof mensaje,
-                         "el '%c' sobra: no hay ningun '%c' abierto antes",
-                         cierra, apertura_de(cierra));
-                if (diag_agregar(lista, DIAG_SINTACTICO, archivo, linea, columna,
-                                 mensaje) != 0) { resultado = -1; break; }
+            /*
+             * Buscamos en la pila, de arriba hacia abajo, la apertura que
+             * corresponde a este cierre. Normalmente es la de arriba, pero
+             * no siempre:
+             *
+             *   {                         la pila tiene: {  (
+             *       x : (10 gauss 2;      el '(' nunca se cerró
+             *   }                         este '}' es de la '{', no del '('
+             */
+            size_t j = pila.cantidad;
+            while (j > 0 && ide_cierre_de(pila.elementos[j - 1].simbolo) != cierra) j--;
+
+            if (j > 0) {
+                /* Caso 2: se encontró su apertura. Lo que quedó encima de
+                 * ella en la pila se abrió adentro y nunca se cerró. */
+                for (size_t i = j; i < pila.cantidad; ++i) {
+                    Apertura a = pila.elementos[i];
+                    snprintf(mensaje, sizeof mensaje, "falta cerrar este '%c' con '%c'",
+                             a.simbolo, ide_cierre_de(a.simbolo));
+                    if (diag_agregar(lista, DIAG_SINTACTICO, archivo, a.linea, a.columna,
+                                     mensaje) != 0) { resultado = -1; break; }
+                }
+                pila.cantidad = j - 1;  /* Se quitan esas aperturas y la que se cerró. */
+                if (resultado != 0) break;
                 continue;
             }
 
-            /* Sacamos de la pila la última apertura: es la que debería cerrarse. */
-            pila.cantidad--;
-            Apertura ultima = pila.elementos[pila.cantidad];
+            /* Ninguna apertura de la pila corresponde a este cierre. */
+            Apertura *arriba = (pila.cantidad > 0) ? &pila.elementos[pila.cantidad - 1] : NULL;
 
-            if (ide_cierre_de(ultima.simbolo) != cierra) {
-                /* Caso 3: se cierra con el símbolo equivocado, por ejemplo "( }". */
+            if (arriba != NULL && arriba->linea == linea) {
+                /* Caso 3: se cierra con el símbolo equivocado en la misma
+                 * línea, por ejemplo "f(1, 2}". Seguramente quiso escribir ')'. */
                 snprintf(mensaje, sizeof mensaje,
                          "se esperaba '%c' para cerrar el '%c' de la linea %zu, "
                          "columna %zu, pero se encontro '%c'",
-                         ide_cierre_de(ultima.simbolo), ultima.simbolo,
-                         ultima.linea, ultima.columna, cierra);
-                if (diag_agregar(lista, DIAG_SINTACTICO, archivo, linea, columna,
-                                 mensaje) != 0) { resultado = -1; break; }
+                         ide_cierre_de(arriba->simbolo), arriba->simbolo,
+                         arriba->linea, arriba->columna, cierra);
+                pila.cantidad--;  /* Se da por cerrado para no repetir el error. */
+            } else {
+                /* Caso 4: un cierre que sobra: no hay nada abierto que cierre. */
+                snprintf(mensaje, sizeof mensaje,
+                         "el '%c' sobra: no hay ningun '%c' abierto antes",
+                         cierra, apertura_de(cierra));
             }
-            /* Si coinciden, todo está bien y no hay nada que reportar. */
+            if (diag_agregar(lista, DIAG_SINTACTICO, archivo, linea, columna,
+                             mensaje) != 0) { resultado = -1; break; }
         }
     }
 
-    /* Caso 4: al terminar el archivo, lo que quede en la pila nunca se cerró. */
+    /* Caso 5: al terminar el archivo, lo que quede en la pila nunca se cerró. */
     for (size_t i = 0; resultado == 0 && i < pila.cantidad; ++i) {
         Apertura a = pila.elementos[i];
         snprintf(mensaje, sizeof mensaje, "falta cerrar este '%c' con '%c'",
