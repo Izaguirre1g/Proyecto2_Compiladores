@@ -32,6 +32,7 @@
  */
 
 #include <stddef.h>
+#include <stdio.h>
 
 /* Un archivo para revisar: su nombre (para los mensajes) y su texto. */
 typedef struct {
@@ -68,6 +69,7 @@ typedef struct {
     size_t cantidad;
     size_t capacidad;
     size_t omitidos;            /* Archivos con errores de sintaxis (sin AST, no se revisan). */
+    char **nombres_omitidos;    /* Sus nombres (copias propias), "omitidos" en total. */
 } ClonLista;
 
 /* Tamaño mínimo, en nodos del AST, para que un fragmento cuente como clon.
@@ -89,5 +91,28 @@ int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodo
 
 /* Libera la memoria de la lista y la deja vacía otra vez. */
 void clones_liberar(ClonLista *lista);
+
+/*
+ * Escribe los clones para leerlos en la terminal, por ejemplo:
+ *
+ *   Clon 1: tipo I (codigo identico), funcion de 15 nodos, 2 copias
+ *     examples/llamadas.bal: lineas 2 a 4
+ *     examples/ejercicio3_puntajes.bal: lineas 2 a 4
+ *
+ *   archivos: cuántos archivos se revisaron (para el resumen final).
+ * Devuelve 0 si se pudo escribir, o -1 si falló la salida.
+ */
+int clones_escribir_texto(const ClonLista *lista, size_t archivos, FILE *salida);
+
+/*
+ * Escribe los clones como JSON, para que los lea el IDE:
+ *
+ *   {"archivos": 2, "omitidos": [], "clones": [
+ *     {"tipo": 1, "que": "funcion", "nodos": 15, "fragmentos": [
+ *       {"archivo": "a.bal", "linea": 2, "columna": 1, "linea_fin": 4, "columna_fin": 2}, ...]}]}
+ *
+ * Devuelve 0 si se pudo escribir, o -1 si falló la salida.
+ */
+int clones_escribir_json(const ClonLista *lista, size_t archivos, FILE *salida);
 
 #endif

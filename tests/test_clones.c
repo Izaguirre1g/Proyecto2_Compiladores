@@ -232,6 +232,9 @@ int main(void)
         ClonLista lista = {0};
         VERIFICAR(clones_buscar(fuentes, 3, CLONES_MINIMO_NODOS, &lista) == 0);
         VERIFICAR(lista.omitidos == 1);
+        if (lista.omitidos == 1) {
+            VERIFICAR(strcmp(lista.nombres_omitidos[0], "roto.bal") == 0);
+        }
         VERIFICAR(lista.cantidad == 1);
         clones_liberar(&lista);
     }

@@ -23,7 +23,7 @@ SRC := src/main.c src/cli.c src/lexer.c $(LEXER_GEN) src/token.c src/generacion_
        src/generacion_adaptador.c src/generacion_funciones.c src/generacion_control.c \
        src/funciones_marco.c src/funciones_llamada.c src/referencias_integracion.c \
        src/resolucion_referencias.c src/resolucion_saltos.c src/enlace_funciones.c \
-       src/codificacion_binaria.c src/formato_binario.c src/diagnosticos.c
+       src/codificacion_binaria.c src/formato_binario.c src/diagnosticos.c src/clones.c
 
 # Estos nombres son comandos de Make, no archivos.
 .PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones ide clean
@@ -45,7 +45,7 @@ Analisis_Sintactico/parser.c Analisis_Sintactico/parser.h &: Analisis_Sintactico
 balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h Analisis_Sintactico/parser.h \
       include/enlace_funciones.h include/resolucion_saltos.h include/resolucion_referencias.h include/codificacion_binaria.h \
       include/referencias_integracion.h include/generacion_adaptador.h include/generacion_funciones.h \
-      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h
+      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SRC) -o $@
 
 # Compila las pruebas del lexer, sin necesitar el parser.
@@ -646,8 +646,16 @@ CLONES_SRC := src/clones.c Analisis_Sintactico/parser.c Analisis_Sintactico/puen
 tests/test_clones: tests/test_clones.c $(CLONES_SRC) include/clones.h include/ast.h include/sintactico.h Analisis_Sintactico/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_clones.c $(CLONES_SRC) -o $@
 
-test-clones: tests/test_clones
+test-clones: tests/test_clones balc
 	./tests/test_clones
+	./balc --clones examples/llamadas.bal examples/ejercicio3_puntajes.bal | grep -q 'Clon 1: tipo I'
+	./balc --clones --json examples/llamadas.bal examples/matematicas.bal > tests/clones_salida.json
+	grep -q '"tipo": 2, "que": "funcion"' tests/clones_salida.json
+	grep -q '"archivo": "examples/matematicas.bal", "linea": 2, "columna": 1, "linea_fin": 4' tests/clones_salida.json
+	rm -f tests/clones_salida.json
+	./balc --clones examples/factorial.bal | grep -q '^0 clones en 1 archivo$$'
+	! ./balc --clones 2>/dev/null
+	@echo 'OK: deteccion de clones (unitarias y con balc)'
 
 # El IDE con ventana (GTK 3). Se compila con "make ide" y se abre con:
 #   ./balc-ide examples/factorial.bal

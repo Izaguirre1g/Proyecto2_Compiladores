@@ -380,6 +380,21 @@ static int revisar_racha(Candidato *racha, size_t largo, ListaNodos *lista,
 /* Función principal                                                   */
 /* ------------------------------------------------------------------ */
 
+/* Anota un archivo que no se pudo revisar por tener errores de sintaxis. */
+static int anotar_omitido(ClonLista *resultado, const char *nombre)
+{
+    char **mas = realloc(resultado->nombres_omitidos,
+                         (resultado->omitidos + 1) * sizeof *mas);
+    if (mas == NULL) return -1;
+    resultado->nombres_omitidos = mas;
+
+    char *copia = malloc(strlen(nombre) + 1);
+    if (copia == NULL) return -1;
+    strcpy(copia, nombre);
+    resultado->nombres_omitidos[resultado->omitidos++] = copia;
+    return 0;
+}
+
 int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodos,
                   ClonLista *resultado)
 {
@@ -396,7 +411,9 @@ int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodo
         int r = construir_ast(fuentes[f].texto, fuentes[f].largo, fuentes[f].nombre,
                               descartar, &arboles[f]);
         if (r == 2) estado = -1;
-        else if (r != 0 || arboles[f].raiz == NULL) resultado->omitidos++;
+        else if (r != 0 || arboles[f].raiz == NULL) {
+            if (anotar_omitido(resultado, fuentes[f].nombre) != 0) estado = -1;
+        }
         else if (recorrer_preorden(arboles[f].raiz, f, &lista) != 0) estado = -1;
     }
 
@@ -457,8 +474,88 @@ void clones_liberar(ClonLista *lista)
         free(c->fragmentos);
     }
     free(lista->elementos);
+    for (size_t i = 0; i < lista->omitidos; ++i) free(lista->nombres_omitidos[i]);
+    free(lista->nombres_omitidos);
+    lista->nombres_omitidos = NULL;
     lista->elementos = NULL;
     lista->cantidad = 0;
     lista->capacidad = 0;
     lista->omitidos = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Salida: texto y JSON                                                */
+/* ------------------------------------------------------------------ */
+
+/* Nombre del tipo de clon para mostrar. */
+static const char *nombre_tipo(ClonTipo tipo)
+{
+    return (tipo == CLON_TIPO_1) ? "tipo I (codigo identico)"
+                                 : "tipo II (misma estructura, otros nombres o valores)";
+}
+
+int clones_escribir_texto(const ClonLista *lista, size_t archivos, FILE *salida)
+{
+    for (size_t i = 0; i < lista->cantidad; ++i) {
+        const Clon *c = &lista->elementos[i];
+        fprintf(salida, "Clon %zu: %s, %s de %zu nodos, %zu copias\n",
+                i + 1, nombre_tipo(c->tipo), c->que, c->nodos, c->cantidad);
+        for (size_t j = 0; j < c->cantidad; ++j) {
+            const ClonFragmento *f = &c->fragmentos[j];
+            if (f->linea == f->linea_fin) {
+                fprintf(salida, "  %s: linea %zu\n", f->archivo, f->linea);
+            } else {
+                fprintf(salida, "  %s: lineas %zu a %zu\n", f->archivo, f->linea, f->linea_fin);
+            }
+        }
+        fputc('\n', salida);
+    }
+
+    /* Resumen al final. */
+    fprintf(salida, "%zu clon%s en %zu archivo%s", lista->cantidad,
+            lista->cantidad == 1 ? "" : "es", archivos, archivos == 1 ? "" : "s");
+    fputc('\n', salida);
+    for (size_t i = 0; i < lista->omitidos; ++i) {
+        fprintf(salida, "No se reviso %s: tiene errores de sintaxis\n", lista->nombres_omitidos[i]);
+    }
+    return ferror(salida) ? -1 : 0;
+}
+
+/* Escribe un texto entre comillas, escapando lo que JSON no permite tal cual. */
+static void escribir_texto_json(const char *texto, FILE *salida)
+{
+    fputc('"', salida);
+    for (const unsigned char *p = (const unsigned char *)texto; *p != '\0'; ++p) {
+        if (*p == '"') fputs("\\\"", salida);
+        else if (*p == '\\') fputs("\\\\", salida);
+        else if (*p < 0x20) fprintf(salida, "\\u%04x", *p);
+        else fputc(*p, salida);
+    }
+    fputc('"', salida);
+}
+
+int clones_escribir_json(const ClonLista *lista, size_t archivos, FILE *salida)
+{
+    fprintf(salida, "{\"archivos\": %zu, \"omitidos\": [", archivos);
+    for (size_t i = 0; i < lista->omitidos; ++i) {
+        if (i > 0) fputs(", ", salida);
+        escribir_texto_json(lista->nombres_omitidos[i], salida);
+    }
+    fputs("], \"clones\": [", salida);
+    for (size_t i = 0; i < lista->cantidad; ++i) {
+        const Clon *c = &lista->elementos[i];
+        fprintf(salida, "%s\n  {\"tipo\": %d, \"que\": ", i > 0 ? "," : "", (int)c->tipo);
+        escribir_texto_json(c->que, salida);
+        fprintf(salida, ", \"nodos\": %zu, \"fragmentos\": [", c->nodos);
+        for (size_t j = 0; j < c->cantidad; ++j) {
+            const ClonFragmento *f = &c->fragmentos[j];
+            fprintf(salida, "%s\n    {\"archivo\": ", j > 0 ? "," : "");
+            escribir_texto_json(f->archivo, salida);
+            fprintf(salida, ", \"linea\": %zu, \"columna\": %zu, \"linea_fin\": %zu, \"columna_fin\": %zu}",
+                    f->linea, f->columna, f->linea_fin, f->columna_fin);
+        }
+        fputs("]}", salida);
+    }
+    fputs(lista->cantidad > 0 ? "\n]}\n" : "]}\n", salida);
+    return ferror(salida) ? -1 : 0;
 }
