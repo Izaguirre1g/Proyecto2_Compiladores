@@ -1,6 +1,8 @@
 #include "ide_analisis.h"
 
+#include "ide_mensajes.h"
 #include "ide_nucleo.h"
+#include "lexer.h"
 #include "semantic_modules.h"
 
 #include <stdio.h>
@@ -68,6 +70,75 @@ static int cambiar_nombre_en_errores(DiagLista *lista, size_t desde,
     return 0;
 }
 
+/*
+ * Busca qué estaba escrito en una posición del texto.
+ *
+ * Por ejemplo, si el parser dice que el error está en la línea 3, columna 5,
+ * esta función devuelve la palabra que empieza ahí ("numero"). Se usa el
+ * lexer para que la "palabra" sea un token completo, igual que lo ve el parser.
+ *
+ * Devuelve memoria nueva (liberar con free), o NULL si ahí no empieza
+ * ningún token o si faltó memoria.
+ */
+static char *texto_en_posicion(const char *texto, size_t largo,
+                               size_t linea, size_t columna)
+{
+    char *encontrado = NULL;
+
+    Lexer lexer;
+    lexer_init(&lexer, texto, largo, "<editor>");
+    for (;;) {
+        Token t = lexer_next(&lexer);
+        TokenType tipo = t.type;
+        int ya_paso = (t.line > linea || (t.line == linea && t.column > columna));
+
+        if (t.line == linea && t.column == columna && t.lexeme != NULL &&
+            tipo != TOKEN_EOF) {
+            encontrado = malloc(t.length + 1);
+            if (encontrado != NULL) memcpy(encontrado, t.lexeme, t.length + 1);
+        }
+        token_dispose(&t);
+
+        /* Parar al encontrarlo, al pasarse de la posición o al final del texto. */
+        if (encontrado != NULL || ya_paso || tipo == TOKEN_EOF) break;
+    }
+    return encontrado;
+}
+
+/*
+ * Traduce a español los mensajes del parser (ver ide_mensajes.c).
+ *
+ *   "syntax error, unexpected IDENTIFIER"
+ *     -> "no se esperaba el nombre 'numero' en este lugar"
+ *
+ * Solo cambia los errores sintácticos desde la posición "desde".
+ * Devuelve 0 si funcionó, o -1 si no hubo memoria.
+ */
+static int traducir_errores_del_parser(DiagLista *lista, size_t desde,
+                                       const char *texto, size_t largo,
+                                       const char *nombre_original)
+{
+    for (size_t i = desde; i < lista->cantidad; ++i) {
+        Diagnostico *d = &lista->elementos[i];
+        if (d->fase != DIAG_SINTACTICO) continue;
+
+        /* Lo escrito en el lugar del error solo se puede buscar si el error es
+         * de este archivo (el texto de los módulos importados no lo tenemos). */
+        char *encontrado = NULL;
+        if (strcmp(d->archivo, nombre_original) == 0) {
+            encontrado = texto_en_posicion(texto, largo, d->linea, d->columna);
+        }
+
+        char *traducido = ide_traducir_mensaje(d->mensaje, encontrado);
+        free(encontrado);
+        if (traducido == NULL) return -1;
+
+        free(d->mensaje);
+        d->mensaje = traducido;
+    }
+    return 0;
+}
+
 int ide_analizar_texto(const char *texto, size_t largo, const char *ruta,
                        DiagLista *lista)
 {
@@ -108,8 +179,14 @@ int ide_analizar_texto(const char *texto, size_t largo, const char *ruta,
     }
     free(temporal);
 
+    /* Paso 5: traducir los mensajes del parser a español claro. */
+    if (resultado == 0 &&
+        traducir_errores_del_parser(lista, primero_nuevo, texto, largo, nombre_original) != 0) {
+        resultado = -1;
+    }
+
     /*
-     * Paso 5: revisar paréntesis, corchetes y llaves. El parser se detiene
+     * Paso 6: revisar paréntesis, corchetes y llaves. El parser se detiene
      * en el primer error; esta revisión encuentra todos los delimitadores
      * mal cerrados y explica cada uno con más detalle.
      */

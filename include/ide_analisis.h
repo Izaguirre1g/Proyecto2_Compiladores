@@ -12,8 +12,9 @@
  *      porque los "bring" buscan sus módulos junto al archivo que importa.
  *   2. Corre el análisis léxico, sintáctico y semántico del compilador
  *      sobre ese archivo temporal (lo mismo que hace balc --diagnosticos).
- *   3. Revisa los paréntesis, corchetes y llaves (ide_nucleo.c).
- *   4. Borra el archivo temporal.
+ *   3. Borra el archivo temporal.
+ *   4. Traduce los mensajes del parser a español claro (ide_mensajes.c).
+ *   5. Revisa los paréntesis, corchetes y llaves (ide_nucleo.c).
  *
  * Los errores quedan en la lista con el nombre del archivo ORIGINAL, no
  * con el del archivo temporal, para que el IDE sepa dónde subrayarlos.

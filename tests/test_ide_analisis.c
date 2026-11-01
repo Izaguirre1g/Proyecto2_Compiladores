@@ -70,7 +70,8 @@ int main(void)
     diag_liberar(&lista);
 
     /* Prueba 4: una llave sin cerrar. El parser se queja del final del
-     * archivo, y la revisión de delimitadores señala la llave exacta. */
+     * archivo (ya traducido a español), y la revisión de delimitadores
+     * señala la llave exacta. */
     const char *sin_cerrar =
         "create_funk #declare_infinite_void# main() {\n"
         "    numero * declare_int : 10;\n";
@@ -79,7 +80,8 @@ int main(void)
     int vio_parser = 0, vio_llave = 0;
     for (size_t i = 0; i < lista.cantidad; ++i) {
         const Diagnostico *d = &lista.elementos[i];
-        if (d->fase == DIAG_SINTACTICO && strstr(d->mensaje, "syntax error")) vio_parser = 1;
+        if (d->fase == DIAG_SINTACTICO && strcmp(d->mensaje, "el archivo termina antes de tiempo: "
+                                              "puede faltar una '}' o un ';'") == 0) vio_parser = 1;
         if (d->fase == DIAG_SINTACTICO && d->linea == 1 && d->columna == 44 &&
             strcmp(d->mensaje, "falta cerrar este '{' con '}'") == 0) vio_llave = 1;
     }
@@ -94,6 +96,24 @@ int main(void)
         VERIFICAR(strcmp(lista.elementos[0].archivo, IDE_SIN_NOMBRE) == 0);
     }
     VERIFICAR(!existe(".ide_sin_nombre.bal"));
+    diag_liberar(&lista);
+
+    /* Prueba 6: el mensaje del parser dice qué palabra estaba escrita.
+     * Falta el ';' de la línea 2, así que el parser tropieza con "numero"
+     * al inicio de la línea 3. */
+    const char *sin_punto_y_coma =
+        "create_funk #declare_infinite_void# main() {\n"
+        "    numero * declare_int : 10\n"
+        "    numero : 5;\n"
+        "}\n";
+    VERIFICAR(ide_analizar_texto(sin_punto_y_coma, strlen(sin_punto_y_coma),
+                                 "tests/editor.bal", &lista) == 0);
+    VERIFICAR(lista.cantidad == 1);
+    if (lista.cantidad == 1) {
+        VERIFICAR(lista.elementos[0].linea == 3 && lista.elementos[0].columna == 5);
+        VERIFICAR(strcmp(lista.elementos[0].mensaje,
+                         "no se esperaba el nombre 'numero' en este lugar") == 0);
+    }
     diag_liberar(&lista);
 
     if (fallos > 0) {
