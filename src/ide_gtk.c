@@ -5,6 +5,7 @@
  * reaccionar a las teclas y mostrar resultados. Toda la lógica está en:
  *   - ide_nucleo.c   -> sugerencias, autocierre y delimitadores.
  *   - ide_analisis.c -> revisar el texto con el compilador.
+ *   - ide_arreglos.c -> proponer y aplicar correcciones automáticas.
  *
  * Qué hace el IDE:
  *   1. Sugerencias: al escribir una palabra aparece una lista para completarla.
@@ -16,14 +17,18 @@
  *   3. Errores: medio segundo después de dejar de escribir, se revisa el
  *      código. Los errores se subrayan en rojo; al pasar el mouse encima se
  *      ve la explicación. Abajo hay una lista: un clic lleva al error.
+ *   4. Corrección automática: si el IDE sabe cómo arreglar un error (por
+ *      ejemplo, un ';' que falta), la lista muestra el arreglo y un botón
+ *      "Corregir". Ctrl+. corrige el error de la línea del cursor.
  *
- * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar.
+ * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
  */
 #include <gtk/gtk.h>
 #include <string.h>
 
 #include "ide_analisis.h"
+#include "ide_arreglos.h"
 #include "ide_nucleo.h"
 
 /* Milisegundos que se espera, después de la última tecla, para revisar el código. */
@@ -47,6 +52,8 @@ typedef struct {
     gboolean modificado;        /* TRUE si hay cambios sin guardar. */
     guint temporizador;         /* Cuenta regresiva para revisar el código. */
     DiagLista errores;          /* Errores de la última revisión. */
+    IdeArreglo *arreglos;       /* Un arreglo por error (insertar == NULL: no tiene). */
+    gboolean revision_vigente;  /* FALSE si el texto cambió después de revisarlo. */
     int largo_prefijo;          /* Letras ya escritas de la palabra que se sugiere. */
 } Ide;
 
@@ -193,6 +200,25 @@ static void subrayar_error(Ide *ide, const Diagnostico *d)
     gtk_text_buffer_apply_tag(ide->buffer, ide->marca_error, &inicio, &fin);
 }
 
+/* ¿Tiene arreglo el error número "indice"? */
+static gboolean tiene_arreglo(const Ide *ide, size_t indice)
+{
+    return ide->arreglos != NULL && indice < ide->errores.cantidad &&
+           ide->arreglos[indice].insertar != NULL;
+}
+
+/* Libera los arreglos de la revisión anterior. */
+static void liberar_arreglos(Ide *ide)
+{
+    for (size_t i = 0; ide->arreglos != NULL && i < ide->errores.cantidad; ++i) {
+        ide_liberar_arreglo(&ide->arreglos[i]);
+    }
+    g_free(ide->arreglos);
+    ide->arreglos = NULL;
+}
+
+static void al_pulsar_corregir(GtkWidget *boton, gpointer datos);
+
 /* Agrega una fila a la lista de errores de abajo. */
 static void agregar_fila_error(Ide *ide, size_t indice)
 {
@@ -218,8 +244,41 @@ static void agregar_fila_error(Ide *ide, size_t indice)
     gtk_widget_set_margin_bottom(etiqueta, 2);
     g_free(texto);
 
+    /*
+     * La fila es una caja horizontal:
+     *   [ mensaje del error                      ] [Corregir]
+     *   [ Arreglo: agregar ';' al final de ...   ]
+     * La segunda línea y el botón solo aparecen si el error tiene arreglo.
+     */
+    GtkWidget *textos = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(textos), etiqueta, FALSE, FALSE, 0);
+
+    GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(caja), textos, TRUE, TRUE, 0);
+
+    if (tiene_arreglo(ide, indice)) {
+        gchar *propuesta = g_markup_printf_escaped("<small>Arreglo: %s</small>",
+                                                   ide->arreglos[indice].descripcion);
+        GtkWidget *detalle = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(detalle), propuesta);
+        gtk_label_set_xalign(GTK_LABEL(detalle), 0.0f);
+        gtk_widget_set_margin_start(detalle, 18);
+        gtk_widget_set_margin_bottom(detalle, 2);
+        gtk_box_pack_start(GTK_BOX(textos), detalle, FALSE, FALSE, 0);
+        g_free(propuesta);
+
+        GtkWidget *boton = gtk_button_new_with_label("Corregir");
+        gtk_widget_set_valign(boton, GTK_ALIGN_CENTER);
+        gtk_widget_set_margin_end(boton, 6);
+        gtk_widget_set_tooltip_text(boton, ide->arreglos[indice].descripcion);
+        /* El botón recuerda qué error corrige. */
+        g_object_set_data(G_OBJECT(boton), "indice", GSIZE_TO_POINTER(indice));
+        g_signal_connect(boton, "clicked", G_CALLBACK(al_pulsar_corregir), ide);
+        gtk_box_pack_end(GTK_BOX(caja), boton, FALSE, FALSE, 0);
+    }
+
     GtkWidget *fila = gtk_list_box_row_new();
-    gtk_container_add(GTK_CONTAINER(fila), etiqueta);
+    gtk_container_add(GTK_CONTAINER(fila), caja);
     /* Guardamos en la fila qué error es, para saber a dónde ir con el clic. */
     g_object_set_data(G_OBJECT(fila), "indice", GSIZE_TO_POINTER(indice));
     gtk_list_box_insert(ide->lista_errores, fila, -1);
@@ -236,10 +295,27 @@ static gboolean revisar_codigo(gpointer datos)
     ide->temporizador = 0;
 
     /* Paso 1: pedirle al compilador los errores del texto actual. */
+    liberar_arreglos(ide);
     diag_liberar(&ide->errores);
     gchar *texto = texto_del_editor(ide);
-    int resultado = ide_analizar_texto(texto, strlen(texto), ide->ruta, &ide->errores);
+    size_t largo = strlen(texto);
+    int resultado = ide_analizar_texto(texto, largo, ide->ruta, &ide->errores);
+
+    /* Paso 1b: pedir un arreglo para cada error de este archivo. Se calculan
+     * ahora, con el mismo texto que se analizó, para que las posiciones
+     * coincidan. Los que no tienen arreglo quedan en cero (insertar == NULL). */
+    if (resultado == 0 && ide->errores.cantidad > 0) {
+        ide->arreglos = g_new0(IdeArreglo, ide->errores.cantidad);
+        for (size_t i = 0; i < ide->errores.cantidad; ++i) {
+            const Diagnostico *d = &ide->errores.elementos[i];
+            if (strcmp(d->archivo, nombre_actual(ide)) != 0) continue;  /* Otro archivo. */
+            if (ide_proponer_arreglo(texto, largo, d, &ide->arreglos[i]) != 1) {
+                ide_liberar_arreglo(&ide->arreglos[i]);  /* Sin arreglo (o sin memoria). */
+            }
+        }
+    }
     g_free(texto);
+    ide->revision_vigente = TRUE;
 
     /* Paso 2: quitar los subrayados y la lista de la revisión anterior. */
     GtkTextIter inicio, fin;
@@ -289,6 +365,78 @@ static void al_elegir_error(GtkListBox *lista, GtkListBoxRow *fila, gpointer dat
 }
 
 /*
+ * Aplica el arreglo del error número "indice" en el editor.
+ *
+ * El arreglo dice "en esta línea y columna, borrar N caracteres y escribir
+ * este texto". Se hace como una sola acción, así Ctrl+Z la deshace entera.
+ */
+static void aplicar_arreglo(Ide *ide, size_t indice)
+{
+    /* Si se escribió algo después de la última revisión, las posiciones
+     * pueden haber cambiado: revisar otra vez y que la persona vuelva a elegir. */
+    if (!ide->revision_vigente) {
+        if (ide->temporizador != 0) g_source_remove(ide->temporizador);
+        revisar_codigo(ide);
+        gtk_label_set_text(ide->barra_estado,
+                           "El código cambió: la lista de errores se actualizó, intenta de nuevo");
+        return;
+    }
+    if (!tiene_arreglo(ide, indice)) return;
+
+    /* Copiar el arreglo: al cambiar el texto se vuelve a revisar y la lista
+     * de arreglos se reemplaza. */
+    IdeArreglo arreglo = ide->arreglos[indice];
+    gchar *insertar = g_strdup(arreglo.insertar);
+
+    GtkTextIter inicio, fin;
+    if (!ir_a_posicion(ide->buffer, arreglo.linea, arreglo.columna, &inicio)) {
+        g_free(insertar);
+        return;
+    }
+    fin = inicio;
+    gtk_text_iter_forward_chars(&fin, (gint)arreglo.borrar);
+
+    gtk_text_buffer_begin_user_action(ide->buffer);
+    gtk_text_buffer_delete(ide->buffer, &inicio, &fin);   /* "inicio" sigue siendo válido. */
+    gtk_text_buffer_insert(ide->buffer, &inicio, insertar, -1);  /* Queda después de lo insertado. */
+    gtk_text_buffer_end_user_action(ide->buffer);
+
+    /* Dejar el cursor justo después del arreglo. */
+    gtk_text_buffer_place_cursor(ide->buffer, &inicio);
+    gtk_text_view_scroll_to_iter(ide->vista, &inicio, 0.2, FALSE, 0, 0);
+    gtk_widget_grab_focus(GTK_WIDGET(ide->vista));
+    g_free(insertar);
+}
+
+/* Botón "Corregir" de una fila de la lista. */
+static void al_pulsar_corregir(GtkWidget *boton, gpointer datos)
+{
+    size_t indice = GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(boton), "indice"));
+    aplicar_arreglo(datos, indice);
+}
+
+/*
+ * Ctrl+. : corregir el error de la línea del cursor.
+ * Sirve tanto la línea donde se marcó el error como la línea donde va el
+ * arreglo (para el ';' que falta, el parser marca la línea de abajo).
+ */
+static void corregir_en_cursor(Ide *ide)
+{
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(ide->buffer, &cursor, gtk_text_buffer_get_insert(ide->buffer));
+    size_t linea = (size_t)gtk_text_iter_get_line(&cursor) + 1;
+
+    for (size_t i = 0; i < ide->errores.cantidad; ++i) {
+        if (!tiene_arreglo(ide, i)) continue;
+        if (ide->errores.elementos[i].linea == linea || ide->arreglos[i].linea == linea) {
+            aplicar_arreglo(ide, i);
+            return;
+        }
+    }
+    gtk_label_set_text(ide->barra_estado, "No hay ninguna corrección para esta línea");
+}
+
+/*
  * Mouse encima del texto: si está sobre un subrayado, mostrar la
  * explicación de los errores de esa línea.
  */
@@ -314,6 +462,9 @@ static gboolean al_pedir_ayuda(GtkWidget *widget, gint x, gint y, gboolean con_t
         if (d->linea != linea || strcmp(d->archivo, nombre_actual(ide)) != 0) continue;
         if (mensajes->len > 0) g_string_append_c(mensajes, '\n');
         g_string_append_printf(mensajes, "Error %s: %s", fase_para_mostrar(d->fase), d->mensaje);
+        if (tiene_arreglo(ide, i)) {
+            g_string_append_printf(mensajes, "\n    Arreglo (Ctrl+.): %s", ide->arreglos[i].descripcion);
+        }
     }
 
     gboolean hay_ayuda = mensajes->len > 0;
@@ -614,6 +765,7 @@ static void al_cambiar_texto(GtkTextBuffer *buffer, gpointer datos)
 {
     (void)buffer;
     Ide *ide = datos;
+    ide->revision_vigente = FALSE;  /* Las posiciones de los arreglos ya no sirven. */
     if (!ide->modificado) {
         ide->modificado = TRUE;
         actualizar_titulo(ide);
@@ -796,7 +948,7 @@ static void al_pulsar_guardar_como(GtkWidget *boton, gpointer datos)
     guardar(datos, TRUE);
 }
 
-/* Atajos de teclado de la ventana: Ctrl+N, Ctrl+O, Ctrl+S. */
+/* Atajos de teclado de la ventana: Ctrl+N, Ctrl+O, Ctrl+S y Ctrl+. (corregir). */
 static gboolean al_presionar_atajo(GtkWidget *widget, GdkEventKey *evento, gpointer datos)
 {
     (void)widget;
@@ -805,6 +957,7 @@ static gboolean al_presionar_atajo(GtkWidget *widget, GdkEventKey *evento, gpoin
         case GDK_KEY_n: al_pulsar_nuevo(NULL, datos); return TRUE;
         case GDK_KEY_o: al_pulsar_abrir(NULL, datos); return TRUE;
         case GDK_KEY_s: al_pulsar_guardar(NULL, datos); return TRUE;
+        case GDK_KEY_period: corregir_en_cursor(datos); return TRUE;
         default: return FALSE;
     }
 }
@@ -823,6 +976,7 @@ static void al_destruir(GtkWidget *widget, gpointer datos)
     (void)widget;
     Ide *ide = datos;
     if (ide->temporizador != 0) g_source_remove(ide->temporizador);
+    liberar_arreglos(ide);
     diag_liberar(&ide->errores);
     g_free(ide->ruta);
     gtk_main_quit();

@@ -139,6 +139,8 @@ vuelve a generar al compilar.
 | Sugerencias | Al escribir aparecen las palabras clave y variables que empiezan igual. Se eligen con ↑/↓ y se aceptan con Enter o Tab. Esc las cierra. |
 | Autocierre | Al escribir `(`, `[`, `{`, `"` o `$` se agrega su cierre. Enter entre `{}` baja la llave y agrega sangría. |
 | Delimitadores | Si sobra o falta un paréntesis, corchete o llave, se indica cuál y dónde se abrió. |
+| Mensajes en español | Los errores del parser se traducen, por ejemplo `no se esperaba el nombre 'numero' en este lugar`. |
+| Corrección automática | Si el IDE sabe arreglar un error (un `;` que falta, un `)` o `}` sin cerrar, un cierre que sobra), la lista muestra el arreglo y un botón **Corregir**. Ctrl+. corrige el error de la línea del cursor y Ctrl+Z lo deshace. |
 
 | Atajo | Acción |
 |---|---|
@@ -146,6 +148,7 @@ vuelve a generar al compilar.
 | Ctrl+O | Abrir archivo |
 | Ctrl+S | Guardar |
 | Ctrl+Espacio | Mostrar sugerencias |
+| Ctrl+. | Corregir el error de la línea del cursor |
 
 Si hay cambios sin guardar, el IDE pregunta antes de cerrar o de abrir otro archivo.
 
@@ -169,6 +172,8 @@ Termina con `0` si no hay errores, `1` si el fuente tiene errores y `2` si fall�
 make test-diagnosticos
 make test-ide-nucleo
 make test-ide-analisis
+make test-ide-mensajes
+make test-ide-arreglos
 ```
 
 Estas pruebas no necesitan GTK y también se ejecutan con `make test`.
