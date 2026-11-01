@@ -141,6 +141,7 @@ vuelve a generar al compilar.
 | Delimitadores | Si sobra o falta un paréntesis, corchete o llave, se indica cuál y dónde se abrió. |
 | Mensajes en español | Los errores del parser se traducen, por ejemplo `no se esperaba el nombre 'numero' en este lugar`. |
 | Corrección automática | Si el IDE sabe arreglar un error (un `;` que falta, un `)` o `}` sin cerrar, un cierre que sobra), la lista muestra el arreglo y un botón **Corregir**. Ctrl+. corrige el error de la línea del cursor y Ctrl+Z lo deshace. |
+| Clones | El botón **Buscar clones** compara el archivo abierto (aunque no esté guardado) con los demás `.bal` de su carpeta. Los clones se pintan de amarillo y la pestaña **Clones** dice dónde está cada copia; un clic lleva al fragmento. |
 
 | Atajo | Acción |
 |---|---|
@@ -155,6 +156,20 @@ Si hay cambios sin guardar, el IDE pregunta antes de cerrar o de abrir otro arch
 Para revisar el código sin guardarlo, el IDE crea un archivo oculto
 `.ide_<nombre>.bal` en la misma carpeta y lo borra enseguida. Va en la misma
 carpeta para que los `bring` encuentren sus módulos.
+
+### Clones desde la terminal
+
+`balc` también busca clones tipo I (código idéntico) y tipo II (misma estructura
+con otros nombres o valores) entre varios archivos:
+
+```bash
+./balc --clones examples/*.bal              # listado para leer
+./balc --clones --json a.bal b.bal          # JSON
+./balc --clones --minimo 6 examples/*.bal   # clones más pequeños (por defecto 10 nodos del AST)
+```
+
+Se comparan los AST, así que los espacios, comentarios y paréntesis de más no
+cuentan. Un archivo con errores de sintaxis no se revisa y se avisa cuál es.
 
 ### Diagnósticos en JSON
 
@@ -174,6 +189,7 @@ make test-ide-nucleo
 make test-ide-analisis
 make test-ide-mensajes
 make test-ide-arreglos
+make test-clones
 ```
 
 Estas pruebas no necesitan GTK y también se ejecutan con `make test`.

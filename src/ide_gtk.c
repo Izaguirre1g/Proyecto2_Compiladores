@@ -6,6 +6,7 @@
  *   - ide_nucleo.c   -> sugerencias, autocierre y delimitadores.
  *   - ide_analisis.c -> revisar el texto con el compilador.
  *   - ide_arreglos.c -> proponer y aplicar correcciones automáticas.
+ *   - clones.c       -> buscar código copiado (clones tipo I y II).
  *
  * Qué hace el IDE:
  *   1. Sugerencias: al escribir una palabra aparece una lista para completarla.
@@ -20,6 +21,9 @@
  *   4. Corrección automática: si el IDE sabe cómo arreglar un error (por
  *      ejemplo, un ';' que falta), la lista muestra el arreglo y un botón
  *      "Corregir". Ctrl+. corrige el error de la línea del cursor.
+ *   5. Clones: el botón "Buscar clones" compara el archivo abierto con los
+ *      demás .bal de su carpeta. Los clones se pintan de amarillo y la
+ *      pestaña "Clones" dice dónde está cada copia.
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -27,6 +31,7 @@
 #include <gtk/gtk.h>
 #include <string.h>
 
+#include "clones.h"
 #include "ide_analisis.h"
 #include "ide_arreglos.h"
 #include "ide_nucleo.h"
@@ -44,6 +49,10 @@ typedef struct {
     GtkTextBuffer *buffer;         /* El texto que se está editando. */
     GtkTextTag *marca_error;       /* Estilo del subrayado rojo. */
     GtkListBox *lista_errores;     /* Lista de errores de abajo. */
+    GtkTextTag *marca_clon;        /* Estilo del fondo amarillo de los clones. */
+    GtkListBox *lista_clones;      /* Lista de clones (pestaña "Clones"). */
+    GtkLabel *resumen_clones;      /* "2 clones en este archivo...". */
+    GtkNotebook *pestanas;         /* Pestañas de abajo: Errores y Clones. */
     GtkLabel *barra_estado;        /* "Línea X, columna Y · N errores". */
     GtkWidget *ventana_sugerencias;   /* Cuadro flotante con las sugerencias. */
     GtkListBox *lista_sugerencias;
@@ -783,6 +792,219 @@ static void al_mover_marca(GtkTextBuffer *buffer, GtkTextIter *posicion, GtkText
 }
 
 /* ================================================================== */
+/* Clones                                                              */
+/* ================================================================== */
+
+/* Página de cada pestaña de abajo. */
+enum { PESTANA_ERRORES = 0, PESTANA_CLONES = 1 };
+
+/* TRUE si el nombre es un programa BAL visible ("x.bal", pero no ".ide_x.bal"). */
+static gboolean es_archivo_bal(const char *nombre)
+{
+    size_t largo = strlen(nombre);
+    return nombre[0] != '.' && largo > 4 && strcmp(nombre + largo - 4, ".bal") == 0;
+}
+
+/* Quita los clones marcados: el fondo amarillo y la lista. */
+static void limpiar_clones(Ide *ide)
+{
+    GtkTextIter inicio, fin;
+    gtk_text_buffer_get_bounds(ide->buffer, &inicio, &fin);
+    gtk_text_buffer_remove_tag(ide->buffer, ide->marca_clon, &inicio, &fin);
+    vaciar_lista(ide->lista_clones);
+    gtk_label_set_text(ide->resumen_clones,
+                       "Pulsa \"Buscar clones\" para comparar este archivo con los demás .bal de su carpeta.");
+}
+
+/* Pinta de amarillo un fragmento del archivo abierto. */
+static void marcar_clon(Ide *ide, const ClonFragmento *f)
+{
+    GtkTextIter inicio, fin;
+    if (!ir_a_posicion(ide->buffer, f->linea, f->columna, &inicio)) return;
+    if (!ir_a_posicion(ide->buffer, f->linea_fin, f->columna_fin, &fin)) return;
+    gtk_text_buffer_apply_tag(ide->buffer, ide->marca_clon, &inicio, &fin);
+}
+
+/* Agrega "llamadas.bal, líneas 2 a 4" (o "este archivo, ...") a un texto. */
+static void describir_fragmento(GString *texto, const ClonFragmento *f, gboolean es_este)
+{
+    if (es_este) {
+        g_string_append(texto, "este archivo, ");
+    } else {
+        gchar *base = g_path_get_basename(f->archivo);
+        g_string_append_printf(texto, "%s, ", base);
+        g_free(base);
+    }
+    if (f->linea == f->linea_fin) g_string_append_printf(texto, "línea %zu", f->linea);
+    else g_string_append_printf(texto, "líneas %zu a %zu", f->linea, f->linea_fin);
+}
+
+/*
+ * Agrega una fila a la lista de clones, para el fragmento número "propio"
+ * del clon (uno que está en el archivo abierto):
+ *
+ *   Líneas 2 a 4 · tipo I (idéntico) · funcion
+ *      También en: llamadas.bal, líneas 2 a 4
+ */
+static void agregar_fila_clon(Ide *ide, const Clon *c, size_t propio)
+{
+    const ClonFragmento *f = &c->fragmentos[propio];
+
+    GString *titulo = g_string_new(NULL);
+    if (f->linea == f->linea_fin) g_string_append_printf(titulo, "Línea %zu", f->linea);
+    else g_string_append_printf(titulo, "Líneas %zu a %zu", f->linea, f->linea_fin);
+    g_string_append_printf(titulo, " · tipo %s · %s",
+                           c->tipo == CLON_TIPO_1 ? "I (idéntico)" : "II (otros nombres o valores)",
+                           c->que);
+
+    /* Dónde están las otras copias. */
+    GString *copias = g_string_new("También en: ");
+    gboolean primera = TRUE;
+    for (size_t j = 0; j < c->cantidad; ++j) {
+        if (j == propio) continue;
+        if (!primera) g_string_append(copias, "; ");
+        describir_fragmento(copias, &c->fragmentos[j],
+                            strcmp(c->fragmentos[j].archivo, nombre_actual(ide)) == 0);
+        primera = FALSE;
+    }
+
+    GtkWidget *etiqueta = gtk_label_new(titulo->str);
+    gtk_label_set_xalign(GTK_LABEL(etiqueta), 0.0f);
+    gtk_widget_set_margin_start(etiqueta, 6);
+    gtk_widget_set_margin_top(etiqueta, 2);
+
+    gchar *marcado = g_markup_printf_escaped("<small>%s</small>", copias->str);
+    GtkWidget *detalle = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(detalle), marcado);
+    gtk_label_set_xalign(GTK_LABEL(detalle), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(detalle), TRUE);
+    gtk_widget_set_margin_start(detalle, 18);
+    gtk_widget_set_margin_bottom(detalle, 2);
+    g_free(marcado);
+
+    GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(caja), etiqueta, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(caja), detalle, FALSE, FALSE, 0);
+
+    GtkWidget *fila = gtk_list_box_row_new();
+    gtk_container_add(GTK_CONTAINER(fila), caja);
+    /* La fila recuerda dónde empieza el fragmento, para ir ahí con un clic. */
+    g_object_set_data(G_OBJECT(fila), "linea", GSIZE_TO_POINTER(f->linea));
+    g_object_set_data(G_OBJECT(fila), "columna", GSIZE_TO_POINTER(f->columna));
+    gtk_list_box_insert(ide->lista_clones, fila, -1);
+    gtk_widget_show_all(fila);
+
+    g_string_free(titulo, TRUE);
+    g_string_free(copias, TRUE);
+}
+
+/* Clic en un clon de la lista: llevar el cursor a ese fragmento. */
+static void al_elegir_clon(GtkListBox *lista, GtkListBoxRow *fila, gpointer datos)
+{
+    (void)lista;
+    Ide *ide = datos;
+    size_t linea = GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(fila), "linea"));
+    size_t columna = GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(fila), "columna"));
+
+    GtkTextIter posicion;
+    if (!ir_a_posicion(ide->buffer, linea, columna, &posicion)) return;
+    gtk_text_buffer_place_cursor(ide->buffer, &posicion);
+    gtk_text_view_scroll_to_iter(ide->vista, &posicion, 0.2, FALSE, 0, 0);
+    gtk_widget_grab_focus(GTK_WIDGET(ide->vista));
+}
+
+/*
+ * Botón "Buscar clones".
+ *
+ *   1. Junta los archivos: el texto del editor (aunque no esté guardado) y
+ *      los demás .bal de la misma carpeta, leídos del disco.
+ *   2. Busca los clones con clones_buscar (clones.c), igual que balc --clones.
+ *   3. Muestra solo los clones que tocan el archivo abierto: los pinta de
+ *      amarillo y los pone en la pestaña "Clones".
+ */
+static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    limpiar_clones(ide);
+
+    /* Paso 1: el archivo abierto va primero, con el texto del editor. */
+    GArray *fuentes = g_array_new(FALSE, TRUE, sizeof(ClonFuente));
+    GPtrArray *por_liberar = g_ptr_array_new_with_free_func(g_free);
+    gchar *texto = texto_del_editor(ide);
+    g_ptr_array_add(por_liberar, texto);
+    ClonFuente actual = {nombre_actual(ide), texto, strlen(texto)};
+    g_array_append_val(fuentes, actual);
+
+    /* ...y después los demás .bal de su carpeta (sin repetir el abierto). */
+    gchar *carpeta = (ide->ruta != NULL) ? g_path_get_dirname(ide->ruta) : g_strdup(".");
+    gchar *base_actual = (ide->ruta != NULL) ? g_path_get_basename(ide->ruta) : NULL;
+    GDir *dir = g_dir_open(carpeta, 0, NULL);
+    const char *nombre;
+    while (dir != NULL && (nombre = g_dir_read_name(dir)) != NULL) {
+        if (!es_archivo_bal(nombre)) continue;
+        if (base_actual != NULL && strcmp(nombre, base_actual) == 0) continue;
+
+        gchar *ruta = g_build_filename(carpeta, nombre, NULL);
+        gchar *contenido = NULL;
+        gsize largo = 0;
+        if (!g_file_get_contents(ruta, &contenido, &largo, NULL)) {
+            g_free(ruta);  /* No se pudo leer: se salta. */
+            continue;
+        }
+        g_ptr_array_add(por_liberar, ruta);
+        g_ptr_array_add(por_liberar, contenido);
+        ClonFuente otra = {ruta, contenido, largo};
+        g_array_append_val(fuentes, otra);
+    }
+    if (dir != NULL) g_dir_close(dir);
+
+    /* Paso 2: buscar. */
+    ClonLista lista = {0};
+    int resultado = clones_buscar((const ClonFuente *)(void *)fuentes->data, fuentes->len,
+                                  CLONES_MINIMO_NODOS, &lista);
+
+    /* Paso 3: mostrar los clones del archivo abierto. */
+    size_t mostrados = 0;
+    gboolean abierto_omitido = FALSE;
+    for (size_t i = 0; i < lista.omitidos; ++i) {
+        if (strcmp(lista.nombres_omitidos[i], nombre_actual(ide)) == 0) abierto_omitido = TRUE;
+    }
+    for (size_t i = 0; resultado == 0 && i < lista.cantidad; ++i) {
+        const Clon *c = &lista.elementos[i];
+        gboolean cuenta = FALSE;
+        for (size_t j = 0; j < c->cantidad; ++j) {
+            if (strcmp(c->fragmentos[j].archivo, nombre_actual(ide)) != 0) continue;
+            marcar_clon(ide, &c->fragmentos[j]);
+            agregar_fila_clon(ide, c, j);
+            cuenta = TRUE;
+        }
+        if (cuenta) mostrados++;
+    }
+
+    /* El resumen de arriba de la lista. */
+    gchar *resumen;
+    if (resultado != 0) {
+        resumen = g_strdup("No se pudieron buscar los clones (falta de memoria).");
+    } else if (abierto_omitido) {
+        resumen = g_strdup("Este archivo tiene errores de sintaxis: corrígelos para buscar clones.");
+    } else {
+        resumen = g_strdup_printf("%zu clon%s en este archivo · se compararon %u archivo%s .bal de la carpeta",
+                                  mostrados, mostrados == 1 ? "" : "es",
+                                  fuentes->len, fuentes->len == 1 ? "" : "s");
+    }
+    gtk_label_set_text(ide->resumen_clones, resumen);
+    gtk_notebook_set_current_page(ide->pestanas, PESTANA_CLONES);
+
+    g_free(resumen);
+    clones_liberar(&lista);
+    g_free(base_actual);
+    g_free(carpeta);
+    g_array_free(fuentes, TRUE);
+    g_ptr_array_free(por_liberar, TRUE);
+}
+
+/* ================================================================== */
 /* Archivos: nuevo, abrir y guardar                                    */
 /* ================================================================== */
 
@@ -793,6 +1015,7 @@ static void cargar_texto(Ide *ide, const char *texto, const char *ruta)
     ide->ruta = (ruta != NULL) ? g_strdup(ruta) : NULL;
 
     gtk_text_buffer_set_text(ide->buffer, texto, -1);
+    limpiar_clones(ide);  /* Los clones eran del archivo anterior. */
     GtkTextIter inicio;
     gtk_text_buffer_get_start_iter(ide->buffer, &inicio);
     gtk_text_buffer_place_cursor(ide->buffer, &inicio);
@@ -1014,6 +1237,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "_Abrir", G_CALLBACK(al_pulsar_abrir), ide);
     agregar_boton(barra, "_Guardar", G_CALLBACK(al_pulsar_guardar), ide);
     agregar_boton(barra, "Guardar _como", G_CALLBACK(al_pulsar_guardar_como), ide);
+    agregar_boton(barra, "Buscar c_lones", G_CALLBACK(al_pulsar_buscar_clones), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */
@@ -1028,6 +1252,12 @@ static void construir_ventana(Ide *ide)
     gtk_text_view_set_left_margin(ide->vista, 8);
     gtk_text_view_set_top_margin(ide->vista, 6);
     gtk_widget_set_has_tooltip(vista, TRUE);
+
+    /* Estilo de los clones: fondo amarillo suave. Se crea ANTES que el de
+     * errores para que, si se juntan, el rojo del error quede encima. */
+    GdkRGBA amarillo = {1.0, 0.85, 0.0, 0.25};
+    ide->marca_clon = gtk_text_buffer_create_tag(ide->buffer, "clon",
+                                                 "background-rgba", &amarillo, NULL);
 
     /* Estilo de los errores: subrayado ondulado rojo con fondo rojo suave. */
     GdkRGBA rojo = {0.85, 0.10, 0.10, 1.0};
@@ -1059,7 +1289,32 @@ static void construir_ventana(Ide *ide)
 
     GtkWidget *desplazar_errores = gtk_scrolled_window_new(NULL, NULL);
     gtk_container_add(GTK_CONTAINER(desplazar_errores), lista);
-    gtk_paned_pack2(GTK_PANED(divisor), desplazar_errores, FALSE, FALSE);
+
+    /* --- La lista de clones, con un resumen arriba --- */
+    GtkWidget *lista_cl = gtk_list_box_new();
+    ide->lista_clones = GTK_LIST_BOX(lista_cl);
+    gtk_list_box_set_activate_on_single_click(ide->lista_clones, TRUE);
+    g_signal_connect(lista_cl, "row-activated", G_CALLBACK(al_elegir_clon), ide);
+
+    GtkWidget *resumen = gtk_label_new("");
+    ide->resumen_clones = GTK_LABEL(resumen);
+    gtk_label_set_xalign(ide->resumen_clones, 0.0f);
+    gtk_widget_set_margin_start(resumen, 6);
+    gtk_widget_set_margin_top(resumen, 4);
+    gtk_widget_set_margin_bottom(resumen, 4);
+
+    GtkWidget *desplazar_clones = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(desplazar_clones), lista_cl);
+    GtkWidget *caja_clones = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(caja_clones), resumen, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(caja_clones), desplazar_clones, TRUE, TRUE, 0);
+
+    /* --- Pestañas de abajo: Errores y Clones --- */
+    GtkWidget *pestanas = gtk_notebook_new();
+    ide->pestanas = GTK_NOTEBOOK(pestanas);
+    gtk_notebook_append_page(ide->pestanas, desplazar_errores, gtk_label_new("Errores"));
+    gtk_notebook_append_page(ide->pestanas, caja_clones, gtk_label_new("Clones"));
+    gtk_paned_pack2(GTK_PANED(divisor), pestanas, FALSE, FALSE);
     gtk_paned_set_position(GTK_PANED(divisor), 500);
 
     /* --- Barra de estado --- */
