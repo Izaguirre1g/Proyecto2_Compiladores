@@ -101,6 +101,78 @@ posiciones del fuente; sin `-t` solo analiza tokens y `-v` los lista. La
 estructura del árbol y las acciones de Bison se explican en `docs/ast.md`. La integración y sus
 límites se explican en `docs/parser.md`; el diseño léxico está en `docs/lexer.md`.
 
+## IDE
+
+El IDE es una ventana de escritorio hecha con GTK 3. Revisa el código mientras
+se escribe, usando el mismo léxico, parser y semántico de `balc`.
+
+### Instalar GTK
+
+Solo hace falta la primera vez:
+
+```bash
+sudo apt update
+sudo apt install libgtk-3-dev pkg-config
+```
+
+En WSL la ventana se abre sola si se tiene WSLg (Windows 11 o Windows 10
+actualizado). Se puede comprobar con `echo $DISPLAY`: si muestra algo como `:0`,
+funciona.
+
+### Compilar y abrir
+
+```bash
+make ide
+./balc-ide examples/factorial.bal   # abre un archivo
+./balc-ide                          # abre un archivo nuevo, sin nombre
+```
+
+`make ide` genera el ejecutable `balc-ide`. No se sube al repositorio, porque se
+vuelve a generar al compilar.
+
+### Qué hace
+
+| Función | Cómo se usa |
+|---|---|
+| Errores en vivo | Medio segundo después de dejar de escribir, los errores se subrayan en rojo. Al pasar el mouse encima se ve la explicación. |
+| Lista de errores | Está abajo de la ventana. Al hacer clic en un error, el cursor salta a su línea. |
+| Sugerencias | Al escribir aparecen las palabras clave y variables que empiezan igual. Se eligen con ↑/↓ y se aceptan con Enter o Tab. Esc las cierra. |
+| Autocierre | Al escribir `(`, `[`, `{`, `"` o `$` se agrega su cierre. Enter entre `{}` baja la llave y agrega sangría. |
+| Delimitadores | Si sobra o falta un paréntesis, corchete o llave, se indica cuál y dónde se abrió. |
+
+| Atajo | Acción |
+|---|---|
+| Ctrl+N | Archivo nuevo |
+| Ctrl+O | Abrir archivo |
+| Ctrl+S | Guardar |
+| Ctrl+Espacio | Mostrar sugerencias |
+
+Si hay cambios sin guardar, el IDE pregunta antes de cerrar o de abrir otro archivo.
+
+Para revisar el código sin guardarlo, el IDE crea un archivo oculto
+`.ide_<nombre>.bal` en la misma carpeta y lo borra enseguida. Va en la misma
+carpeta para que los `bring` encuentren sus módulos.
+
+### Diagnósticos en JSON
+
+El IDE también puede usar los errores de `balc` en formato JSON:
+
+```bash
+./balc --diagnosticos tests/pipeline_error.bal
+```
+
+Termina con `0` si no hay errores, `1` si el fuente tiene errores y `2` si falló algo interno.
+
+### Pruebas
+
+```bash
+make test-diagnosticos
+make test-ide-nucleo
+make test-ide-analisis
+```
+
+Estas pruebas no necesitan GTK y también se ejecutan con `make test`.
+
 ## Lenguaje ampliado
 
 El ejecutable se llama `balc`. Las reglas actuales,
