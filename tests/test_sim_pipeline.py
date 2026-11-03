@@ -30,7 +30,7 @@ class PipelineTests(unittest.TestCase):
         flags = ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude']
         subprocess.run(cc + flags + ['tests/test_sim_alu.c', 'src/sim_alu.c',
                        '-o', str(cls.alu)], cwd=ROOT, check=True)
-        subprocess.run(cc + flags + ['tests/test_sim_pipeline.c', 'src/sim_pipeline.c',
+        subprocess.run(cc + flags + ['tests/test_sim_pipeline.c', 'src/sim_pipeline.c', 'src/sim_bru.c',
                        'src/sim_alu.c', 'src/sim_lsu.c', 'src/sim_decode.c', 'src/sim_cargador.c',
                        '-o', str(cls.pipeline)], cwd=ROOT, check=True)
         subprocess.run(['make', 'balc'], cwd=ROOT, check=True, capture_output=True)

@@ -130,16 +130,16 @@ static void pipeline_y_recursos(void)
     imagen.imem[0][0]=sumai(0,0,7); imagen.imem[0][1]=lsu(8,0,0,0);
     sim_pipeline_iniciar(&s,&imagen); sim_pipeline_ejecutar(&s,4);
     C(!s.ultimo_ciclo.conflicto_wb && s.ultimo_ciclo.lsu_wb_descarta_x0 && s.registros[0]==0);
-    /* Store preparado en EX coincide con BRU inválida para S4 en ID. La
+    /* Store preparado en EX coincide con CRIPTO todavía no soportada en ID. La
      * detención administrativa debe conservar todos los bytes, etapas y WB. */
-    imagen.imem[0][0]=0; imagen.imem[0][1]=lsu(0,0,0,0); imagen.imem[1][2]=0x96000000u;
+    imagen.imem[0][0]=0; imagen.imem[0][1]=lsu(0,0,0,0); imagen.imem[1][3]=0x04600000u;
     sim_pipeline_iniciar(&s,&imagen); sim_pipeline_ejecutar(&s,2);
     C(sim_avanzar_ciclo(&s)==SIM_PIPE_NO_SOPORTADA);
     C(s.ciclos==2 && s.memoria.bytes[0]==0x80 && s.id_ex.lsu.valido);
-    C(s.error.pc==16 && s.error.slot==2);
+    C(s.error.pc==16 && s.error.slot==3);
     /* Error posterior a preparar EX: un destino WB inyectado fuera de rango
      * tampoco puede publicar el store. Detecta compromisos prematuros. */
-    imagen.imem[1][2]=0;
+    imagen.imem[1][3]=0;
     sim_pipeline_iniciar(&s,&imagen); sim_pipeline_ejecutar(&s,2);
     s.ex_wb=(SimExWb){.valido=true,.operacion=SIM_OP_SUMA,.destino=32};
     C(sim_avanzar_ciclo(&s)==SIM_PIPE_ARGUMENTO && s.memoria.bytes[0]==0x80 && s.ciclos==2);

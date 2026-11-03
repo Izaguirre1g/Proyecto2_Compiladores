@@ -27,7 +27,7 @@ class LsuTests(unittest.TestCase):
         flags = ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude']
         # S4 puede probarse sin parser; el caso BALB utiliza después BALC real.
         cls.compilar_c = cc + flags + ['tests/test_sim_lsu.c', 'src/sim_lsu.c',
-            'src/sim_pipeline.c', 'src/sim_alu.c', 'src/sim_decode.c', 'src/sim_cargador.c',
+            'src/sim_pipeline.c', 'src/sim_bru.c', 'src/sim_alu.c', 'src/sim_decode.c', 'src/sim_cargador.c',
             '-o', str(cls.sonda)]
         subprocess.run(cls.compilar_c, cwd=ROOT, check=True)
         subprocess.run(['make', 'balc'], cwd=ROOT, check=True, capture_output=True)
