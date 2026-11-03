@@ -157,10 +157,10 @@ static void rechazos_y_final(void)
         {0, 1, SIM_PIPE_DECODIFICACION, SIM_DECODE_RESERVADA},
         {1, 0x80042807u, SIM_PIPE_DECODIFICACION, SIM_DECODE_SLOT},
         {3, 0x04001000u, SIM_PIPE_DECODIFICACION, SIM_DECODE_CAMPOS},
-        /* S5 admite BRU: estos rechazos conservan CRIPTO fuera de alcance. */
-        {3, 0x04600000u, SIM_PIPE_NO_SOPORTADA, SIM_DECODE_OK},
-        {3, 0x04800000u, SIM_PIPE_NO_SOPORTADA, SIM_DECODE_OK},
-        {3, 0x04004200u, SIM_PIPE_NO_SOPORTADA, SIM_DECODE_OK}
+        /* S6 admite CRIPTO: IDs reservados conservan estos rechazos. */
+        {3, 0x04c00000u, SIM_PIPE_DECODIFICACION, SIM_DECODE_RESERVADA},
+        {3, 0x04e00000u, SIM_PIPE_DECODIFICACION, SIM_DECODE_RESERVADA},
+        {3, 0x05004200u, SIM_PIPE_DECODIFICACION, SIM_DECODE_RESERVADA}
     };
     for (size_t n = 0; n < sizeof casos / sizeof *casos; ++n) {
         imagen = (SimImagen){.cantidad_bundles = 1};
@@ -180,13 +180,13 @@ static void rechazos_y_final(void)
     imagen = (SimImagen){.cantidad_bundles = 3};
     imagen.imem[0][0] = sumai(1, 0, 7);
     imagen.imem[2][0] = sumai(2, 0, 5);
-    /* S5 ya admite BRU; CRIPTO mantiene el escenario administrativo de rechazo
+    /* Un ID CRIPTO reservado mantiene el escenario administrativo de rechazo
      * en ID coincidente con un WB anterior pendiente, sin cambiar aserciones. */
-    imagen.imem[2][3] = 0x04600000u;
+    imagen.imem[2][3] = 0x04c00000u;
     sim_pipeline_iniciar(&s, &imagen);
     sim_pipeline_ejecutar(&s, 3);
     COMPROBAR(s.ex_wb.valido && s.ex_wb.resultado == 7);
-    COMPROBAR(sim_avanzar_ciclo(&s) == SIM_PIPE_NO_SOPORTADA);
+    COMPROBAR(sim_avanzar_ciclo(&s) == SIM_PIPE_DECODIFICACION);
     COMPROBAR(s.ciclos == 3 && s.registros[1] == 0 && s.ex_wb.valido);
     COMPROBAR(s.error.pc == 32 && s.error.ciclo == 4 && s.ultimo_ciclo.ciclo == 3);
     /* Código completo en IMEM: al llegar al final no se hace wraparound como

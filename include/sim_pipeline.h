@@ -1,4 +1,4 @@
-/* Pipeline IF–ID–EX–WB del simulador, con ejecución ALU/LSU/BRU/NOP y traza por ciclo.
+/* Pipeline IF–ID–EX–WB del simulador, con ejecución ALU/LSU/BRU/CRIPTO/NOP y traza por ciclo.
  * Usa las imágenes de S1 y la decodificación de S2 sin modificar sus contratos. */
 #ifndef SIM_PIPELINE_H
 #define SIM_PIPELINE_H
@@ -6,11 +6,12 @@
 #include "sim_decode.h"
 #include "sim_lsu.h"
 #include "sim_bru.h"
+#include "sim_crypto.h"
 
 typedef enum {
     SIM_PIPE_ACTIVO = 0, SIM_PIPE_TERMINADO, SIM_PIPE_LIMITE,
     SIM_PIPE_ARGUMENTO, SIM_PIPE_PC, SIM_PIPE_DECODIFICACION,
-    SIM_PIPE_NO_SOPORTADA, SIM_PIPE_ALU, SIM_PIPE_LSU, SIM_PIPE_BRU
+    SIM_PIPE_NO_SOPORTADA, SIM_PIPE_ALU, SIM_PIPE_LSU, SIM_PIPE_BRU, SIM_PIPE_CRYPTO
 } SimPipelineEstado;
 
 typedef struct {
@@ -71,6 +72,7 @@ typedef struct {
     uint32_t a, b;
     SimLsuId lsu;
     SimBruId bru;
+    SimCryptoId crypto;
 } SimIdEx;
 
 typedef struct {
@@ -83,6 +85,7 @@ typedef struct {
     uint32_t resultado;
     SimCargaPendiente lsu;
     SimEnlacePendiente bru;
+    SimCryptoWb crypto;
 } SimExWb;
 
 typedef struct { bool valido; uint32_t pc; } SimEtapa;
@@ -100,7 +103,7 @@ typedef struct {
     bool wb_escribe, wb_descarta_x0;
     /* Señales LSU antes del flanco y arbitraje WB. Los campos ALU anteriores
      * mantienen su significado; lsu_wb_escribe describe el puerto 1 incluso
-     * si hay conflicto. BRU gana a LSU y LSU a ALU para un destino no cero. */
+     * si hay conflicto. CRIPTO gana a BRU, BRU a LSU y LSU a ALU para destinos no cero. */
     SimLsuId id_lsu;
     SimAccesoLsu ex_lsu;
     SimCargaPendiente wb_lsu;
@@ -113,6 +116,14 @@ typedef struct {
     SimResultadoBru ex_bru;
     SimEnlacePendiente wb_bru;
     bool bru_wb_escribe, bru_wb_descarta_x0;
+    /* No se copia el almacenamiento privado de la bóveda a la traza. Se
+     * conservan capturas GPR, efectos de memoria, permisos y resultados ISA. */
+    SimCryptoId id_crypto;
+    SimEfectoCrypto ex_crypto;
+    SimCryptoWb wb_crypto;
+    uint32_t estado_pre, estado_post, redirect_pc;
+    bool excepcion, conflicto_memoria;
+    bool crypto_wb_escribe[2];
 } SimCiclo;
 
 typedef struct {
@@ -150,7 +161,7 @@ typedef struct {
      * limpia fin_busqueda y permite volver al código durante el drenado. */
     bool fin_busqueda;
     SimModoBusqueda modo_busqueda;
-    /* Solo cuenta IF/ID válidos que ya se admitieron y después se anularon.
+    /* Cuenta IF/ID descartados y, desde S6, el bundle culpable en EX.
      * La búsqueda IF suprimida por flush nunca se admite: aparece en la traza. */
     uint64_t bundles_anulados;
     uint64_t bundles_admitidos, bundles_completados;
@@ -162,6 +173,10 @@ typedef struct {
      * vuelve seguro pasar memoria automática sin inicializar: sigue siendo
      * obligatorio iniciar antes de avanzar/reiniciar, como en S3. */
     bool inicializado;
+    /* Estado interno por instancia; no hay instrucciones para leer la bóveda.
+     * ESTADO solo contiene AUTH/INIT. trap_* son sondas de top.sv, de 32 bits. */
+    SimBoveda boveda;
+    uint32_t estado_crypto, trap_pc, trap_count;
     /* Debe permanecer al final: el avance/reset copian o limpian solo el
      * prefijo anterior a memoria. Nuevos campos de control se agregan antes. */
     SimMemoria memoria;
@@ -175,8 +190,10 @@ SimPipelineEstado sim_pipeline_iniciar(SimPipeline *sim, const SimImagen *imagen
 
 /* Aplica el estado del reset RTL entre pasos y conserva la imagen prestada.
  * Descarta resultados pendientes y reinicia el conteo en cero; no contabiliza
- * un ciclo de ejecución. Conserva DMEM y reproduce el store que ya estaba en
+ * un ciclo de ejecución. AUTH=0, INIT=1 y bóveda borrada. Conserva DMEM
+ * y reproduce stores autorizados A/B que ya estaban en
  * EX al llegar el flanco de reset: memory.sv no inhibe we por reset.
+ * Una excepción ya capturada sí inhibe ambos puertos.
  * Requiere una estructura previamente inicializada. */
 SimPipelineEstado sim_pipeline_reiniciar(SimPipeline *sim);
 
@@ -199,7 +216,7 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim);
 
 /* Ejecuta hasta max_ciclos adicionales mediante la API de un ciclo. Si agota
  * el presupuesto con trabajo pendiente informa LIMITE, sin inventar un flanco.
- * Se puede reanudar después; no hay HALT, saltos ni límite global implícito. */
+ * Se puede reanudar después; no hay HALT ni límite global implícito. */
 SimPipelineEstado sim_pipeline_ejecutar(SimPipeline *sim, uint64_t max_ciclos);
 
 #endif

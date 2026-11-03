@@ -70,7 +70,7 @@ static void flush_bucles_y_politicas(void)
 {
     SimImagen imagen={.cantidad_bundles=4};
     imagen.imem[0][0]=sumai(5,7); imagen.imem[0][2]=salto(31,48);
-    imagen.imem[1][3]=0x04600000u; /* VCR no soportada en ID, pero anulada. */
+    imagen.imem[1][3]=0x04c00000u; /* ID criptográfico reservado en ID, pero anulado. */
     imagen.imem[2][0]=1; /* Reservada en IF; tampoco debe aceptarse. */
     imagen.imem[3][0]=sumai(6,9);
     SimPipeline s;
@@ -86,7 +86,7 @@ static void flush_bucles_y_politicas(void)
     /* El flujo no tomado no oculta errores del camino que realmente avanza. */
     imagen.imem[0][2]=0x82400030u; /* igualno x0,x0,+48: falso. */
     sim_pipeline_iniciar(&s,&imagen);
-    C(sim_pipeline_ejecutar(&s,20)==SIM_PIPE_NO_SOPORTADA && s.ciclos==2);
+    C(sim_pipeline_ejecutar(&s,20)==SIM_PIPE_DECODIFICACION && s.ciclos==2);
     /* Un salto al propio PC no termina por fin_busqueda. El mismo estado debe
      * avanzar de forma idéntica con presupuesto único o varias reanudaciones. */
     imagen=(SimImagen){.cantidad_bundles=1}; imagen.imem[0][2]=salto(31,0);

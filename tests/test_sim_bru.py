@@ -28,7 +28,7 @@ class BruTests(unittest.TestCase):
         cls.comandos=[]
         cc=shlex.split(os.environ.get('CC','cc'))
         cmd=cc+['-std=c11','-Wall','-Wextra','-Wpedantic','-Werror','-O2','-Iinclude',
-            'tests/test_sim_bru.c','src/sim_bru.c','src/sim_pipeline.c','src/sim_lsu.c',
+            'tests/test_sim_bru.c','src/sim_bru.c','src/sim_pipeline.c', 'src/sim_crypto.c','src/sim_lsu.c',
             'src/sim_alu.c','src/sim_decode.c','src/sim_cargador.c','-o',str(cls.sonda)]
         subprocess.run(cmd,cwd=ROOT,check=True)
         cls.comandos.append(dict(comando=cmd,codigo=0))
@@ -72,7 +72,7 @@ class BruTests(unittest.TestCase):
             slots=tuple(self.asm.encode_instruction(t,pc=16*n) for t in (*fila,'nop'))
             bundles.append(self.asm.Bundle(n,n+1,slots))
         # El ensamblador existente codifica y serializa. Los overrides raw son
-        # únicamente fixtures de palabras reservadas/no soportadas del camino
+        # únicamente fixtures de palabras reservadas o instrucciones del camino
         # descartado; no agregan una sintaxis ni decodificador alternativo.
         texto=self.asm.Program(tuple(bundles)).memory_text().splitlines()
         for (n,slot),palabra in (raw or {}).items():
@@ -237,9 +237,10 @@ class BruTests(unittest.TestCase):
                 self.assertEqual(bool(ex['flush']),tomado)
                 self.assertEqual(t[-1]['regs'][5],0 if tomado else 99)
 
-    def test_06_camino_incorrecto_invalido_o_no_soportado(self):
-        # Las mismas palabras en ID causarían rechazo sin redirect. Con salto
-        # tomado se anulan antes de aceptar S2, incluso con store válido al lado.
+    def test_06_camino_incorrecto_invalido_o_crypto(self):
+        # Las palabras inválidas causarían rechazo sin redirect; VCR ahora es
+        # válida en S6. Con salto tomado se descartan antes de aceptar S2,
+        # incluso con store válido al lado; VCR no llega a actualizar AUTH.
         for posicion,palabra,slot in [(1,1,0),(2,1,0),(1,0x04600000,3),(2,0x04600000,3),
                                        (1,0x80042807,1)]:
             with self.subTest(posicion=posicion,palabra=palabra,slot=slot):

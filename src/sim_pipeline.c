@@ -1,4 +1,4 @@
-/* Avance simultáneo del pipeline VLIW con el subconjunto ALU/LSU/BRU/NOP.
+/* Avance simultáneo del pipeline VLIW con el conjunto ALU/LSU/BRU/CRIPTO/NOP.
  * Las lecturas de ID preceden a la publicación de escrituras WB del flanco. */
 #include "sim_pipeline.h"
 #include "sim_alu.h"
@@ -31,6 +31,7 @@ SimPipelineEstado sim_pipeline_iniciar(SimPipeline *sim, const SimImagen *imagen
         sim->error.indice_bundle = SIZE_MAX;
         return sim->estado;
     }
+    sim->estado_crypto = SIM_CRYPTO_INIT;
     sim->pc = imagen->entrada;
     sim->estado = SIM_PIPE_ACTIVO;
     sim->inicializado = true;
@@ -45,14 +46,23 @@ SimPipelineEstado sim_pipeline_reiniciar(SimPipeline *sim)
     /* Reset del procesador no borra DMEM. Un store en EX sigue habilitando
      * memory.we al llegar reset, aunque ID/EX se limpie por NBA en ese flanco.
      * Se prepara primero para no modificar memoria ante un estado inválido. */
-    if (sim->id_ex.valido && sim->id_ex.lsu.valido) {
+    SimEfectoCrypto e = {0};
+    SimAccesoLsu t = {0};
+    if (sim->id_ex.valido &&
+        !sim_crypto_preparar(&sim->boveda, &sim->memoria, &sim->id_ex.crypto, &e))
+        return detener(sim, SIM_PIPE_CRYPTO, sim->id_ex.pc, 3, 0,
+                       SIM_DECODE_OK, "estado CRIPTO inválido durante reset");
+    if (sim->id_ex.valido && sim->id_ex.lsu.valido && !e.excepcion) {
         const SimLsuId *l = &sim->id_ex.lsu;
-        SimAccesoLsu t;
         if (!sim_lsu_preparar(&sim->memoria, l->operacion, l->base, l->dato, l->offset, &t))
             return detener(sim, SIM_PIPE_LSU, sim->id_ex.pc, 1, l->palabra,
                            SIM_DECODE_OK, "estado LSU inválido durante reset");
-        sim_lsu_aplicar(&sim->memoria, &t);
     }
+    /* memory.sv carece de reset: camcon autorizado puede escribir en el
+     * flanco que borra la bóveda. Una falta ya capturada sí inhibe A y B.
+     * Ambas lecturas preceden estas escrituras; B gana incluso sobre guardab. */
+    if (t.valido) sim_lsu_aplicar(&sim->memoria, &t);
+    if (e.memoria.valido) sim_lsu_aplicar(&sim->memoria, &e.memoria);
     const SimImagen *imagen = sim->imagen;
     /* La política de pruebas es configuración, no un registro del procesador:
      * reset limpia el control BRU y sus enlaces, pero conserva este modo. */
@@ -62,6 +72,7 @@ SimPipelineEstado sim_pipeline_reiniciar(SimPipeline *sim)
     memset(sim, 0, offsetof(SimPipeline, memoria));
     sim->imagen = imagen;
     sim->modo_busqueda = modo;
+    sim->estado_crypto = SIM_CRYPTO_INIT;
     sim->inicializado = true;
     sim->estado = SIM_PIPE_ACTIVO;
     return sim->estado;
@@ -117,7 +128,22 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
     /* EX usa los operandos de ID/EX anterior. El resultado solo entra en el
      * nuevo EX/WB: ni ID ni el banco lo observan en este mismo flanco. */
     ciclo.ex = (SimEtapa){sim->id_ex.valido, sim->id_ex.pc};
-    if (sim->id_ex.valido) {
+    ciclo.estado_pre = sim->estado_crypto;
+    if (sim->id_ex.valido &&
+        !sim_crypto_preparar(&sim->boveda, &sim->memoria, &sim->id_ex.crypto, &ciclo.ex_crypto))
+        return detener(sim, SIM_PIPE_CRYPTO, sim->id_ex.pc, 3,
+            sim->id_ex.crypto.instruccion.palabra, SIM_DECODE_OK, "estado CRIPTO inconsistente en EX");
+    ciclo.excepcion = ciclo.ex_crypto.excepcion;
+    if (ciclo.excepcion) {
+        /* Excepción arquitectónica en EX: se suprime todo su bundle, pero WB
+         * anterior sigue vigente. La marca provino de ID, no del estado nuevo.
+         * trap_count envuelve a 32 bits como el registro de top.sv. */
+        ciclo.flush = true;
+        siguiente.trap_pc = sim->id_ex.pc;
+        siguiente.trap_count = sim->trap_count + UINT32_C(1);
+        ++siguiente.bundles_anulados;
+    }
+    if (sim->id_ex.valido && !ciclo.excepcion) {
         const SimIdEx *ex = &sim->id_ex;
         uint32_t resultado = 0;
         if (ex->operacion != SIM_OP_NOP && !sim_alu_ejecutar(ex->operacion, ex->a, ex->b, &resultado))
@@ -125,6 +151,7 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
                            SIM_DECODE_OK, "operación ALU inconsistente en ID/EX");
         siguiente.ex_wb = (SimExWb){.valido = true, .pc = ex->pc,
             .operacion = ex->operacion, .destino = ex->destino, .resultado = resultado};
+        siguiente.ex_wb.crypto = ciclo.ex_crypto.wb;
         ciclo.ex_operacion = ex->operacion;
         ciclo.ex_a = ex->a; ciclo.ex_b = ex->b; ciclo.ex_resultado = resultado;
         if (ex->bru.valido) {
@@ -159,6 +186,8 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
             }
         }
     }
+
+    ciclo.redirect_pc = ciclo.excepcion ? SIM_TRAP_VECTOR : ciclo.ex_bru.destino;
 
     /* IF representa la búsqueda especulativa previa al flanco. Con redirect
      * no se accede a IMEM ni se valida ese PC: IF/ID e ID/EX quedarán vacíos.
@@ -196,7 +225,7 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
 
     /* ID consume exclusivamente el registro IF/ID anterior, nunca el bundle
      * que se acaba de buscar. Antes de capturar ALU se revisan los cuatro slots
-     * para impedir ejecutar parcialmente un bundle fuera del alcance de S5. */
+     * para impedir ejecutar parcialmente un bundle con una codificación inválida. */
     if (sim->if_id.valido && !ciclo.flush) {
         SimInstruccion instrucciones[SIM_CARGADOR_SLOTS];
         sim_decode_bundle(sim->if_id.palabras, instrucciones);
@@ -207,9 +236,10 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
                     i->palabra, i->estado, "codificación rechazada por S2");
             if (i->estado == SIM_DECODE_OK && !((s == 0 && i->familia == SIM_FAMILIA_ALU) ||
                                                 (s == 1 && i->familia == SIM_FAMILIA_LSU) ||
-                                                (s == 2 && i->familia == SIM_FAMILIA_BRU)))
+                                                (s == 2 && i->familia == SIM_FAMILIA_BRU) ||
+                                                (s == 3 && i->familia == SIM_FAMILIA_CRIPTO)))
                 return detener(sim, SIM_PIPE_NO_SOPORTADA, sim->if_id.pc, s,
-                    i->palabra, i->estado, "operación CRIPTO todavía no soportada en S5");
+                    i->palabra, i->estado, "familia inconsistente con el slot");
         }
         SimInstruccion *i = &instrucciones[0];
         uint32_t a = leer_registro(sim, i->rs1);
@@ -242,6 +272,16 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
                 .a = leer_registro(sim, br->rs1), .b = leer_registro(sim, br->rs2)};
             ciclo.id_bru = siguiente.id_ex.bru;
         }
+        SimInstruccion *cr = &instrucciones[3];
+        if (cr->estado == SIM_DECODE_OK) {
+            /* Se captura el par fuente antes de WB. La autorización consulta
+             * ESTADO anterior: no hay forwarding de vcr/setpwd en EX o WB. */
+            if (!sim_crypto_capturar(cr, leer_registro(sim, cr->rs1),
+                    leer_registro(sim, cr->rs2), sim->estado_crypto, &siguiente.id_ex.crypto))
+                return detener(sim, SIM_PIPE_CRYPTO, sim->if_id.pc, 3, cr->palabra,
+                               cr->estado, "captura CRIPTO inconsistente");
+            ciclo.id_crypto = siguiente.id_ex.crypto;
+        }
     }
 
     /* WB consume EX/WB anterior. Un NOP es bundle válido y se completa, pero
@@ -252,7 +292,8 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
         const SimExWb *wb = &sim->ex_wb;
         if ((wb->operacion != SIM_OP_NOP && wb->destino >= 32) ||
             (wb->lsu.valida && wb->lsu.destino >= 32) ||
-            (wb->bru.valida && wb->bru.destino >= 32))
+            (wb->bru.valida && wb->bru.destino >= 32) ||
+            (wb->crypto.par && (wb->crypto.rd >= 32 || wb->crypto.rd2 >= 32)))
             return detener(sim, SIM_PIPE_ARGUMENTO, wb->pc, 4, 0,
                            SIM_DECODE_ARGUMENTO, "destino WB fuera del banco");
         ciclo.wb_operacion = wb->operacion;
@@ -294,11 +335,35 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
                 .ciclo = ciclo.ciclo, .pc = wb->pc, .valor = wb->bru.valor,
                 .destino = wb->bru.destino};
         }
+        ciclo.wb_crypto = wb->crypto;
+        if (wb->crypto.auth_we)
+            siguiente.estado_crypto = (siguiente.estado_crypto & ~UINT32_C(1)) | wb->crypto.auth;
+        if (wb->crypto.init_clr) siguiente.estado_crypto &= ~UINT32_C(2);
+        /* Puertos 3 y 4 después de ALU/LSU/BRU. Se mantienen todas las
+         * solicitudes aunque colisionen; el último índice gana sin stalls. */
+        const uint8_t destinos[2] = {wb->crypto.rd, wb->crypto.rd2};
+        const uint32_t valores[2] = {wb->crypto.l, wb->crypto.r};
+        for (unsigned p = 0; p < 2; ++p) {
+            uint8_t rd = destinos[p];
+            ciclo.crypto_wb_escribe[p] = wb->crypto.par && rd != 0;
+            if (!ciclo.crypto_wb_escribe[p]) continue;
+            ciclo.conflicto_wb |= (ciclo.wb_escribe && wb->destino == rd) ||
+                (ciclo.lsu_wb_escribe && wb->lsu.destino == rd) ||
+                (ciclo.bru_wb_escribe && wb->bru.destino == rd) ||
+                (p == 1 && ciclo.crypto_wb_escribe[0] && destinos[0] == rd);
+            siguiente.registros[rd] = valores[p];
+            siguiente.ultima_escritura = (SimEscritura){.valida = true,
+                .ciclo = ciclo.ciclo, .pc = wb->pc, .valor = valores[p], .destino = rd};
+        }
     }
+    ciclo.estado_post = siguiente.estado_crypto;
+    ciclo.conflicto_memoria = ciclo.ex_lsu.escritura && ciclo.ex_crypto.memoria.escritura &&
+        ciclo.ex_lsu.palabra_fisica == ciclo.ex_crypto.memoria.palabra_fisica;
     siguiente.registros[0] = 0;
     /* Redirect EX gana al incremento de IF. Solo se vaciaron IF/ID e ID/EX;
-     * EX/WB conserva el bundle del salto y WB anterior ya pudo completarse. */
-    siguiente.pc = ciclo.flush ? ciclo.ex_bru.destino : sim->pc + SIM_CARGADOR_BYTES_BUNDLE;
+     * EX/WB conserva el salto y excluye el culpable de excepción; WB anterior
+     * ya pudo completarse. */
+    siguiente.pc = ciclo.flush ? ciclo.redirect_pc : sim->pc + SIM_CARGADOR_BYTES_BUNDLE;
     siguiente.ciclos = ciclo.ciclo;
     siguiente.ultimo_ciclo = ciclo;
     /* Solo el modo finito vacía por extensión. Si EX volvió al programa,
@@ -311,6 +376,12 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
     if (ciclo.ex_lsu.valido && !sim_lsu_aplicar(&sim->memoria, &ciclo.ex_lsu))
         return detener(sim, SIM_PIPE_LSU, sim->id_ex.pc, 1, sim->id_ex.lsu.palabra,
                        SIM_DECODE_OK, "transacción de memoria inválida");
+    /* Los efectos de B provienen de preparar y sus límites ya están validados.
+     * A se publica primero y B después, sin releer la palabra modificada por A.
+     * La bóveda se cambia en el prefijo siguiente solo al confirmar el flanco. */
+    if (ciclo.ex_crypto.memoria.valido)
+        sim_lsu_aplicar(&sim->memoria, &ciclo.ex_crypto.memoria);
+    sim_crypto_aplicar(&siguiente.boveda, &ciclo.ex_crypto);
     memcpy(sim, &siguiente, offsetof(SimPipeline, memoria));
     return sim->estado;
 }
