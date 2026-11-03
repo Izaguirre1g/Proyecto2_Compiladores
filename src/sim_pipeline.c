@@ -1,7 +1,8 @@
-/* Avance simultáneo del pipeline VLIW con el subconjunto ALU/NOP.
+/* Avance simultáneo del pipeline VLIW con el subconjunto ALU/LSU/NOP.
  * Las lecturas de ID preceden a la publicación de escrituras WB del flanco. */
 #include "sim_pipeline.h"
 #include "sim_alu.h"
+#include <string.h>
 
 /* Los errores detienen el intento antes del flanco. Se conserva todo estado
  * arquitectónico previo y se publica únicamente la causa de la detención. */
@@ -32,16 +33,43 @@ SimPipelineEstado sim_pipeline_iniciar(SimPipeline *sim, const SimImagen *imagen
     }
     sim->pc = imagen->entrada;
     sim->estado = SIM_PIPE_ACTIVO;
+    sim->inicializado = true;
+    memcpy(sim->memoria.bytes, imagen->dmem, sizeof sim->memoria.bytes);
     return sim->estado;
 }
 
 SimPipelineEstado sim_pipeline_reiniciar(SimPipeline *sim)
 {
     if (!sim) return SIM_PIPE_ARGUMENTO;
-    /* Se toma la referencia antes de limpiar el estado. No se libera imagen:
-     * sigue perteneciendo al usuario que la cargó mediante S1. */
+    if (!sim->inicializado || !sim->imagen) return SIM_PIPE_ARGUMENTO;
+    /* Reset del procesador no borra DMEM. Un store en EX sigue habilitando
+     * memory.we al llegar reset, aunque ID/EX se limpie por NBA en ese flanco.
+     * Se prepara primero para no modificar memoria ante un estado inválido. */
+    if (sim->id_ex.valido && sim->id_ex.lsu.valido) {
+        const SimLsuId *l = &sim->id_ex.lsu;
+        SimAccesoLsu t;
+        if (!sim_lsu_preparar(&sim->memoria, l->operacion, l->base, l->dato, l->offset, &t))
+            return detener(sim, SIM_PIPE_LSU, sim->id_ex.pc, 1, l->palabra,
+                           SIM_DECODE_OK, "estado LSU inválido durante reset");
+        sim_lsu_aplicar(&sim->memoria, &t);
+    }
     const SimImagen *imagen = sim->imagen;
-    return sim_pipeline_iniciar(sim, imagen);
+    /* memoria es el último miembro: limpiar el prefijo conserva sus 64 KiB.
+     * Este mismo límite se usa al publicar un paso, sin copiar DMEM por ciclo. */
+    memset(sim, 0, offsetof(SimPipeline, memoria));
+    sim->imagen = imagen;
+    sim->inicializado = true;
+    sim->estado = SIM_PIPE_ACTIVO;
+    return sim->estado;
+}
+
+SimPipelineEstado sim_pipeline_restaurar_memoria(SimPipeline *sim)
+{
+    if (!sim || !sim->inicializado || !sim->imagen) return SIM_PIPE_ARGUMENTO;
+    /* Es una recarga explícita, no un flanco ni un reset del banco. La imagen
+     * prestada es la referencia original y permanece sin modificaciones. */
+    memcpy(sim->memoria.bytes, sim->imagen->dmem, sizeof sim->memoria.bytes);
+    return sim->estado;
 }
 
 /* Una lectura de x0 siempre es cero; el índice 32 de S2 significa ausencia
@@ -53,13 +81,15 @@ static uint32_t leer_registro(const SimPipeline *sim, uint8_t indice)
 
 SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
 {
-    if (!sim) return SIM_PIPE_ARGUMENTO;
+    if (!sim || !sim->inicializado || !sim->imagen) return SIM_PIPE_ARGUMENTO;
     if (sim->estado != SIM_PIPE_ACTIVO && sim->estado != SIM_PIPE_LIMITE) return sim->estado;
 
-    /* siguiente es una copia pequeña del estado, no de las memorias. Todos
-     * los cálculos leen sim; ninguna escritura de siguiente es visible a ID
-     * hasta la asignación final. Esto reproduce las asignaciones <= del RTL. */
-    SimPipeline siguiente = *sim;
+    /* Solo se copia el prefijo de control: memoria es el último miembro y
+     * nunca se lee desde siguiente. Los 64 KiB permanecen en sim; un store se
+     * prepara como transacción y solo se aplica al aceptar todo el flanco.
+     * ID sigue leyendo el banco anterior, como las asignaciones <= del RTL. */
+    SimPipeline siguiente;
+    memcpy(&siguiente, sim, offsetof(SimPipeline, memoria));
     SimCiclo ciclo = {.ciclo = sim->ciclos + 1, .id_rs1 = SIM_REG_AUSENTE,
         .id_rs2 = SIM_REG_AUSENTE, .wb_destino = SIM_REG_AUSENTE};
     siguiente.if_id = (SimIfId){0};
@@ -87,7 +117,7 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
 
     /* ID consume exclusivamente el registro IF/ID anterior, nunca el bundle
      * que se acaba de buscar. Antes de capturar ALU se revisan los cuatro slots
-     * para impedir ejecutar parcialmente un bundle fuera del alcance de S3. */
+     * para impedir ejecutar parcialmente un bundle fuera del alcance de S4. */
     ciclo.id = (SimEtapa){sim->if_id.valido, sim->if_id.pc};
     if (sim->if_id.valido) {
         SimInstruccion instrucciones[SIM_CARGADOR_SLOTS];
@@ -97,9 +127,10 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
             if (i->estado != SIM_DECODE_OK && i->estado != SIM_DECODE_NOP)
                 return detener(sim, SIM_PIPE_DECODIFICACION, sim->if_id.pc, s,
                     i->palabra, i->estado, "codificación rechazada por S2");
-            if (i->estado == SIM_DECODE_OK && (s != 0 || i->familia != SIM_FAMILIA_ALU))
+            if (i->estado == SIM_DECODE_OK && !((s == 0 && i->familia == SIM_FAMILIA_ALU) ||
+                                                (s == 1 && i->familia == SIM_FAMILIA_LSU)))
                 return detener(sim, SIM_PIPE_NO_SOPORTADA, sim->if_id.pc, s,
-                    i->palabra, i->estado, "operación LSU, BRU o CRIPTO todavía no soportada en S3");
+                    i->palabra, i->estado, "operación BRU o CRIPTO todavía no soportada en S4");
         }
         SimInstruccion *i = &instrucciones[0];
         uint32_t a = leer_registro(sim, i->rs1);
@@ -111,6 +142,17 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
         ciclo.id_operacion = i->operacion;
         ciclo.id_rs1 = i->rs1; ciclo.id_rs2 = i->rs2;
         ciclo.id_a = a; ciclo.id_b = b;
+        SimInstruccion *l = &instrucciones[1];
+        if (l->estado == SIM_DECODE_OK) {
+            /* S2 conserva rs2 ausente para cargas. El decoder físico lee su
+             * campo rd también por el segundo puerto; guardamos ese valor
+             * inutilizado para comparar mem_wdata sin alterar la carga. */
+            siguiente.id_ex.lsu = (SimLsuId){.valido = true, .operacion = l->operacion,
+                .palabra = l->palabra, .destino = l->rd, .offset = l->inmediato,
+                .base = leer_registro(sim, l->rs1),
+                .dato = leer_registro(sim, l->rs2 == SIM_REG_AUSENTE ? l->rd : l->rs2)};
+            ciclo.id_lsu = siguiente.id_ex.lsu;
+        }
     }
 
     /* EX usa los operandos de ID/EX anterior. El resultado solo entra en el
@@ -126,6 +168,22 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
             .operacion = ex->operacion, .destino = ex->destino, .resultado = resultado};
         ciclo.ex_operacion = ex->operacion;
         ciclo.ex_a = ex->a; ciclo.ex_b = ex->b; ciclo.ex_resultado = resultado;
+        if (ex->lsu.valido) {
+            const SimLsuId *l = &ex->lsu;
+            /* La lectura es combinacional y ve la memoria anterior al flanco.
+             * El store no toca bytes aquí: queda en ciclo.ex_lsu hasta commit. */
+            if (!sim_lsu_preparar(&sim->memoria, l->operacion, l->base, l->dato,
+                                 l->offset, &ciclo.ex_lsu))
+                return detener(sim, SIM_PIPE_LSU, ex->pc, 1, l->palabra,
+                               SIM_DECODE_OK, "operación LSU inconsistente en ID/EX");
+            if (ciclo.ex_lsu.carga) {
+                if (l->destino >= 32)
+                    return detener(sim, SIM_PIPE_ARGUMENTO, ex->pc, 1, l->palabra,
+                                   SIM_DECODE_OK, "destino LSU fuera del banco");
+                siguiente.ex_wb.lsu = (SimCargaPendiente){.valida = true,
+                    .destino = l->destino, .valor = ciclo.ex_lsu.resultado};
+            }
+        }
     }
 
     /* WB consume EX/WB anterior. Un NOP es bundle válido y se completa, pero
@@ -134,6 +192,10 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
     ciclo.wb = (SimEtapa){sim->ex_wb.valido, sim->ex_wb.pc};
     if (sim->ex_wb.valido) {
         const SimExWb *wb = &sim->ex_wb;
+        if ((wb->operacion != SIM_OP_NOP && wb->destino >= 32) ||
+            (wb->lsu.valida && wb->lsu.destino >= 32))
+            return detener(sim, SIM_PIPE_ARGUMENTO, wb->pc, 4, 0,
+                           SIM_DECODE_ARGUMENTO, "destino WB fuera del banco");
         ciclo.wb_operacion = wb->operacion;
         ciclo.wb_destino = wb->destino;
         ciclo.wb_valor = wb->resultado;
@@ -145,6 +207,20 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
             siguiente.ultima_escritura = (SimEscritura){.valida = true,
                 .ciclo = ciclo.ciclo, .pc = wb->pc, .valor = wb->resultado, .destino = wb->destino};
         }
+        ciclo.wb_lsu = wb->lsu;
+        ciclo.lsu_wb_escribe = wb->lsu.valida && wb->lsu.destino != 0;
+        ciclo.lsu_wb_descarta_x0 = wb->lsu.valida && wb->lsu.destino == 0;
+        ciclo.conflicto_wb = ciclo.wb_escribe && ciclo.lsu_wb_escribe &&
+                            wb->destino == wb->lsu.destino;
+        if (ciclo.lsu_wb_escribe) {
+            /* Puerto 1 después del 0: LSU gana un conflicto, como regfile.sv.
+             * Ambos puertos siguen observables; ultima_escritura conserva la
+             * última del orden físico, sin cancelar ni reordenar operaciones. */
+            siguiente.registros[wb->lsu.destino] = wb->lsu.valor;
+            siguiente.ultima_escritura = (SimEscritura){.valida = true,
+                .ciclo = ciclo.ciclo, .pc = wb->pc, .valor = wb->lsu.valor,
+                .destino = wb->lsu.destino};
+        }
     }
     siguiente.registros[0] = 0;
     siguiente.pc = sim->pc + SIM_CARGADOR_BYTES_BUNDLE;
@@ -152,13 +228,19 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
     siguiente.ultimo_ciclo = ciclo;
     siguiente.estado = siguiente.fin_busqueda && !siguiente.if_id.valido &&
         !siguiente.id_ex.valido && !siguiente.ex_wb.valido ? SIM_PIPE_TERMINADO : SIM_PIPE_ACTIVO;
-    *sim = siguiente;
+    /* Todas las validaciones ya pasaron. Publicar memoria ahora reproduce
+     * sus NBA sin permitir efectos de un ciclo rechazado. La transacción fue
+     * construida por la LSU; aun así aplicar valida antes del primer byte. */
+    if (ciclo.ex_lsu.valido && !sim_lsu_aplicar(&sim->memoria, &ciclo.ex_lsu))
+        return detener(sim, SIM_PIPE_LSU, sim->id_ex.pc, 1, sim->id_ex.lsu.palabra,
+                       SIM_DECODE_OK, "transacción de memoria inválida");
+    memcpy(sim, &siguiente, offsetof(SimPipeline, memoria));
     return sim->estado;
 }
 
 SimPipelineEstado sim_pipeline_ejecutar(SimPipeline *sim, uint64_t max_ciclos)
 {
-    if (!sim) return SIM_PIPE_ARGUMENTO;
+    if (!sim || !sim->inicializado || !sim->imagen) return SIM_PIPE_ARGUMENTO;
     for (uint64_t n = 0; n < max_ciclos; ++n) {
         SimPipelineEstado estado = sim_avanzar_ciclo(sim);
         if (estado != SIM_PIPE_ACTIVO) return estado;

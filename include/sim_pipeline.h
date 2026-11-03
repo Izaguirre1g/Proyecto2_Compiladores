@@ -1,14 +1,15 @@
-/* Pipeline IF–ID–EX–WB del simulador, con ejecución ALU/NOP y traza por ciclo.
+/* Pipeline IF–ID–EX–WB del simulador, con ejecución ALU/LSU/NOP y traza por ciclo.
  * Usa las imágenes de S1 y la decodificación de S2 sin modificar sus contratos. */
 #ifndef SIM_PIPELINE_H
 #define SIM_PIPELINE_H
 
 #include "sim_decode.h"
+#include "sim_lsu.h"
 
 typedef enum {
     SIM_PIPE_ACTIVO = 0, SIM_PIPE_TERMINADO, SIM_PIPE_LIMITE,
     SIM_PIPE_ARGUMENTO, SIM_PIPE_PC, SIM_PIPE_DECODIFICACION,
-    SIM_PIPE_NO_SOPORTADA, SIM_PIPE_ALU
+    SIM_PIPE_NO_SOPORTADA, SIM_PIPE_ALU, SIM_PIPE_LSU
 } SimPipelineEstado;
 
 typedef struct {
@@ -18,6 +19,25 @@ typedef struct {
 } SimIfId;
 
 typedef struct {
+    /* Unidad LSU del mismo bundle que la ALU: no es una etapa adicional.
+     * base/dato/offset se capturan en ID; valido distingue NOP de un store
+     * cuyo opcode físico es cero. destino solo tiene significado para load. */
+    bool valido;
+    SimOperacion operacion;
+    uint32_t palabra, base, dato;
+    int32_t offset;
+    uint8_t destino;
+} SimLsuId;
+
+typedef struct {
+    /* Solo los loads conservan un resultado pendiente hasta WB. Los stores
+     * ya publicaron memoria en EX y no generan escrituras al banco. */
+    bool valida;
+    uint8_t destino;
+    uint32_t valor;
+} SimCargaPendiente;
+
+typedef struct {
     /* valido representa el bundle, incluso si operacion es NOP. Los valores
      * a/b se capturaron en ID; EX nunca vuelve a leer el banco de registros. */
     bool valido;
@@ -25,6 +45,7 @@ typedef struct {
     SimOperacion operacion;
     uint8_t destino;
     uint32_t a, b;
+    SimLsuId lsu;
 } SimIdEx;
 
 typedef struct {
@@ -35,6 +56,7 @@ typedef struct {
     SimOperacion operacion;
     uint8_t destino;
     uint32_t resultado;
+    SimCargaPendiente lsu;
 } SimExWb;
 
 typedef struct { bool valido; uint32_t pc; } SimEtapa;
@@ -50,6 +72,13 @@ typedef struct {
      * rs2=32 distingue el inmediato de una lectura real de x0. */
     uint32_t id_a, id_b, ex_a, ex_b, ex_resultado, wb_valor;
     bool wb_escribe, wb_descarta_x0;
+    /* Señales LSU antes del flanco y arbitraje WB. Los campos ALU anteriores
+     * mantienen su significado; lsu_wb_escribe describe el puerto 1 incluso
+     * si hay conflicto. El puerto LSU gana al ALU para un destino no cero. */
+    SimLsuId id_lsu;
+    SimAccesoLsu ex_lsu;
+    SimCargaPendiente wb_lsu;
+    bool lsu_wb_escribe, lsu_wb_descarta_x0, conflicto_wb;
 } SimCiclo;
 
 typedef struct {
@@ -74,7 +103,8 @@ typedef struct {
 
 typedef struct {
     /* Referencia prestada e inmutable: el llamador debe mantener la imagen
-     * viva durante toda la simulación. S3 no copia ni modifica IMEM/DMEM. */
+     * viva durante toda la simulación. S4 no modifica IMEM ni la DMEM de la
+     * imagen; tiene su propia copia de datos. */
     const SimImagen *imagen;
     uint32_t pc;
     uint64_t ciclos;
@@ -90,17 +120,32 @@ typedef struct {
     SimCiclo ultimo_ciclo;
     SimEscritura ultima_escritura;
     SimErrorPipeline error;
+    /* Permite rechazar una estructura inicializada en cero sin imagen. No
+     * vuelve seguro pasar memoria automática sin inicializar: sigue siendo
+     * obligatorio iniciar antes de avanzar/reiniciar, como en S3. */
+    bool inicializado;
+    /* Debe permanecer al final: el avance/reset copian o limpian solo el
+     * prefijo anterior a memoria. Nuevos campos de control se agregan antes. */
+    SimMemoria memoria;
 } SimPipeline;
 
 /* Inicializa o reemplaza el estado. Exige imagen no vacía dentro de IMEM y
  * entrada cero, como S1/RTL. Registros, etapas y contadores quedan en reset;
- * no se inicializan SP/GP. En error deja estado ARGUMENTO con diagnóstico. */
+ * no se inicializan SP/GP. Copia DMEM desde imagen, incluso al reemplazar una
+ * instancia anterior. En error deja estado ARGUMENTO con diagnóstico. */
 SimPipelineEstado sim_pipeline_iniciar(SimPipeline *sim, const SimImagen *imagen);
 
 /* Aplica el estado del reset RTL entre pasos y conserva la imagen prestada.
  * Descarta resultados pendientes y reinicia el conteo en cero; no contabiliza
- * un ciclo de ejecución. Requiere una estructura previamente inicializada. */
+ * un ciclo de ejecución. Conserva DMEM y reproduce el store que ya estaba en
+ * EX al llegar el flanco de reset: memory.sv no inhibe we por reset.
+ * Requiere una estructura previamente inicializada. */
 SimPipelineEstado sim_pipeline_reiniciar(SimPipeline *sim);
+
+/* Recarga exclusivamente DMEM desde la imagen, sin reloj ni cambios al
+ * procesador. Para repetir una prueba desde su estado original: reiniciar
+ * primero (puede publicar el store de EX) y luego restaurar esta memoria. */
+SimPipelineEstado sim_pipeline_restaurar_memoria(SimPipeline *sim);
 
 /* Realiza un flanco: calcula con el estado anterior y publica el siguiente
  * conjuntamente. Un rechazo congela PC, etapas, registros y contadores antes

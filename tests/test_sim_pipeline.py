@@ -31,7 +31,7 @@ class PipelineTests(unittest.TestCase):
         subprocess.run(cc + flags + ['tests/test_sim_alu.c', 'src/sim_alu.c',
                        '-o', str(cls.alu)], cwd=ROOT, check=True)
         subprocess.run(cc + flags + ['tests/test_sim_pipeline.c', 'src/sim_pipeline.c',
-                       'src/sim_alu.c', 'src/sim_decode.c', 'src/sim_cargador.c',
+                       'src/sim_alu.c', 'src/sim_lsu.c', 'src/sim_decode.c', 'src/sim_cargador.c',
                        '-o', str(cls.pipeline)], cwd=ROOT, check=True)
         subprocess.run(['make', 'balc'], cwd=ROOT, check=True, capture_output=True)
         cls.arquitectura = Path(os.environ.get('ARQUITECTURA_ROOT',
