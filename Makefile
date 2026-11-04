@@ -23,7 +23,7 @@ SRC := src/main.c src/cli.c src/lexer.c $(LEXER_GEN) src/token.c src/generacion_
        src/generacion_adaptador.c src/generacion_funciones.c src/generacion_control.c \
        src/funciones_marco.c src/funciones_llamada.c src/referencias_integracion.c \
        src/resolucion_referencias.c src/resolucion_saltos.c src/enlace_funciones.c \
-       src/codificacion_binaria.c src/formato_binario.c src/diagnosticos.c src/clones.c
+       src/codificacion_binaria.c src/formato_binario.c src/diagnosticos.c src/clones.c src/ir.c
 
 # Estos nombres son comandos de Make, no archivos.
 .PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones ide clean
@@ -45,7 +45,7 @@ Analisis_Sintactico/parser.c Analisis_Sintactico/parser.h &: Analisis_Sintactico
 balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h Analisis_Sintactico/parser.h \
       include/enlace_funciones.h include/resolucion_saltos.h include/resolucion_referencias.h include/codificacion_binaria.h \
       include/referencias_integracion.h include/generacion_adaptador.h include/generacion_funciones.h \
-      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h
+      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SRC) -o $@
 
 # Compila las pruebas del lexer, sin necesitar el parser.
@@ -53,7 +53,7 @@ tests/test_lexer: tests/test_lexer.c src/lexer.c $(LEXER_GEN) src/token.c includ
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c src/lexer.c $(LEXER_GEN) src/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -667,3 +667,10 @@ ide: balc-ide
 
 balc-ide: src/ide_gtk.c src/clones.c $(IDE_ANALISIS_SRC) include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h Analisis_Sintactico/parser.h
 	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) src/ide_gtk.c src/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
+
+# Proyecto II: IR independiente del parser generado, prueba con AST construido en C.
+.PHONY: test-ir
+tests/test_ir: tests/test_ir.c src/ir.c Analisis_Sintactico/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir.c src/ir.c Analisis_Sintactico/ast.c -o $@
+test-ir: tests/test_ir
+	./tests/test_ir

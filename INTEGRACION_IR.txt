@@ -1,0 +1,23 @@
+Proyecto II CE1108 - Primera entrega IR (Dylan)
+
+Cambios sobre el repositorio del archivo de texto entregado:
+  NUEVO   include/ir.h
+  NUEVO   src/ir.c
+  NUEVO   tests/test_ir.c
+  NUEVO   docs/ir.md
+  EDITADO src/cli.c
+  EDITADO Makefile
+
+Para aplicar: descomprimir el ZIP en la raiz del repositorio y sustituir los
+archivos cuando lo solicite. `semantic.c` NO se modifica.
+
+Comprobado en esta sesion:
+  `make test-ir` -> OK (compila con gcc -std=c11 -Wall -Wextra -Wpedantic -Werror)
+
+No comprobado:
+  `make` / `make test` / ejecucion real `./balc --ir ...`: no estan instalados
+  Flex, Bison, ni el header `uthash.h` en este entorno.
+
+Alcance de esta entrega: IR, CFG, flag de visualizacion --ir para casos
+escalares (detalles y limitaciones en docs/ir.md). No conecta la IR al
+backend de binarios previo; no incluye spilling ni optimizaciones todavia.
