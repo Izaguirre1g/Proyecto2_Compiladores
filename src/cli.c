@@ -10,6 +10,7 @@
 #include "codificacion_binaria.h"
 #include "diagnosticos.h"
 #include "clones.h"
+#include "ir.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -175,6 +176,7 @@ typedef struct {
     int simbolos;           /* -m */
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
+    int ir;                 /* --ir: IR de tres direcciones */
 } Compilacion;
 
 typedef struct {
@@ -196,6 +198,7 @@ static void usage(FILE *out) {
           "-x            toma un archivo de ensamblador y genera el binario\n"
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
+          "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
@@ -210,6 +213,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         const char *arg = argv[i];
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
+        if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -235,6 +239,11 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
+    if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
+                  c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
+        fputs("--ir se ejecuta de forma independiente (sin otras banderas)\n", stderr);
+        return -1;
+    }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
                         c->desde_ensamblador || c->paquetes || c->salida)) {
         fputs("--ast-json solo admite -t; no se combina con -v, -m, -s, -x, -p ni -o\n", stderr);
@@ -701,12 +710,28 @@ static int buscar_clones(int argc, char **argv)
     return estado;
 }
 
+/* Solo para visualizar IR validada: no genera ensamblador ni binario. */
+static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag)
+{
+    (void)ctx;
+    (void)tabla;
+    IrPrograma ir = {0};
+    int estado = ir_desde_ast(arbol, &ir, diag);
+    if (estado == 0) {
+        puts("[IR de tres direcciones]");
+        estado = ir_imprimir(&ir, stdout);
+    }
+    ir_liberar(&ir);
+    return estado;
+}
+
 int cli_run(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "--clones")) return buscar_clones(argc, argv);
     Compilacion op = {0};
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
+    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, NULL);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }
