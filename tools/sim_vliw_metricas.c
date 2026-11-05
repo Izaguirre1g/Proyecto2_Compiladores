@@ -6,17 +6,24 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    /* Se rechazan signos, espacios y desbordamientos. Todos los modos exigen
-     * presupuesto explícito, de modo que FISICA nunca se ejecuta sin límite. */
+    /* Los cinco argumentos fijan formato MEM/BALB, ruta, búsqueda, presupuesto
+     * y salida TEXTO/JSON. Exigirlos también acota FISICA, que no termina por
+     * alcanzar el final del archivo. Una opción desconocida es error de uso. */
     if (argc != 6 || (strcmp(argv[1], "mem") && strcmp(argv[1], "balb")) ||
         (strcmp(argv[3], "finita") && strcmp(argv[3], "fisica")) ||
         (strcmp(argv[5], "texto") && strcmp(argv[5], "json"))) goto uso;
+    /* strtoumax admite signos y espacios iniciales; este contrato solo acepta
+     * dígitos y una cadena no vacía. La conversión posterior comprueba errno
+     * y el rango de uint64_t para no truncar un presupuesto desbordado. */
     if (!*argv[4]) goto uso;
     for (const char *p = argv[4]; *p; ++p) if (*p < '0' || *p > '9') goto uso;
     errno = 0;
     char *fin;
     uintmax_t n = strtoumax(argv[4], &fin, 10);
     if (errno || *fin || n > UINT64_MAX) goto uso;
+    /* La API pública posee carga, CPU y M1. La herramienta pide un presupuesto
+     * y consulta su resultado; no ejecuta ni recolecta eventos por su cuenta.
+     * Los diagnósticos van a stderr para mantener stdout como reporte legible. */
     SimEjecucion *s = NULL;
     SimEjecucionCodigo c = sim_ejecucion_crear(argv[2],
         !strcmp(argv[1], "mem") ? SIM_EJECUCION_MEM : SIM_EJECUCION_BALB,
@@ -31,6 +38,8 @@ int main(int argc, char **argv)
             (int)c, (int)estado.pipeline, (int)estado.metricas, (int)estado.pendiente);
         goto terminar;
     }
+    /* M1 publica una cadena propia solo al completar el reporte. La salida
+     * comienza en NULL y el error no entrega un texto parcial al usuario. */
     char *reporte = NULL;
     SimMetricasEstado e = sim_ejecucion_exportar(s,
         !strcmp(argv[5], "json") ? SIM_METRICAS_JSON : SIM_METRICAS_TEXTO, &reporte);
@@ -38,14 +47,20 @@ int main(int argc, char **argv)
         fprintf(stderr, "ejecucion: error al exportar métricas %d\n", (int)e);
         goto terminar;
     }
+    /* fputs consume la cadena, por lo que ya puede liberarse. Su retorno y
+     * fflush cubren tanto el fallo inmediato como el del búfer de salida;
+     * un destino que falla no puede informarse como reporte exitoso. */
     int escrito = fputs(reporte, stdout);
     sim_metricas_liberar_reporte(&reporte);
     if (escrito < 0 || fflush(stdout) != 0) {
         fputs("ejecucion: error al escribir reporte\n", stderr);
         goto terminar;
     }
-    /* 0: TERMINADO; 2: LIMITE con reporte válido; 1: error; 64: uso inválido. */
+    /* Un reporte escrito distingue 0 (TERMINADO) de 2 (presupuesto agotado).
+     * Las rutas de error conservan salida=1; uso devuelve 64 sin crear sesión. */
     salida = estado.pipeline == SIM_PIPE_TERMINADO ? 0 : 2;
+/* Cualquier salida posterior a crear la sesión pasa por su destrucción.
+ * La reanudación entre presupuestos corresponde al cliente de la biblioteca. */
 terminar:
     sim_ejecucion_liberar(&s);
     return salida;

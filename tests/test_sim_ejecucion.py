@@ -18,10 +18,16 @@ spec.loader.exec_module(m1)
 NOP = m1.NOP
 
 
+# Se heredan fixtures y pruebas M1 para conservar CB, S7/S8-A y las sondas
+# S6/RTL como referencias. Las trazas RTL exponen PC, etapas, flush y efectos;
+# las instrucciones útiles se derivan de sus PC de retiro mediante S2, no de
+# un contador RTL nuevo. El candidato que ejecuta esos programas será M2.
 class EjecucionTests(m1.MetricasTests):
     @classmethod
     def setUpClass(cls):
-        # Conserva compiladores y sondas originales; solo el candidato usa M2.
+        # La preparación M1 construye los oráculos originales. Se reemplazan
+        # solo los ejecutables candidatos y se añade la variante de reservas
+        # interceptadas; así no se fabrica otra referencia para esta capa.
         super().setUpClass()
         sim = [f'src/sim_{s}.c' for s in ('ejecucion', 'metricas', 'pipeline', 'alu', 'lsu',
                                        'bru', 'crypto', 'decode', 'cargador')]
@@ -44,8 +50,11 @@ class EjecucionTests(m1.MetricasTests):
             Path(os.environ['M2_EVIDENCIA']).write_text(json.dumps(evidencia, indent=2)+'\n')
 
     def balb(self, mem, datos=b''):
-        # Es un contenedor de fixture, no otro cargador: S1 interpreta y valida
-        # todas las secciones. Las palabras las produce siempre CB original.
+        # CB ya produjo el MEM. Se invierte su texto hexadecimal al orden de
+        # bytes BALB y se agrega una sección de datos para inicializar DMEM.
+        # Recortar ceros finales no cambia la imagen: S1 rellena con cero lo
+        # no cargado. Esto prepara un archivo de prueba; S1 sigue validando
+        # encabezado, secciones y límites como único cargador de producción.
         codigo = b''.join(bytes.fromhex(l)[::-1] for l in mem.read_text().splitlines())
         datos = bytes(datos).rstrip(b'\0')
         self.assertLessEqual(len(datos), 16384)
@@ -55,21 +64,32 @@ class EjecucionTests(m1.MetricasTests):
         return archivo
 
     def correr(self, nombre, asm=None, mem=None, datos=None, presupuesto=200, fisica=False, balb=False):
+        # Se admite un MEM preparado por el caso o se obtiene con CB original.
+        # BALB permite datos iniciales distintos de cero; MEM basta sin ellos,
+        # salvo cuando el caso pide comprobar expresamente el contenedor BALB.
         mem = self.codificar(asm) if mem is None else mem
         datos = bytes(65536) if datos is None else bytes(datos)
         archivo = self.balb(mem,datos) if balb or any(datos) else mem
         tipo = 'balb' if archivo.suffix == '.balb' else 'mem'
         final = self.dir/'final-m2.bin'
         args = [tipo, archivo, 'fisica' if fisica else 'finita', presupuesto, 1]
+        # run compara M2 con S6 directo después de cada flanco: PC, reloj,
+        # estado, bundles, GPR, DMEM completa y señales públicas de crypto/trap.
+        # También coteja su reporte con M1 aplicado a la referencia.
         salida = self.ejecutar([self.bin,'run',*args,'json',final])
         r = json.loads(salida); memoria=final.read_bytes()
         self.assertEqual(len(memoria),65536)
         self.assertEqual(r['version'],1)
+        # Esta huella comprueba que el reporte describe la memoria guardada.
+        # La equivalencia de los 65536 bytes ya se verificó con memcmp en C;
+        # no se sustituye esa comparación por un hash.
         self.assertEqual(r['arquitectura']['dmem_fnv1a64'],m1.fnv(memoria))
         self.assertEqual(r['admitidos'],r['completados']+r['anulados']+r['pendientes'])
         self.assertEqual(r['instrucciones_utiles'],sum(r['instrucciones_por_slot'].values()))
         for secreto in ('password','keys','boveda'):
             self.assertNotIn(secreto,salida)
+        # Repetir desde una sesión nueva exige JSON determinista. La pasada
+        # TEXTO ejercita el otro exportador M1 con el mismo programa y estado.
         self.assertEqual(self.ejecutar([self.bin,'run',*args,'json',final]),salida)
         texto=self.ejecutar([self.bin,'run',*args,'texto',final])
         self.assertIn('Métricas dinámicas',texto)
@@ -88,8 +108,13 @@ class EjecucionTests(m1.MetricasTests):
         nop=self.dir/'nop.mem';nop.write_text('0'*32+'\n')
         mem=self.codificar('nop | guardap x0,x0,4 | nop | nop\n')
         datos=bytearray(8);datos[4]=9;store=self.balb(mem,datos)
+        # La próxima codificación reutiliza nombres temporales; conservar el
+        # BALB evita reemplazar el fixture del store con el de traps.
         permanente=self.dir/'store.balb';permanente.write_bytes(store.read_bytes())
         mem=self.codificar('nop | nop | nop | fsl x4,x2,0,0\n')
+        # FSL sin autorización provoca un trap que redirige al vector 0x3ff0,
+        # donde se coloca la misma operación. Así se fuerza el crecimiento
+        # real del historial, no un estado interno manipulado de M1.
         palabra=mem.read_text().strip();trap=self.dir/'traps.mem'
         trap.write_text('\n'.join([palabra]+['0'*32]*1022+[palabra])+'\n')
         args=['unit',nop,permanente,trap]
@@ -100,8 +125,9 @@ class EjecucionTests(m1.MetricasTests):
 
     @classmethod
     def ejecutar(cls, cmd, esperado=0):
-        # Conservar stderr además del código para contabilizar evidencia de
-        # comparación por flanco; nunca incorporarlo al reporte JSON público.
+        # stderr conserva diagnósticos y la cantidad de flancos cotejados;
+        # stdout queda separado para analizar exclusivamente el reporte. Un
+        # retorno distinto del esperado hace fallar la prueba con ambas salidas.
         cmd=list(map(str,cmd))
         p=subprocess.run(cmd,cwd=ROOT,capture_output=True,timeout=90)
         cls.comandos.append(dict(comando=cmd,codigo=p.returncode,stderr=p.stderr.decode('utf-8',errors='replace')))
@@ -110,8 +136,10 @@ class EjecucionTests(m1.MetricasTests):
         return p.stdout.decode('utf-8')
 
     def test_12_fragmentacion(self):
-        # Comparar el JSON completo incluye métricas e historial. Se comprueba
-        # también la DMEM byte a byte y el estado finito de terminación temprana.
+        # Cambiar solo los cortes del presupuesto no debe perder ni repetir
+        # observaciones: 100, 10+20+30+40 y 100×1 deben dar el mismo JSON,
+        # historial y DMEM completa. En FINITA se compara la terminación real,
+        # sin exigir flancos ficticios para consumir los cien intentos.
         casos=[('nop',NOP),('alu','sumai x5,x0,7 | nop | nop | nop\n'),
                ('traps','nop | nop | nop | fsl x4,x2,0,0\n'),
                ('memoria','sumai x5,x0,7 | nop | nop | nop\n'+NOP*2+
@@ -142,6 +170,8 @@ class EjecucionTests(m1.MetricasTests):
                                           ('100',0,'TERMINADO'),('18446744073709551615',0,'TERMINADO')]:
             r=json.loads(self.ejecutar([self.cli,'mem',mem,'finita',presupuesto,'json'],codigo))
             self.assertEqual(r['estado'],estado)
+        # La CLI debe rechazar sintaxis o rangos inválidos antes de ejecutar;
+        # incluso una conversión numérica que admitiría + o espacios se rechaza.
         for presupuesto in ('-1','+1',' 1','1x','','18446744073709551616'):
             self.assertEqual(self.ejecutar([self.cli,'mem',mem,'fisica',presupuesto,'json'],64),'')
         for tipo,modo,formato in [('crudo','finita','json'),('mem','otro','json'),('mem','finita','xml')]:
@@ -153,19 +183,27 @@ class EjecucionTests(m1.MetricasTests):
         self.assertIn('Métricas dinámicas',self.ejecutar([self.cli,'mem',mem,'finita',10,'texto']))
 
     def test_14_entradas_corruptas(self):
+        # Son fallos de carga, no excepciones de la ISA: archivos vacíos,
+        # hex inválido o bundles incompletos deben impedir cualquier reporte.
         for nombre,datos,tipo in [('truncado',b'BALB','balb'),('vacio',b'','mem'),
                                   ('hex',b'G'*32+b'\n','mem'),('incompleto',b'00\n','mem')]:
             archivo=self.dir/nombre;archivo.write_bytes(datos)
             self.assertEqual(self.ejecutar([self.cli,tipo,archivo,'finita',10,'json'],1),'')
-        # Se valida también un BALB correcto con sección declarada truncada.
+        # El encabezado declara un código completo, pero se elimina su último
+        # byte. S1 debe detectar el truncamiento y no publicar una sesión.
         mem=self.codificar(NOP);archivo=self.balb(mem);archivo.write_bytes(archivo.read_bytes()[:-1])
         self.assertEqual(self.ejecutar([self.cli,'balb',archivo,'finita',10,'json'],1),'')
 
     def test_15_error_cli_y_salida(self):
+        # Recortar el código deja un salto legal hacia fuera de la extensión
+        # FINITA. La herramienta debe comunicar el rechazo de PC como error,
+        # sin presentarlo como terminación o presupuesto agotado.
         mem=self.codificar('nop | nop | sye x0,fin | nop\n'+NOP+'fin: nop\n')
         mem.write_text(mem.read_text().splitlines()[0]+'\n')
         self.assertEqual(self.ejecutar([self.cli,'mem',mem,'finita',100,'json'],1),'')
-        # /dev/full informa errores reales de salida sin tocar el repositorio.
+        # /dev/full rechaza la escritura con el dispositivo lleno. El reporte
+        # puede haberse generado bien, pero fputs/fflush deben impedir que la
+        # herramienta devuelva éxito si no pudo entregarlo al destino.
         mem=self.codificar(NOP)
         with open('/dev/full','wb') as f:
             p=subprocess.run(list(map(str,[self.cli,'mem',mem,'finita',10,'json'])),stdout=f,stderr=subprocess.PIPE)
