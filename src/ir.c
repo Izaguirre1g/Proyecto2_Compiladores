@@ -528,6 +528,9 @@ int ir_imprimir(const IrPrograma *ir, FILE *f) {
             case IR_LIST_ADD:fprintf(f,"add %s, %s",x->dst,x->a);break;
             case IR_LIST_REMOVE:fprintf(f,"remove %s, %s",x->dst,x->a);break;
             case IR_SIZE:fprintf(f,"%s = size %s",x->dst,x->a);break;
+            /* Estas instrucciones usan ranuras logicas; el backend define offsets. */
+            case IR_SPILL_LOAD:fprintf(f,"%s = spill_load %s",x->dst,x->a);break;
+            case IR_SPILL_STORE:fprintf(f,"spill_store %s, %s",x->dst,x->a);break;
             }
             fprintf(f," ; linea %zu\n",x->linea);
         }

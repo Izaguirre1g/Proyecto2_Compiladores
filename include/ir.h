@@ -11,7 +11,8 @@ typedef enum {
     IR_FUNC, IR_END_FUNC, IR_PARAM_DECL, IR_COPY, IR_BIN, IR_UNARY,
     IR_LABEL, IR_JUMP, IR_JFALSE, IR_JTRUE, IR_ARG, IR_CALL, IR_RETURN,
     IR_ARRAY_DECL, IR_ARRAY_DIM, IR_INDEX_REF, IR_LOAD, IR_STORE,
-    IR_LIST_DECL, IR_LIST_ADD, IR_LIST_REMOVE, IR_SIZE
+    IR_LIST_DECL, IR_LIST_ADD, IR_LIST_REMOVE, IR_SIZE,
+    IR_SPILL_LOAD, IR_SPILL_STORE
 } IrOp;
 /* Cada instruccion identifica sus operandos por nombre. Las referencias
  * de indice son valores de direccion logica y no registros de CPU. */

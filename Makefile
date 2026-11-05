@@ -674,3 +674,4 @@ tests/test_ir: tests/test_ir.c src/ir.c Analisis_Sintactico/ast.c include/ir.h i
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir.c src/ir.c Analisis_Sintactico/ast.c -o $@
 test-ir: tests/test_ir
 	./tests/test_ir
+-include Makefile.spilling.mk
