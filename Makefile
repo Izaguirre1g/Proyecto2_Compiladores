@@ -675,3 +675,5 @@ tests/test_ir: tests/test_ir.c src/ir.c Analisis_Sintactico/ast.c include/ir.h i
 test-ir: tests/test_ir
 	./tests/test_ir
 -include Makefile.spilling.mk
+-include Makefile.spilling.backend.mk
+-include Makefile.spilling.cli.mk

@@ -11,6 +11,7 @@
 #include "diagnosticos.h"
 #include "clones.h"
 #include "ir.h"
+#include "ir_spilling.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -177,6 +178,7 @@ typedef struct {
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
     int ir;                 /* --ir: IR de tres direcciones */
+    int ir_spilling;        /* --ir-spilling: IR con registros limitados */
 } Compilacion;
 
 typedef struct {
@@ -199,6 +201,7 @@ static void usage(FILE *out) {
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
+          "--ir-spilling  muestra la IR con spilling usando 3 registros\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
@@ -214,6 +217,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
+        if (!posicional && !strcmp(arg, "--ir-spilling")) { c->ir_spilling = 1; continue; }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -239,9 +243,14 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
-    if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
+    /* Los modos de visualizacion de IR son excluyentes. */
+    if (c->ir && c->ir_spilling) {
+        fputs("--ir y --ir-spilling no se pueden combinar\n", stderr);
+        return -1;
+    }
+    if ((c->ir || c->ir_spilling) && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
-        fputs("--ir se ejecuta de forma independiente (sin otras banderas)\n", stderr);
+        fputs("--ir y --ir-spilling se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         return -1;
     }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
@@ -725,6 +734,34 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
     return estado;
 }
 
+/* Ejecuta la pasada de registros limitados solo para inspeccionar la IR.
+ * No reemplaza la ruta AST -> ensamblador del compilador principal. */
+static int visitante_ir_spilling(void *ctx, const Ast *arbol,
+                                SimTabla *tabla, FILE *diag)
+{
+    (void)ctx;
+    (void)tabla;
+    IrPrograma original = {0};
+    IrPrograma reescrita = {0};
+    IrSpillingMetricas metricas = {0};
+    int estado = ir_desde_ast(arbol, &original, diag);
+    if (estado == 0)
+        estado = ir_aplicar_spilling(&original, &reescrita, 3, &metricas);
+    if (estado == 0) {
+        puts("[IR con register spilling: 3 registros]");
+        estado = ir_imprimir(&reescrita, stdout);
+        if (estado == 0)
+            printf("[spilling] ranuras=%zu cargas=%zu almacenes=%zu desalojos=%zu\n",
+                   metricas.ranuras, metricas.cargas, metricas.almacenes,
+                   metricas.desalojos);
+    } else {
+        fputs("No se pudo generar la IR con spilling\n", diag);
+    }
+    ir_liberar(&reescrita);
+    ir_liberar(&original);
+    return estado;
+}
+
 int cli_run(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "--clones")) return buscar_clones(argc, argv);
     Compilacion op = {0};
@@ -732,6 +769,8 @@ int cli_run(int argc, char **argv) {
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
     if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, NULL);
+    if (op.ir_spilling)
+        return sem_visitar_proyecto(op.entrada, stderr, visitante_ir_spilling, NULL);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }
