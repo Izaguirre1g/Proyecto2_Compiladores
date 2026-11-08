@@ -212,6 +212,38 @@ int main(void)
             "create_funk #declare_int# uno() {\n    give 1;\n}\n"
             "create_funk #declare_infinite_void# main() {\n}\n");
 
+    /* 12. Error semántico: una variable usada como función en una sentencia
+     *     "i ( i gauss 1);" era una asignación. */
+    revisar(__LINE__,
+            INICIO "    i * declare_int : 1;\n    i (  i gauss 1);\n" FINAL,
+            "es una asignacion: escribir 'i : i gauss 1'",
+            INICIO "    i * declare_int : 1;\n    i : i gauss 1;\n" FINAL);
+
+    /* Con dos argumentos no hay una asignación clara: no se propone nada. */
+    {
+        const char *codigo = INICIO "    i * declare_int : 1;\n    i (1, 2);\n" FINAL;
+        DiagLista lista = {0};
+        VERIFICAR(ide_analizar_texto(codigo, strlen(codigo), "tests/editor.bal", &lista) == 0);
+        VERIFICAR(lista.cantidad == 1);
+        if (lista.cantidad == 1) {
+            IdeArreglo arreglo;
+            VERIFICAR(ide_proponer_arreglo(codigo, strlen(codigo), &lista.elementos[0], &arreglo) == 0);
+        }
+        diag_liberar(&lista);
+    }
+
+    /* Dentro de una expresión ("x : i(3);") tampoco: no empieza la sentencia. */
+    {
+        const char *codigo = INICIO "    i * declare_int : 1;\n    i : i(3);\n" FINAL;
+        DiagLista lista = {0};
+        VERIFICAR(ide_analizar_texto(codigo, strlen(codigo), "tests/editor.bal", &lista) == 0);
+        for (size_t i = 0; i < lista.cantidad; ++i) {
+            IdeArreglo arreglo;
+            VERIFICAR(ide_proponer_arreglo(codigo, strlen(codigo), &lista.elementos[i], &arreglo) == 0);
+        }
+        diag_liberar(&lista);
+    }
+
     if (fallos > 0) {
         fprintf(stderr, "test_ide_arreglos: %d fallos\n", fallos);
         return 1;

@@ -192,6 +192,101 @@ static int preparar(IdeArreglo *a, size_t linea, size_t columna, size_t borrar,
 }
 
 /* ------------------------------------------------------------------ */
+/* Una variable usada como función: era una asignación                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Error semántico "'i' no es una funcion" en una sentencia como
+ *
+ *     i ( i gauss 1);      ->      i : i gauss 1;
+ *
+ * La sintaxis es la de una llamada, pero 'i' es una variable: lo más
+ * probable es que se quisiera ASIGNAR. El arreglo cambia "( ... )" por
+ * ": ...". Solo se propone si:
+ *   - el nombre empieza la sentencia y después viene '(' ... ')' ';'
+ *     (todo en la misma línea);
+ *   - entre los paréntesis hay UNA expresión (sin comas: con varios
+ *     argumentos no hay una asignación clara);
+ *   - el resultado es válido según la tabla LL(1).
+ *
+ * Devuelve 1 si hay arreglo, 0 si no, -1 sin memoria.
+ */
+static int arreglar_llamada_a_variable(const char *texto, size_t largo,
+                                       const ListaTokens *tokens, const Diagnostico *d,
+                                       IdeArreglo *a)
+{
+    long encontrado = buscar_token(tokens, d->linea, d->columna);
+    if (encontrado < 0) return 0;
+    size_t k = (size_t)encontrado, n = tokens->cantidad;
+    const TokenUbicado *e = tokens->elementos;
+
+    /* El nombre empieza la sentencia y lo sigue un '('. */
+    if (e[k].tipo != TOKEN_IDENTIFIER || e[k].lexema == NULL || k + 1 >= n) return 0;
+    if (k > 0 && e[k - 1].tipo != TOKEN_SEMICOLON && e[k - 1].tipo != TOKEN_LBRACE &&
+        e[k - 1].tipo != TOKEN_RBRACE) {
+        return 0;
+    }
+    size_t abre = k + 1;
+    if (e[abre].tipo != TOKEN_LPAREN) return 0;
+
+    /* Buscar el ')' que cierra, y que no haya comas a ese nivel. */
+    size_t cierra = abre;
+    int nivel = 0;
+    for (size_t i = abre; i < n; ++i) {
+        if (e[i].tipo == TOKEN_LPAREN) nivel++;
+        if (e[i].tipo == TOKEN_RPAREN && --nivel == 0) {
+            cierra = i;
+            break;
+        }
+        if (e[i].tipo == TOKEN_COMMA && nivel == 1) return 0;  /* Varios argumentos. */
+        if (e[i].tipo == TOKEN_EOF) return 0;
+    }
+    if (cierra == abre || cierra == abre + 1) return 0;           /* Sin cierre, o "()" vacío. */
+    if (cierra + 1 >= n || e[cierra + 1].tipo != TOKEN_SEMICOLON) return 0;
+    if (e[abre].linea != e[cierra].linea_fin) return 0;           /* Todo en una línea. */
+
+    /* Validar con la tabla LL(1): el mismo programa, con ':' en vez de '('
+     * y sin el ')', tiene que ser válido. */
+    TokenType *tipos = malloc(n * sizeof *tipos);
+    if (tipos == NULL) return -1;
+    size_t m = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (i == cierra) continue;
+        tipos[m++] = (i == abre) ? TOKEN_ASSIGN : e[i].tipo;
+    }
+    Ll1Resultado r;
+    int estado = ll1_analizar(tipos, m, &r);
+    free(tipos);
+    if (estado != 0) return -1;
+    if (r.estado != LL1_ACEPTADA) return 0;
+
+    /* Lo que estaba entre los paréntesis, sin espacios a los lados. */
+    size_t desde, hasta;
+    if (byte_de_posicion(texto, largo, e[abre].linea_fin, e[abre].columna_fin, &desde) != 0 ||
+        byte_de_posicion(texto, largo, e[cierra].linea, e[cierra].columna, &hasta) != 0) {
+        return 0;
+    }
+    while (desde < hasta && (texto[desde] == ' ' || texto[desde] == '\t')) desde++;
+    while (hasta > desde && (texto[hasta - 1] == ' ' || texto[hasta - 1] == '\t')) hasta--;
+
+    size_t largo_expresion = hasta - desde;
+    char *insertar = malloc(largo_expresion + 3);
+    if (insertar == NULL) return -1;
+    memcpy(insertar, ": ", 2);
+    memcpy(insertar + 2, texto + desde, largo_expresion);
+    insertar[largo_expresion + 2] = '\0';
+
+    /* Se reemplaza desde el '(' hasta el ')' (inclusive) por ": expresión".
+     * Si había un espacio entre el nombre y el '(' se conserva: "i (" -> "i :". */
+    snprintf(a->descripcion, sizeof a->descripcion, "es una asignacion: escribir '%s %.80s'",
+             e[k].lexema, insertar);
+    int resultado = preparar(a, e[abre].linea, e[abre].columna,
+                             e[cierra].columna_fin - e[abre].columna, insertar);
+    free(insertar);
+    return resultado;
+}
+
+/* ------------------------------------------------------------------ */
 /* Arreglo para los errores del parser: lo predice la tabla LL(1)      */
 /* ------------------------------------------------------------------ */
 
@@ -310,8 +405,23 @@ int ide_proponer_arreglo(const char *texto, size_t largo,
 {
     memset(arreglo, 0, sizeof *arreglo);
 
-    /* Solo se arreglan errores de sintaxis: los semánticos (tipos,
-     * variables sin declarar...) necesitan que la persona decida. */
+    /* De los errores semánticos solo se arregla uno: una variable usada
+     * como función en "i (expresión);", que era una asignación. Los demás
+     * (tipos, variables sin declarar...) necesitan que la persona decida. */
+    if (error->fase == DIAG_SEMANTICO) {
+        size_t largo_mensaje = strlen(error->mensaje);
+        const char *final = " no es una funcion";
+        size_t largo_final = strlen(final);
+        if (largo_mensaje < largo_final ||
+            strcmp(error->mensaje + largo_mensaje - largo_final, final) != 0) {
+            return 0;
+        }
+        ListaTokens tokens = {0};
+        int r = leer_tokens(texto, largo, &tokens);
+        if (r == 0) r = arreglar_llamada_a_variable(texto, largo, &tokens, error, arreglo);
+        liberar_tokens(&tokens);
+        return r;
+    }
     if (error->fase != DIAG_SINTACTICO) return 0;
 
     /*
