@@ -12,6 +12,7 @@
 #include "clones.h"
 #include "ir.h"
 #include "loop_unrolling.h"
+#include "lu_reporte.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -736,23 +737,20 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
     IrPrograma ir = {0};
     int estado = ir_desde_ast(arbol, &ir, diag);
     if (estado == 0 && op && op->unroll) {
+        /* --unroll: foto de la IR, desenrollado, otra foto y reporte visual. */
         LuOpciones opciones;
-        LuResumen resumen;
+        LuResumen resumen = {0};
+        LuVista antes = {0}, despues = {0};
         lu_opciones_defecto(&opciones);
         if (op->unroll_factor) opciones.factor = op->unroll_factor;
-        puts("[IR antes del loop unrolling]");
-        estado = ir_imprimir(&ir, stdout);
-        if (estado == 0) {
-            puts("\n[Loop unrolling]");
-            estado = lu_desenrollar(&ir, &opciones, &resumen, stdout);
-        }
-        if (estado == 0) {
-            printf("[unroll] resumen: %zu ciclos, %zu totales, %zu parciales, %zu sin cambios; "
-                   "instrucciones IR %zu -> %zu\n", resumen.ciclos, resumen.totales,
-                   resumen.parciales, resumen.rechazados, resumen.instr_antes, resumen.instr_despues);
-            puts("\n[IR despues del loop unrolling]");
-            estado = ir_imprimir(&ir, stdout);
-        }
+        estado = lu_vista_crear(&ir, NULL, &antes);
+        if (estado == 0) estado = lu_desenrollar(&ir, &opciones, &resumen, NULL);
+        if (estado == 0) estado = lu_vista_crear(&ir, &antes, &despues);
+        if (estado == 0) lu_reporte(stdout, op->entrada, opciones.factor, &antes, &despues,
+                                    &resumen, lu_usar_color(stdout));
+        lu_vista_liberar(&antes);
+        lu_vista_liberar(&despues);
+        lu_resumen_liberar(&resumen);
     } else if (estado == 0) {
         puts("[IR de tres direcciones]");
         estado = ir_imprimir(&ir, stdout);

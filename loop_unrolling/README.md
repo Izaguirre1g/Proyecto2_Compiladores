@@ -1,4 +1,4 @@
-# Loop unrolling (Proyecto II — Meibel)
+# Loop unrolling
 
 Optimización que desenrolla ciclos sobre la IR de tres direcciones
 ([docs/ir.md](../docs/ir.md)). Repite el cuerpo del ciclo varias veces para
@@ -9,6 +9,7 @@ reordenamiento y la calendarización VLIW tengan más operaciones para empaqueta
 loop_unrolling/
 ├── loop_unrolling.h         interfaz pública (opciones, resumen, lu_desenrollar)
 ├── loop_unrolling.c         implementación
+├── lu_reporte.h / .c        reporte visual de balc --unroll (tablas, colores)
 ├── README.md                este documento
 └── pruebas/
     ├── test_loop_unrolling.c   pruebas unitarias con intérprete de IR
@@ -25,9 +26,32 @@ make                                              # compila balc
 make test-loop-unrolling                          # corre todas las pruebas
 ```
 
-`--unroll[=k]` valida la semántica, imprime la IR **antes**, el registro de
-decisiones, un resumen (instrucciones antes → después) y la IR **después**.
+`--unroll[=k]` valida la semántica y muestra un reporte
+([lu_reporte.c](lu_reporte.c)) con:
+
+1. **Ciclos**: una fila por ciclo con su condición, paso, vueltas y decisión
+   (`✔ TOTAL`, `✔ PARCIAL`, o `✘ sin cambios` con el motivo).
+2. **Métricas** antes/después: instrucciones IR, bloques básicos, saltos y
+   etiquetas.
+3. **IR antes y después lado a lado**; `+` marca lo que creó el unrolling.
+
+En la terminal usa colores (verde = total, amarillo = parcial, rojo = sin
+cambios). Si la salida se redirige o existe `NO_COLOR`, sale sin colores.
 `k` debe estar entre 2 y 64. Igual que `--ir`, no genera `.asm` ni `.bin`.
+
+```
+  CICLOS
+  ────────────────────────────────────────────────────────────────────────────
+  Ciclo  Línea  Condición     Paso  Vueltas  Decisión
+  $L1    8      i < n         +1    ?        ✔ PARCIAL ×4 + ciclo residuo
+  $L3    17     i < n         +1    3        ✔ TOTAL: 3 copias, sin saltos
+
+  MÉTRICAS
+  ────────────────────────────────────────────────────────────────────────────
+                               antes   después  cambio
+  Instrucciones IR                33        59  +26
+  Bloques básicos                  9         8  -1
+```
 
 Desde código:
 
@@ -36,6 +60,8 @@ LuOpciones op; LuResumen r;
 lu_opciones_defecto(&op);
 op.factor = 4;
 lu_desenrollar(&ir, &op, &r, stdout);   /* recalcula los bloques básicos */
+/* r.detalle trae una entrada por ciclo (decisión, vueltas, motivo...) */
+lu_resumen_liberar(&r);
 ```
 
 ## Forma canónica que se reconoce

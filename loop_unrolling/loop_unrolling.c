@@ -2,7 +2,7 @@
  * loop_unrolling.c  --  Optimizacion de LOOP UNROLLING (Proyecto II)
  * =====================================================================
  *
- * PARA QUE SIRVE ESTE ARCHIVO
+ * Como Funciona
  * ---------------------------
  * Recibe la IR de tres direcciones que genera src/ir.c (un arreglo de
  * instrucciones IrInstr) y "desenrolla" los ciclos: copia el cuerpo del
@@ -458,10 +458,41 @@ static int emitir_cabecera(Codigo *out, IrPrograma *ir, const Ciclo *c, unsigned
     return ok && !out->error;
 }
 
+/* Copia s en el arreglo fijo d (de tamano n), recortando si no cabe. */
+static void copiar_texto(char *d, size_t n, const char *s) {
+    snprintf(d, n, "%s", s ? s : "");     /* snprintf siempre deja el '\0' */
+}
+
+/* Guarda en r->detalle lo que se decidio con un ciclo (para el reporte).
+ * c puede estar incompleto si el ciclo no era canonico; p puede ser NULL.
+ * Si falta memoria simplemente no se anota (el detalle es opcional). */
+static void anotar(LuResumen *r, const Ciclo *c, const char *etq, size_t linea,
+                   LuDecision d, const Plan *p, const char *motivo) {
+    if (!r) return;                                               /* Nadie pidio detalle */
+    LuDetalle *nuevo = realloc(r->detalle, (r->cantidad_detalle + 1) * sizeof *nuevo);
+    if (!nuevo) return;                                           /* Sin memoria: se omite */
+    r->detalle = nuevo;
+    LuDetalle *x = &nuevo[r->cantidad_detalle++];                 /* Elemento nuevo al final */
+    *x = (LuDetalle){0};                                          /* Todo en cero */
+    copiar_texto(x->etiqueta, sizeof x->etiqueta, etq);           /* $Lx */
+    copiar_texto(x->iter, sizeof x->iter, c->iter);               /* i (o vacio) */
+    copiar_texto(x->limite, sizeof x->limite, c->limite);         /* limite (o vacio) */
+    copiar_texto(x->relacion, sizeof x->relacion, c->relacion);   /* < o <= */
+    x->paso = c->paso;
+    x->linea = linea;
+    x->decision = d;
+    x->motivo = motivo;
+    if (p) {                                                      /* Solo si hubo plan */
+        x->factor = p->factor;
+        x->vueltas = p->n;
+        x->vueltas_conocidas = p->tipo != PLAN_PARCIAL_VAR;       /* Total y parcial const saben N */
+    }
+}
+
 /* Arma la IR nueva segun el plan y reemplaza la vieja.
  * `hechos` guarda etiquetas de ciclos ya procesados para no repetirlos.
  * Devuelve 0 si funciono y 2 si falto memoria (la IR queda como estaba). */
-static int aplicar(IrPrograma *ir, const Ciclo *c, const Plan *p, Lista *hechos, FILE *log) {
+static int aplicar(IrPrograma *ir, const Ciclo *c, const Plan *p, Lista *hechos, FILE *log, LuResumen *r) {
     Codigo out = {0};                                                    /* IR nueva */
     int ok = 1;
     /* Si alguien fuera del ciclo salta a $Lx o $Ly, esas etiquetas se conservan. */
@@ -523,6 +554,10 @@ static int aplicar(IrPrograma *ir, const Ciclo *c, const Plan *p, Lista *hechos,
             fprintf(log, "%llu vueltas constantes -> desenrollado PARCIAL factor %u (%llu vueltas del ciclo %s, %llu en linea recta)\n",
                     p->n, p->factor, p->n / p->factor, etq_m, p->n % p->factor);
     }
+    /* Detalle para el reporte (tambien antes de reemplazar, por lo mismo). */
+    anotar(r, c, c->etq_ini, c->linea,
+           p->tipo == PLAN_TOTAL ? LU_TOTAL : p->tipo == PLAN_PARCIAL_CONST ? LU_PARCIAL_CONST : LU_PARCIAL_VAR,
+           p, NULL);
     free(etq_m); free(etq_f);                             /* Ya se copiaron dentro de out */
     reemplazar(ir, &out);                                 /* La IR nueva pasa a ser la oficial */
     return 0;
@@ -568,7 +603,7 @@ int lu_desenrollar(IrPrograma *ir, const LuOpciones *opc, LuResumen *res, FILE *
             if (reconocer(ir, h, &c, &motivo) != 1) continue;       /* No es ciclo canonico */
             if (verificar(ir, &c, opc, &motivo) != 1) continue;     /* No cumple precondiciones */
             if (!planear(ir, &c, opc, &p, &motivo)) continue;       /* La heuristica dice que no */
-            if (aplicar(ir, &c, &p, &hechos, log)) { estado = 2; break; } /* Falto memoria */
+            if (aplicar(ir, &c, &p, &hechos, log, &r)) { estado = 2; break; } /* Falto memoria */
             if (p.tipo == PLAN_TOTAL) ++r.totales; else ++r.parciales;   /* Cuenta el resultado */
             cambio = cambio_total = 1;                              /* Reinicia la busqueda */
         }
@@ -583,8 +618,10 @@ int lu_desenrollar(IrPrograma *ir, const LuOpciones *opc, LuResumen *res, FILE *
         if (k == 0) continue;                        /* Esa etiqueta no es un ciclo */
         if (k == 1 && verificar(ir, &c, opc, &motivo) == 1) planear(ir, &c, opc, &p, &motivo);
         ++r.rechazados;
+        size_t linea = c.linea ? c.linea : ir->codigo[h].linea;  /* Linea para mostrar */
         if (log) fprintf(log, "[unroll] ciclo %s (linea %zu) no se desenrolla: %s\n",
-                         ir->codigo[h].dst, c.linea ? c.linea : ir->codigo[h].linea, motivo);
+                         ir->codigo[h].dst, linea, motivo);
+        anotar(&r, &c, ir->codigo[h].dst, linea, LU_RECHAZADO, NULL, motivo); /* Para el reporte */
     }
     lista_liberar(&hechos);                          /* Ya no se necesita */
     /* Si se cambio la IR, se recalculan los bloques basicos y el CFG para
@@ -593,5 +630,14 @@ int lu_desenrollar(IrPrograma *ir, const LuOpciones *opc, LuResumen *res, FILE *
     r.ciclos = r.totales + r.parciales + r.rechazados; /* Total de ciclos vistos */
     r.instr_despues = ir->cantidad;                  /* Tamano final */
     if (res) *res = r;                               /* Devuelve las estadisticas */
+    else free(r.detalle);                            /* Nadie lo va a usar */
     return estado;                                   /* 0 = exito */
+}
+
+/* Libera el detalle de ciclos y lo deja vacio. */
+void lu_resumen_liberar(LuResumen *res) {
+    if (!res) return;
+    free(res->detalle);                              /* Arreglo de LuDetalle */
+    res->detalle = NULL;
+    res->cantidad_detalle = 0;
 }

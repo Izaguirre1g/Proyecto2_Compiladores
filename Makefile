@@ -27,7 +27,7 @@ SRC := src/main.c src/cli.c src/lexer.c $(LEXER_GEN) src/token.c src/generacion_
        src/funciones_marco.c src/funciones_llamada.c src/referencias_integracion.c \
        src/resolucion_referencias.c src/resolucion_saltos.c src/enlace_funciones.c \
        src/codificacion_binaria.c src/formato_binario.c src/diagnosticos.c src/clones.c src/ir.c \
-       loop_unrolling/loop_unrolling.c
+       loop_unrolling/loop_unrolling.c loop_unrolling/lu_reporte.c
 
 # Estos nombres son comandos de Make, no archivos.
 .PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones ide clean
@@ -49,7 +49,7 @@ Analisis_Sintactico/parser.c Analisis_Sintactico/parser.h &: Analisis_Sintactico
 balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h Analisis_Sintactico/parser.h \
       include/enlace_funciones.h include/resolucion_saltos.h include/resolucion_referencias.h include/codificacion_binaria.h \
       include/referencias_integracion.h include/generacion_adaptador.h include/generacion_funciones.h \
-      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h loop_unrolling/loop_unrolling.h
+      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h loop_unrolling/loop_unrolling.h loop_unrolling/lu_reporte.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SRC) -o $@
 
 # Compila las pruebas del lexer, sin necesitar el parser.

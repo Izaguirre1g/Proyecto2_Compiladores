@@ -197,6 +197,8 @@ static LuResumen probar(const char *nombre, Programa prog, int arg, unsigned fac
     comparar(&ea, &eb);
     printf("  %-38s arg=%-5d IR %3zu -> %3zu | ejecutadas %6zu -> %6zu | total %zu parcial %zu sin cambio %zu\n",
            nombre, arg, r.instr_antes, r.instr_despues, ea.pasos, eb.pasos, r.totales, r.parciales, r.rechazados);
+    assert(r.cantidad_detalle == r.ciclos);   /* Un detalle por ciclo */
+    lu_resumen_liberar(&r);                   /* Los contadores siguen validos */
     ir_liberar(&antes);
     if (salida) *salida = despues; else ir_liberar(&despues);
     return r;
