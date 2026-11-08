@@ -1,6 +1,6 @@
 # Resolución de saltos (Fase 5)
 
-`src/resolucion_saltos.c` recibe el ensamblador lineal de los generadores
+`src/Resolucion_y_Enlace/resolucion_saltos.c` recibe el ensamblador lineal de los generadores
 (instrucciones y etiquetas `__gf_<funcion>_..._N:`) y produce bundles VLIW con
 cada salto convertido en un desplazamiento numérico. Usa la tabla de
 `resolucion_referencias.c` para registrar etiquetas y calcular desplazamientos.
@@ -82,7 +82,7 @@ programa y obtiene el mismo resultado que el modelo lineal con etiquetas.
 
 ## Direcciones de funciones
 
-`src/enlace_funciones.c` (`ef_enlazar`) genera todas las funciones y fija sus
+`src/Resolucion_y_Enlace/enlace_funciones.c` (`ef_enlazar`) genera todas las funciones y fija sus
 direcciones. Las llamadas cargan en x13 la dirección absoluta de la función,
 pero esa dirección depende del layout, y el layout depende del código: una
 dirección mayor que 1023 necesita 7 instrucciones (`sumai`, `cizqi`, `ori`)
