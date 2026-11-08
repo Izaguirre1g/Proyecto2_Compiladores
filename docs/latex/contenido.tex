@@ -54,36 +54,36 @@ repositorio}\label{22-organizaciuxf3n-del-repositorio}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Entrada / CLI & \path{src/main.c},
-\path{src/cli.c},
+Entrada / CLI & \path{src/Linea_Comandos/main.c},
+\path{src/Linea_Comandos/cli.c},
 \path{include/cli.h} & Opciones y orquestación. \\
-Lexer & \path{src/lexer.l},
-\path{src/lexer.c},
-\path{src/token.c} & Tokens, ubicaciones y
+Lexer & \path{src/Analisis_Lexico/lexer.l},
+\path{src/Analisis_Lexico/lexer.c},
+\path{src/Analisis_Lexico/token.c} & Tokens, ubicaciones y
 diagnóstico léxico. \\
 Parser y AST &
-\path{Analisis_Sintactico/gramatica.y},
+\path{src/Analisis_Sintactico/gramatica.y},
 \path{ast.c},
 \path{puente/lexer.c} & Gramática, construcción del
 árbol y enlace con el lexer. \\
 Símbolos y semántica &
-\path{Analisis_Semantico/symbol_table.c},
+\path{src/Analisis_Semantico/symbol_table.c},
 \path{semantic.c},
 \path{semantic_modules.c} & Tipos, ámbitos,
 funciones y módulos. \\
-Memoria & \path{Analisis_Semantico/memory.c} &
+Memoria & \path{src/Analisis_Semantico/memory.c} &
 Almacenes, offsets y marcos de pila. \\
-Backend & \path{src/generacion_basica.c},
+Backend & \path{src/Generacion_Codigo/generacion_basica.c},
 \path{generacion_control.c},
 \path{generacion_funciones.c},
 \path{generacion_adaptador.c} & Emisión de código
 para expresiones, control y funciones. \\
 Referencias y enlace &
-\path{src/resolucion_referencias.c},
+\path{src/Resolucion_y_Enlace/resolucion_referencias.c},
 \path{referencias_integracion.c},
 \path{resolucion_saltos.c},
 \path{enlace_funciones.c} & Direcciones y saltos. \\
-Binario & \path{src/codificacion_binaria.c},
+Binario & \path{src/Codificacion_Binaria/codificacion_binaria.c},
 \path{formato_binario.c} & Verificación y escritura
 de \path{.bin} y \path{.mem}. \\
 Pruebas & \texttt{tests/} & Verificaciones de etapas y
@@ -700,11 +700,11 @@ De menor a mayor precedencia:
 \subsection{Reconocimiento
 léxico}\label{51-reconocimiento-luxe9xico}
 
-El archivo \texttt{src/lexer.l} define patrones
+El archivo \texttt{src/Analisis_Lexico/lexer.l} define patrones
 reconocibles por Flex; las reglas asocian lexemas con tokens, preservan
 sus posiciones y comunican errores léxicos al controlador. Las palabras
 reservadas deben prevalecer sobre el reconocimiento genérico de
-identificadores. La interfaz \texttt{src/lexer.c}
+identificadores. La interfaz \texttt{src/Analisis_Lexico/lexer.c}
 adapta el analizador generado a la API del proyecto.
 
 \textbf{Flujo:} leer bytes del fuente $\rightarrow$ omitir espacios y comentarios $\rightarrow$

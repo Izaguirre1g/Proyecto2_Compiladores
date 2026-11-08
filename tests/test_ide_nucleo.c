@@ -1,5 +1,5 @@
 /*
- * Pruebas del núcleo del IDE (src/ide_nucleo.c).
+ * Pruebas del núcleo del IDE (src/IDE/ide_nucleo.c).
  *
  * Revisa las tres partes del núcleo:
  *   1. Sugerencias de código.

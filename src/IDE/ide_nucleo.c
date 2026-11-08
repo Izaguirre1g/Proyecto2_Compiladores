@@ -12,7 +12,7 @@
 
 /*
  * Palabras reservadas del lenguaje BAL, con una ayuda corta para cada una.
- * La lista sale de la tabla "keywords" de src/lexer.l y los significados
+ * La lista sale de la tabla "keywords" de src/Analisis_Lexico/lexer.l y los significados
  * de docs/lenguaje_actual.md.
  * Está en orden alfabético para que las sugerencias salgan ordenadas.
  */

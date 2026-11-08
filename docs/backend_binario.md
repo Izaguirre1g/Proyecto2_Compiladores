@@ -1,6 +1,6 @@
 # Backend binario (Fase 6) y opciones de balc
 
-`src/codificacion_binaria.c` convierte el ensamblador VLIW en texto a palabras
+`src/Codificacion_Binaria/codificacion_binaria.c` convierte el ensamblador VLIW en texto a palabras
 de 32 bits por slot y escribe los archivos que carga el procesador. Sigue el
 contrato de Arquitectura (`docs/arquitectura/isa.md` y `assembler.md` en la
 rama `docs/contrato-arquitectura`) y se comporta igual que `tools/assembler.py`.

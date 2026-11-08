@@ -9,6 +9,8 @@
 #include "enlace_funciones.h"
 #include "codificacion_binaria.h"
 #include "diagnosticos.h"
+#include "clones.h"
+#include "ir.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -174,6 +176,7 @@ typedef struct {
     int simbolos;           /* -m */
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
+    int ir;                 /* --ir: IR de tres direcciones */
 } Compilacion;
 
 typedef struct {
@@ -195,8 +198,12 @@ static void usage(FILE *out) {
           "-x            toma un archivo de ensamblador y genera el binario\n"
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
+          "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
-          "              stdout; no genera ningun archivo\n", out);
+          "              stdout; no genera ningun archivo\n"
+          "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
+          "              busca codigo copiado (clones tipo I y II) entre los archivos;\n"
+          "              no genera ningun archivo\n", out);
 }
 
 static int parse_compilacion(int argc, char **argv, Compilacion *c)
@@ -206,6 +213,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         const char *arg = argv[i];
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
+        if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -231,6 +239,11 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
+    if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
+                  c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
+        fputs("--ir se ejecuta de forma independiente (sin otras banderas)\n", stderr);
+        return -1;
+    }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
                         c->desde_ensamblador || c->paquetes || c->salida)) {
         fputs("--ast-json solo admite -t; no se combina con -v, -m, -s, -x, -p ni -o\n", stderr);
@@ -627,11 +640,98 @@ static int exportar_diagnosticos(const char *ruta)
     return estado;
 }
 
+/*
+ * --clones: busca codigo copiado entre varios archivos (ver clones.c).
+ *
+ *   balc --clones a.bal b.bal ...            listado para leer
+ *   balc --clones --json a.bal b.bal ...     JSON para el IDE
+ *   balc --clones --minimo 6 a.bal ...       cambia el tamano minimo de un clon
+ *
+ * A diferencia de las otras opciones, recibe VARIOS archivos, por eso se
+ * atiende aparte. Valor de salida: 0 = se pudo revisar (haya o no clones),
+ * 2 = error en las opciones, al leer un archivo o falta de memoria.
+ */
+static int buscar_clones(int argc, char **argv)
+{
+    int json = 0;
+    size_t minimo = CLONES_MINIMO_NODOS;
+    ClonFuente *fuentes = calloc((size_t)argc, sizeof *fuentes);
+    size_t cantidad = 0;
+    int estado = 0;
+    if (!fuentes) { fputs("Memoria insuficiente\n", stderr); return 2; }
+
+    /* Paso 1: leer las opciones y los archivos (argv[1] es "--clones"). */
+    for (int i = 2; i < argc && estado == 0; ++i) {
+        if (!strcmp(argv[i], "--json")) { json = 1; continue; }
+        if (!strcmp(argv[i], "--minimo")) {
+            char *fin = NULL;
+            long valor = (i + 1 < argc) ? strtol(argv[i + 1], &fin, 10) : 0;
+            if (i + 1 >= argc || *fin != '\0' || valor < 1) {
+                fputs("--minimo necesita un numero de nodos mayor que 0\n", stderr);
+                estado = 2;
+                break;
+            }
+            minimo = (size_t)valor;
+            i++;
+            continue;
+        }
+        if (argv[i][0] == '-') {
+            fprintf(stderr, "Opción desconocida: %s\n", argv[i]);
+            estado = 2;
+            break;
+        }
+        /* Paso 2: leer el texto de cada archivo. */
+        size_t largo = 0;
+        char *texto = read_source(argv[i], &largo);
+        if (!texto) { estado = 2; break; }
+        ClonFuente f = {argv[i], texto, largo};
+        fuentes[cantidad++] = f;
+    }
+    if (estado == 0 && cantidad == 0) {
+        fputs("--clones necesita al menos un archivo .bal\n", stderr);
+        estado = 2;
+    }
+
+    /* Paso 3: buscar los clones y mostrarlos. */
+    ClonLista lista = {0};
+    if (estado == 0 && clones_buscar(fuentes, cantidad, minimo, &lista) != 0) {
+        fputs("Memoria insuficiente\n", stderr);
+        estado = 2;
+    }
+    if (estado == 0) {
+        int escrito = json ? clones_escribir_json(&lista, cantidad, stdout)
+                           : clones_escribir_texto(&lista, cantidad, stdout);
+        if (escrito != 0) estado = 2;
+    }
+
+    clones_liberar(&lista);
+    for (size_t i = 0; i < cantidad; ++i) free((char *)fuentes[i].texto);
+    free(fuentes);
+    return estado;
+}
+
+/* Solo para visualizar IR validada: no genera ensamblador ni binario. */
+static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag)
+{
+    (void)ctx;
+    (void)tabla;
+    IrPrograma ir = {0};
+    int estado = ir_desde_ast(arbol, &ir, diag);
+    if (estado == 0) {
+        puts("[IR de tres direcciones]");
+        estado = ir_imprimir(&ir, stdout);
+    }
+    ir_liberar(&ir);
+    return estado;
+}
+
 int cli_run(int argc, char **argv) {
+    if (argc >= 2 && !strcmp(argv[1], "--clones")) return buscar_clones(argc, argv);
     Compilacion op = {0};
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
+    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, NULL);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }
