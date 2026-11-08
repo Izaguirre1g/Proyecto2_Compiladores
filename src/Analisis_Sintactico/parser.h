@@ -35,8 +35,8 @@
    especially those whose name start with YY_ or yy_.  They are
    private implementation details that can be changed or removed.  */
 
-#ifndef YY_YY_ANALISIS_SINTACTICO_PARSER_H_INCLUDED
-# define YY_YY_ANALISIS_SINTACTICO_PARSER_H_INCLUDED
+#ifndef YY_YY_SRC_ANALISIS_SINTACTICO_PARSER_H_INCLUDED
+# define YY_YY_SRC_ANALISIS_SINTACTICO_PARSER_H_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 0
@@ -45,11 +45,11 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 18 "Analisis_Sintactico/gramatica.y"
+#line 18 "src/Analisis_Sintactico/gramatica.y"
 
 #include "sintactico.h"
 
-#line 53 "Analisis_Sintactico/parser.h"
+#line 53 "src/Analisis_Sintactico/parser.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -142,11 +142,11 @@ typedef AstUbicacion YYLTYPE;
 int yyparse (ContextoSintactico *ctx);
 
 /* "%code provides" blocks.  */
-#line 22 "Analisis_Sintactico/gramatica.y"
+#line 22 "src/Analisis_Sintactico/gramatica.y"
 
 int yylex(YYSTYPE *valor, YYLTYPE *ubicacion, ContextoSintactico *ctx);
 void yyerror(YYLTYPE *ubicacion, ContextoSintactico *ctx, const char *mensaje);
 
-#line 151 "Analisis_Sintactico/parser.h"
+#line 151 "src/Analisis_Sintactico/parser.h"
 
-#endif /* !YY_YY_ANALISIS_SINTACTICO_PARSER_H_INCLUDED  */
+#endif /* !YY_YY_SRC_ANALISIS_SINTACTICO_PARSER_H_INCLUDED  */

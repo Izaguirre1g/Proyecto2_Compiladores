@@ -1,6 +1,6 @@
-#line 2 "src/lexer_flex.c"
+#line 2 "src/Analisis_Lexico/lexer_flex.c"
 
-#line 4 "src/lexer_flex.c"
+#line 4 "src/Analisis_Lexico/lexer_flex.c"
 
 #define  YY_INT_ALIGNED short int
 
@@ -770,9 +770,9 @@ int yy_flex_debug = 0;
 #define YY_MORE_ADJ 0
 #define YY_RESTORE_YY_MORE_OFFSET
 char *yytext;
-#line 1 "src/lexer.l"
+#line 1 "src/Analisis_Lexico/lexer.l"
 #define YY_NO_INPUT 1
-#line 4 "src/lexer.l"
+#line 4 "src/Analisis_Lexico/lexer.l"
   /* Estados que usamos para reconocer comentarios. */
 
 #include <limits.h>
@@ -868,12 +868,12 @@ static int one_utf8_scalar(const unsigned char *s, size_t n) {
     current_match->error = TOKEN_NO_ERROR; \
     return 1; \
 } while (0)
-#line 872 "src/lexer_flex.c"
+#line 872 "src/Analisis_Lexico/lexer_flex.c"
 /* Patrones que utilizamos para reconocer los lexemas. */
-#line 109 "src/lexer.l"
+#line 109 "src/Analisis_Lexico/lexer.l"
   /* Detectamos números mal escritos y decimales no permitidos. */
   /* Patrones para reconocer caracteres UTF-8 de 2, 3 y 4 bytes. */
-#line 877 "src/lexer_flex.c"
+#line 877 "src/Analisis_Lexico/lexer_flex.c"
 
 #define INITIAL 0
 #define LINE_COMMENT 1
@@ -1090,11 +1090,11 @@ YY_DECL
 		}
 
 	{
-#line 120 "src/lexer.l"
+#line 120 "src/Analisis_Lexico/lexer.l"
 
 
   /* Ignoramos espacios, tabulaciones y saltos de línea. */
-#line 1098 "src/lexer_flex.c"
+#line 1098 "src/Analisis_Lexico/lexer_flex.c"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -1150,13 +1150,13 @@ do_action:	/* This label is used only to access EOF actions. */
 case 1:
 /* rule 1 can match eol */
 YY_RULE_SETUP
-#line 123 "src/lexer.l"
+#line 123 "src/Analisis_Lexico/lexer.l"
 { consumed += (size_t)yyleng; }
 	YY_BREAK
 /* Inicio de un comentario de bloque: %%// */
 case 2:
 YY_RULE_SETUP
-#line 127 "src/lexer.l"
+#line 127 "src/Analisis_Lexico/lexer.l"
 {
                                       block_start = consumed;
                                       consumed += (size_t)yyleng;
@@ -1166,7 +1166,7 @@ YY_RULE_SETUP
 /* Inicio de un comentario de línea: %% */
 case 3:
 YY_RULE_SETUP
-#line 134 "src/lexer.l"
+#line 134 "src/Analisis_Lexico/lexer.l"
 {
                                       consumed += (size_t)yyleng;
                                       BEGIN(LINE_COMMENT);
@@ -1175,14 +1175,14 @@ YY_RULE_SETUP
 /* Ignoramos el contenido del comentario de línea. */
 case 4:
 YY_RULE_SETUP
-#line 140 "src/lexer.l"
+#line 140 "src/Analisis_Lexico/lexer.l"
 { consumed += (size_t)yyleng; }
 	YY_BREAK
 /* Al terminar la línea, volvemos al estado normal. */
 case 5:
 /* rule 5 can match eol */
 YY_RULE_SETUP
-#line 143 "src/lexer.l"
+#line 143 "src/Analisis_Lexico/lexer.l"
 {
                                       consumed += (size_t)yyleng;
                                       BEGIN(INITIAL);
@@ -1190,13 +1190,13 @@ YY_RULE_SETUP
 	YY_BREAK
 /* También puede terminar el archivo dentro del comentario. */
 case YY_STATE_EOF(LINE_COMMENT):
-#line 149 "src/lexer.l"
+#line 149 "src/Analisis_Lexico/lexer.l"
 { BEGIN(INITIAL); RETURN_EOF(); }
 	YY_BREAK
 /* El comentario de bloque termina con //%% */
 case 6:
 YY_RULE_SETUP
-#line 153 "src/lexer.l"
+#line 153 "src/Analisis_Lexico/lexer.l"
 {
                                       consumed += (size_t)yyleng;
                                       BEGIN(INITIAL);
@@ -1205,18 +1205,18 @@ YY_RULE_SETUP
 /* Ignoramos todos los caracteres del comentario de bloque. */
 case 7:
 YY_RULE_SETUP
-#line 159 "src/lexer.l"
+#line 159 "src/Analisis_Lexico/lexer.l"
 { consumed += (size_t)yyleng; }
 	YY_BREAK
 case 8:
 /* rule 8 can match eol */
 YY_RULE_SETUP
-#line 160 "src/lexer.l"
+#line 160 "src/Analisis_Lexico/lexer.l"
 { consumed += (size_t)yyleng; }
 	YY_BREAK
 /* Si no encontramos el cierre, devolvemos un error. */
 case YY_STATE_EOF(BLOCK_COMMENT):
-#line 163 "src/lexer.l"
+#line 163 "src/Analisis_Lexico/lexer.l"
 {
                                       current_match->skip_length = block_start;
                                       current_match->token_length = consumed - block_start;
@@ -1229,41 +1229,41 @@ case YY_STATE_EOF(BLOCK_COMMENT):
 /* Los decimales y números mal formados se rechazan. */
 case 9:
 YY_RULE_SETUP
-#line 174 "src/lexer.l"
+#line 174 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_NUMBER); }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 175 "src/lexer.l"
+#line 175 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_NUMBER); }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 176 "src/lexer.l"
+#line 176 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_NUMBER); }
 	YY_BREAK
 /* Reconocemos números enteros. */
 case 12:
 YY_RULE_SETUP
-#line 179 "src/lexer.l"
+#line 179 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_INTEGER, TOKEN_NO_ERROR); }
 	YY_BREAK
 /* Reconocemos cadenas entre comillas dobles. */
 case 13:
 YY_RULE_SETUP
-#line 183 "src/lexer.l"
+#line 183 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_STRING, TOKEN_NO_ERROR); }
 	YY_BREAK
 /* Una cadena sin comilla de cierre genera un error. */
 case 14:
 YY_RULE_SETUP
-#line 186 "src/lexer.l"
+#line 186 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_UNTERMINATED_STRING); }
 	YY_BREAK
 /* Los caracteres van entre $ y deben contener uno solo. */
 case 15:
 YY_RULE_SETUP
-#line 190 "src/lexer.l"
+#line 190 "src/Analisis_Lexico/lexer.l"
 {
                                       size_t inner = (size_t)yyleng - 2;
                                       int valid = one_utf8_scalar(
@@ -1275,13 +1275,13 @@ YY_RULE_SETUP
 /* Detectamos caracteres que no tienen el $ de cierre. */
 case 16:
 YY_RULE_SETUP
-#line 199 "src/lexer.l"
+#line 199 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_UNTERMINATED_CHARACTER); }
 	YY_BREAK
 /* Revisamos si el identificador es una palabra reservada. */
 case 17:
 YY_RULE_SETUP
-#line 203 "src/lexer.l"
+#line 203 "src/Analisis_Lexico/lexer.l"
 {
                                       RETURN_TOKEN(keyword_type(yytext, (size_t)yyleng),
                                                    TOKEN_NO_ERROR);
@@ -1290,153 +1290,153 @@ YY_RULE_SETUP
 /* Operadores de comparación y lógica. */
 case 18:
 YY_RULE_SETUP
-#line 210 "src/lexer.l"
+#line 210 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_NOT_EQUAL, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 211 "src/lexer.l"
+#line 211 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_EQUAL, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 212 "src/lexer.l"
+#line 212 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_LESS_EQUAL, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 213 "src/lexer.l"
+#line 213 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_GREATER_EQUAL, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 22:
 YY_RULE_SETUP
-#line 214 "src/lexer.l"
+#line 214 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_AND, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 215 "src/lexer.l"
+#line 215 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_OR, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 24:
 YY_RULE_SETUP
-#line 216 "src/lexer.l"
+#line 216 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_LESS, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 25:
 YY_RULE_SETUP
-#line 217 "src/lexer.l"
+#line 217 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_GREATER, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 26:
 YY_RULE_SETUP
-#line 218 "src/lexer.l"
+#line 218 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_NOT, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 27:
 YY_RULE_SETUP
-#line 219 "src/lexer.l"
+#line 219 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_XOR, TOKEN_NO_ERROR); }
 	YY_BREAK
 /* Asignación, acceso a miembros y delimitadores. */
 case 28:
 YY_RULE_SETUP
-#line 223 "src/lexer.l"
+#line 223 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ASSIGN, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 29:
 YY_RULE_SETUP
-#line 224 "src/lexer.l"
+#line 224 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_DOT, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
-#line 225 "src/lexer.l"
+#line 225 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_LPAREN, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 31:
 YY_RULE_SETUP
-#line 226 "src/lexer.l"
+#line 226 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_RPAREN, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 32:
 YY_RULE_SETUP
-#line 227 "src/lexer.l"
+#line 227 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_LBRACKET, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 33:
 YY_RULE_SETUP
-#line 228 "src/lexer.l"
+#line 228 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_RBRACKET, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 34:
 YY_RULE_SETUP
-#line 229 "src/lexer.l"
+#line 229 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_LBRACE, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 35:
 YY_RULE_SETUP
-#line 230 "src/lexer.l"
+#line 230 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_RBRACE, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 36:
 YY_RULE_SETUP
-#line 231 "src/lexer.l"
+#line 231 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_COMMA, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 37:
 YY_RULE_SETUP
-#line 232 "src/lexer.l"
+#line 232 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_SEMICOLON, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 38:
 YY_RULE_SETUP
-#line 233 "src/lexer.l"
+#line 233 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_STAR, TOKEN_NO_ERROR); }
 	YY_BREAK
 case 39:
 YY_RULE_SETUP
-#line 234 "src/lexer.l"
+#line 234 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_HASH, TOKEN_NO_ERROR); }
 	YY_BREAK
 /* Caracteres Unicode que no se admiten fuera de literales. */
 case 40:
 YY_RULE_SETUP
-#line 238 "src/lexer.l"
+#line 238 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_CHARACTER); }
 	YY_BREAK
 case 41:
 YY_RULE_SETUP
-#line 239 "src/lexer.l"
+#line 239 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_CHARACTER); }
 	YY_BREAK
 case 42:
 YY_RULE_SETUP
-#line 240 "src/lexer.l"
+#line 240 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_CHARACTER); }
 	YY_BREAK
 /* Rechazamos bytes nulos y otros símbolos desconocidos. */
 case 43:
 YY_RULE_SETUP
-#line 243 "src/lexer.l"
+#line 243 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_CHARACTER); }
 	YY_BREAK
 case 44:
 YY_RULE_SETUP
-#line 244 "src/lexer.l"
+#line 244 "src/Analisis_Lexico/lexer.l"
 { RETURN_TOKEN(TOKEN_ERROR, TOKEN_INVALID_CHARACTER); }
 	YY_BREAK
 /* Terminamos cuando no queda más entrada. */
 case YY_STATE_EOF(INITIAL):
-#line 247 "src/lexer.l"
+#line 247 "src/Analisis_Lexico/lexer.l"
 { RETURN_EOF(); }
 	YY_BREAK
 case 45:
 YY_RULE_SETUP
-#line 250 "src/lexer.l"
+#line 250 "src/Analisis_Lexico/lexer.l"
 YY_FATAL_ERROR( "flex scanner jammed" );
 	YY_BREAK
-#line 1440 "src/lexer_flex.c"
+#line 1440 "src/Analisis_Lexico/lexer_flex.c"
 
 	case YY_END_OF_BUFFER:
 		{
@@ -2403,7 +2403,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 250 "src/lexer.l"
+#line 250 "src/Analisis_Lexico/lexer.l"
 
 
 /* Función que utiliza lexer.c para obtener el siguiente token. */

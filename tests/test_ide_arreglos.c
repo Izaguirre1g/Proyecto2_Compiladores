@@ -1,5 +1,5 @@
 /*
- * Pruebas de la corrección automática (src/ide_arreglos.c).
+ * Pruebas de la corrección automática (src/IDE/ide_arreglos.c).
  *
  * Cada caso hace lo mismo que haría la persona en el IDE:
  *   1. Analiza un código con un error.

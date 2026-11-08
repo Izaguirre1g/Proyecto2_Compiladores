@@ -9,9 +9,9 @@ importaciones, constantes y bloques de manejo de errores.
 ## Archivos y responsabilidades
 
 - `include/ast.h`: tipos `Ast`, `AstNodo`, `AstTipo`, `AstUbicacion` y API.
-- `Analisis_Sintactico/ast.c`: creación de nodos, hijos, impresión y memoria.
-- `Analisis_Sintactico/gramatica.y`: acciones que conectan los nodos al reconocer reglas.
-- `Analisis_Sintactico/puente_lexer.c`: hojas de identificadores, tipos y literales.
+- `src/Analisis_Sintactico/ast.c`: creación de nodos, hijos, impresión y memoria.
+- `src/Analisis_Sintactico/gramatica.y`: acciones que conectan los nodos al reconocer reglas.
+- `src/Analisis_Sintactico/puente_lexer.c`: hojas de identificadores, tipos y literales.
 - `tests/test_ast.c`: pruebas de la estructura real del árbol.
 
 Bison sigue generando `parser.c` y `parser.h`; no se editan directamente.

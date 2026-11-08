@@ -1795,10 +1795,10 @@ YYLTYPE yylloc = yyloc_default;
 
 
 /* User initialization code.  */
-#line 14 "Analisis_Sintactico/gramatica.y"
+#line 14 "src/Analisis_Sintactico/gramatica.y"
 { yylloc = (AstUbicacion){1, 1, 1, 1}; }
 
-#line 1802 "Analisis_Sintactico/parser.c"
+#line 1802 "src/Analisis_Sintactico/parser.c"
 
   yylsp[0] = yylloc;
   goto yysetstate;
@@ -2016,24 +2016,24 @@ yyreduce:
     switch (yyn)
       {
   case 2: /* programa: elemento_superior  */
-#line 77 "Analisis_Sintactico/gramatica.y"
+#line 77 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_PROGRAMA, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
         ctx->arbol->raiz = yyval;
       }
-#line 2027 "Analisis_Sintactico/parser.c"
+#line 2027 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 3: /* programa: programa elemento_superior  */
-#line 84 "Analisis_Sintactico/gramatica.y"
+#line 84 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2033 "Analisis_Sintactico/parser.c"
+#line 2033 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 4: /* funcion: CREATE_FUNK HASH tipo_retorno HASH nombre_funcion LPAREN parametros_opcionales RPAREN bloque  */
-#line 90 "Analisis_Sintactico/gramatica.y"
+#line 90 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_FUNCION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
@@ -2042,183 +2042,183 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2046 "Analisis_Sintactico/parser.c"
+#line 2046 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 5: /* parametros_opcionales: %empty  */
-#line 103 "Analisis_Sintactico/gramatica.y"
+#line 103 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_PARAMETROS, NULL, (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2055 "Analisis_Sintactico/parser.c"
+#line 2055 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 6: /* parametros_opcionales: parametros  */
-#line 108 "Analisis_Sintactico/gramatica.y"
+#line 108 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2061 "Analisis_Sintactico/parser.c"
+#line 2061 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 7: /* parametros: parametro  */
-#line 113 "Analisis_Sintactico/gramatica.y"
+#line 113 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_PARAMETROS, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2071 "Analisis_Sintactico/parser.c"
+#line 2071 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 8: /* parametros: parametros COMMA parametro  */
-#line 119 "Analisis_Sintactico/gramatica.y"
+#line 119 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-2]; yyval->ubicacion = (yyloc); ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2077 "Analisis_Sintactico/parser.c"
+#line 2077 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 9: /* parametro: IDENTIFIER STAR tipo_parametro  */
-#line 127 "Analisis_Sintactico/gramatica.y"
+#line 127 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_PARAMETRO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2088 "Analisis_Sintactico/parser.c"
+#line 2088 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 14: /* sentencias: sentencia  */
-#line 149 "Analisis_Sintactico/gramatica.y"
+#line 149 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BLOQUE, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2098 "Analisis_Sintactico/parser.c"
+#line 2098 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 15: /* sentencias: sentencias sentencia  */
-#line 155 "Analisis_Sintactico/gramatica.y"
+#line 155 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2104 "Analisis_Sintactico/parser.c"
+#line 2104 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 27: /* retorno: GIVE expresion SEMICOLON  */
-#line 176 "Analisis_Sintactico/gramatica.y"
+#line 176 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_RETORNO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2114 "Analisis_Sintactico/parser.c"
+#line 2114 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 28: /* retorno: GIVE SEMICOLON  */
-#line 182 "Analisis_Sintactico/gramatica.y"
+#line 182 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_RETORNO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2123 "Analisis_Sintactico/parser.c"
+#line 2123 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 29: /* llamada: destino_llamada LPAREN argumentos_opcionales RPAREN  */
-#line 193 "Analisis_Sintactico/gramatica.y"
+#line 193 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_LLAMADA, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2134 "Analisis_Sintactico/parser.c"
+#line 2134 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 30: /* llamada: ADD LPAREN expresion COMMA expresion RPAREN  */
-#line 200 "Analisis_Sintactico/gramatica.y"
+#line 200 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_AGREGAR, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2145 "Analisis_Sintactico/parser.c"
+#line 2145 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 31: /* llamada: REMOVE LPAREN expresion COMMA expresion RPAREN  */
-#line 207 "Analisis_Sintactico/gramatica.y"
+#line 207 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_ELIMINAR, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2156 "Analisis_Sintactico/parser.c"
+#line 2156 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 32: /* llamada: SIZE LPAREN expresion RPAREN  */
-#line 214 "Analisis_Sintactico/gramatica.y"
+#line 214 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_TAMANO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2166 "Analisis_Sintactico/parser.c"
+#line 2166 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 33: /* argumentos_opcionales: %empty  */
-#line 223 "Analisis_Sintactico/gramatica.y"
+#line 223 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_ARGUMENTOS, NULL, (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2175 "Analisis_Sintactico/parser.c"
+#line 2175 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 34: /* argumentos_opcionales: argumentos  */
-#line 228 "Analisis_Sintactico/gramatica.y"
+#line 228 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2181 "Analisis_Sintactico/parser.c"
+#line 2181 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 35: /* argumentos: expresion  */
-#line 233 "Analisis_Sintactico/gramatica.y"
+#line 233 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_ARGUMENTOS, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2191 "Analisis_Sintactico/parser.c"
+#line 2191 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 36: /* argumentos: argumentos COMMA expresion  */
-#line 239 "Analisis_Sintactico/gramatica.y"
+#line 239 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-2]; yyval->ubicacion = (yyloc); ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2197 "Analisis_Sintactico/parser.c"
+#line 2197 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 37: /* bloque: LBRACE contenido_bloque RBRACE  */
-#line 245 "Analisis_Sintactico/gramatica.y"
+#line 245 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); }
-#line 2203 "Analisis_Sintactico/parser.c"
+#line 2203 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 38: /* contenido_bloque: %empty  */
-#line 250 "Analisis_Sintactico/gramatica.y"
+#line 250 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BLOQUE, NULL, (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2212 "Analisis_Sintactico/parser.c"
+#line 2212 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 39: /* contenido_bloque: sentencias  */
-#line 255 "Analisis_Sintactico/gramatica.y"
+#line 255 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2218 "Analisis_Sintactico/parser.c"
+#line 2218 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 40: /* condicional: WHETHER LPAREN expresion RPAREN bloque alternativa  */
-#line 264 "Analisis_Sintactico/gramatica.y"
+#line 264 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_SI, "whether", (yyloc));
         if (!yyval) YYNOMEM;
@@ -2226,17 +2226,17 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2230 "Analisis_Sintactico/parser.c"
+#line 2230 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 41: /* alternativa: %empty  */
-#line 276 "Analisis_Sintactico/gramatica.y"
+#line 276 "src/Analisis_Sintactico/gramatica.y"
       { yyval = NULL; }
-#line 2236 "Analisis_Sintactico/parser.c"
+#line 2236 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 42: /* alternativa: ALIF LPAREN expresion RPAREN bloque alternativa  */
-#line 278 "Analisis_Sintactico/gramatica.y"
+#line 278 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_SI, "alif", (yyloc));
         if (!yyval) YYNOMEM;
@@ -2244,378 +2244,378 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2248 "Analisis_Sintactico/parser.c"
+#line 2248 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 43: /* alternativa: ALSO bloque  */
-#line 286 "Analisis_Sintactico/gramatica.y"
+#line 286 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2254 "Analisis_Sintactico/parser.c"
+#line 2254 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 44: /* ciclo: WHALE LPAREN expresion RPAREN bloque STOP SEMICOLON  */
-#line 295 "Analisis_Sintactico/gramatica.y"
+#line 295 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_MIENTRAS, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-4]);
         ast_agregar_hijo(yyval, yyvsp[-2]);
       }
-#line 2265 "Analisis_Sintactico/parser.c"
+#line 2265 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 45: /* declaracion: declaradores SEMICOLON  */
-#line 306 "Analisis_Sintactico/gramatica.y"
+#line 306 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); }
-#line 2271 "Analisis_Sintactico/parser.c"
+#line 2271 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 46: /* asignacion: referencia ASSIGN expresion SEMICOLON  */
-#line 314 "Analisis_Sintactico/gramatica.y"
+#line 314 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_ASIGNACION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2282 "Analisis_Sintactico/parser.c"
+#line 2282 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 59: /* expresion: expresion EQUAL expresion  */
-#line 342 "Analisis_Sintactico/gramatica.y"
+#line 342 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "==", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2293 "Analisis_Sintactico/parser.c"
+#line 2293 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 60: /* expresion: expresion NOT_EQUAL expresion  */
-#line 349 "Analisis_Sintactico/gramatica.y"
+#line 349 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "=/=", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2304 "Analisis_Sintactico/parser.c"
+#line 2304 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 61: /* expresion: expresion LESS expresion  */
-#line 356 "Analisis_Sintactico/gramatica.y"
+#line 356 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "<", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2315 "Analisis_Sintactico/parser.c"
+#line 2315 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 62: /* expresion: expresion GREATER expresion  */
-#line 363 "Analisis_Sintactico/gramatica.y"
+#line 363 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, ">", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2326 "Analisis_Sintactico/parser.c"
+#line 2326 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 63: /* expresion: expresion LESS_EQUAL expresion  */
-#line 370 "Analisis_Sintactico/gramatica.y"
+#line 370 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "<=", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2337 "Analisis_Sintactico/parser.c"
+#line 2337 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 64: /* expresion: expresion GREATER_EQUAL expresion  */
-#line 377 "Analisis_Sintactico/gramatica.y"
+#line 377 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, ">=", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2348 "Analisis_Sintactico/parser.c"
+#line 2348 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 65: /* expresion: expresion GAUSS expresion  */
-#line 384 "Analisis_Sintactico/gramatica.y"
+#line 384 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "gauss", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2359 "Analisis_Sintactico/parser.c"
+#line 2359 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 66: /* expresion: expresion NEUMANN expresion  */
-#line 391 "Analisis_Sintactico/gramatica.y"
+#line 391 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "neumann", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2370 "Analisis_Sintactico/parser.c"
+#line 2370 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 67: /* expresion: expresion PITAGORAS expresion  */
-#line 398 "Analisis_Sintactico/gramatica.y"
+#line 398 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "pitagoras", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2381 "Analisis_Sintactico/parser.c"
+#line 2381 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 68: /* expresion: expresion EUCLIDES expresion  */
-#line 405 "Analisis_Sintactico/gramatica.y"
+#line 405 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "euclides", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2392 "Analisis_Sintactico/parser.c"
+#line 2392 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 69: /* expresion: expresion AND expresion  */
-#line 412 "Analisis_Sintactico/gramatica.y"
+#line 412 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "&&", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2403 "Analisis_Sintactico/parser.c"
+#line 2403 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 70: /* expresion: expresion OR expresion  */
-#line 419 "Analisis_Sintactico/gramatica.y"
+#line 419 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "||", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2414 "Analisis_Sintactico/parser.c"
+#line 2414 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 71: /* expresion: expresion XOR expresion  */
-#line 426 "Analisis_Sintactico/gramatica.y"
+#line 426 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "^", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2425 "Analisis_Sintactico/parser.c"
+#line 2425 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 72: /* expresion: expresion EULER expresion  */
-#line 433 "Analisis_Sintactico/gramatica.y"
+#line 433 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "euler", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2436 "Analisis_Sintactico/parser.c"
+#line 2436 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 73: /* expresion: expresion DESCARTES expresion  */
-#line 440 "Analisis_Sintactico/gramatica.y"
+#line 440 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_BINARIO, "descartes", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2447 "Analisis_Sintactico/parser.c"
+#line 2447 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 74: /* expresion: NOT expresion  */
-#line 447 "Analisis_Sintactico/gramatica.y"
+#line 447 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_UNARIO, "~", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2457 "Analisis_Sintactico/parser.c"
+#line 2457 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 75: /* expresion: NEUMANN expresion  */
-#line 453 "Analisis_Sintactico/gramatica.y"
+#line 453 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_UNARIO, "neumann", (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2467 "Analisis_Sintactico/parser.c"
+#line 2467 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 76: /* expresion: LPAREN expresion RPAREN  */
-#line 459 "Analisis_Sintactico/gramatica.y"
+#line 459 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; }
-#line 2473 "Analisis_Sintactico/parser.c"
+#line 2473 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 77: /* elemento_superior: funcion  */
-#line 466 "Analisis_Sintactico/gramatica.y"
+#line 466 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2479 "Analisis_Sintactico/parser.c"
+#line 2479 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 78: /* elemento_superior: importacion  */
-#line 468 "Analisis_Sintactico/gramatica.y"
+#line 468 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2485 "Analisis_Sintactico/parser.c"
+#line 2485 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 79: /* elemento_superior: constante  */
-#line 470 "Analisis_Sintactico/gramatica.y"
+#line 470 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2491 "Analisis_Sintactico/parser.c"
+#line 2491 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 80: /* importacion: BRING IDENTIFIER alias_opcional SEMICOLON  */
-#line 475 "Analisis_Sintactico/gramatica.y"
+#line 475 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_IMPORTACION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2502 "Analisis_Sintactico/parser.c"
+#line 2502 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 81: /* alias_opcional: %empty  */
-#line 485 "Analisis_Sintactico/gramatica.y"
+#line 485 "src/Analisis_Sintactico/gramatica.y"
       { yyval = NULL; }
-#line 2508 "Analisis_Sintactico/parser.c"
+#line 2508 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 82: /* alias_opcional: AKA IDENTIFIER  */
-#line 487 "Analisis_Sintactico/gramatica.y"
+#line 487 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2514 "Analisis_Sintactico/parser.c"
+#line 2514 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 83: /* tipo_parametro: tipo  */
-#line 492 "Analisis_Sintactico/gramatica.y"
+#line 492 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2520 "Analisis_Sintactico/parser.c"
+#line 2520 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 84: /* tipo_parametro: tipo dimensiones_parametro  */
-#line 494 "Analisis_Sintactico/gramatica.y"
+#line 494 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_TIPO_ARREGLO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2531 "Analisis_Sintactico/parser.c"
+#line 2531 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 85: /* tipo_parametro: DECLARE_LIST tipo  */
-#line 501 "Analisis_Sintactico/gramatica.y"
+#line 501 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_TIPO_LISTA, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2541 "Analisis_Sintactico/parser.c"
+#line 2541 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 86: /* tipo_variable: tipo  */
-#line 510 "Analisis_Sintactico/gramatica.y"
+#line 510 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2547 "Analisis_Sintactico/parser.c"
+#line 2547 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 87: /* tipo_variable: tipo dimensiones  */
-#line 512 "Analisis_Sintactico/gramatica.y"
+#line 512 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_TIPO_ARREGLO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2558 "Analisis_Sintactico/parser.c"
+#line 2558 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 88: /* dimensiones: dimension  */
-#line 522 "Analisis_Sintactico/gramatica.y"
+#line 522 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_DIMENSIONES, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2568 "Analisis_Sintactico/parser.c"
+#line 2568 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 89: /* dimensiones: dimensiones dimension  */
-#line 528 "Analisis_Sintactico/gramatica.y"
+#line 528 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2574 "Analisis_Sintactico/parser.c"
+#line 2574 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 90: /* dimensiones_parametro: dimension_parametro  */
-#line 533 "Analisis_Sintactico/gramatica.y"
+#line 533 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_DIMENSIONES, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2584 "Analisis_Sintactico/parser.c"
+#line 2584 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 91: /* dimensiones_parametro: dimensiones_parametro dimension_parametro  */
-#line 539 "Analisis_Sintactico/gramatica.y"
+#line 539 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2590 "Analisis_Sintactico/parser.c"
+#line 2590 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 92: /* dimension: LBRACKET expresion RBRACKET  */
-#line 544 "Analisis_Sintactico/gramatica.y"
+#line 544 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_DIMENSION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2600 "Analisis_Sintactico/parser.c"
+#line 2600 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 93: /* dimension_parametro: dimension  */
-#line 553 "Analisis_Sintactico/gramatica.y"
+#line 553 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2606 "Analisis_Sintactico/parser.c"
+#line 2606 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 94: /* dimension_parametro: LBRACKET RBRACKET  */
-#line 555 "Analisis_Sintactico/gramatica.y"
+#line 555 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_DIMENSION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2615 "Analisis_Sintactico/parser.c"
+#line 2615 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 95: /* declarador: IDENTIFIER STAR tipo_variable inicializador_opcional  */
-#line 563 "Analisis_Sintactico/gramatica.y"
+#line 563 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_DECLARACION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
@@ -2623,29 +2623,29 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2627 "Analisis_Sintactico/parser.c"
+#line 2627 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 96: /* inicializador_opcional: %empty  */
-#line 574 "Analisis_Sintactico/gramatica.y"
+#line 574 "src/Analisis_Sintactico/gramatica.y"
       { yyval = NULL; }
-#line 2633 "Analisis_Sintactico/parser.c"
+#line 2633 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 97: /* inicializador_opcional: ASSIGN expresion  */
-#line 576 "Analisis_Sintactico/gramatica.y"
+#line 576 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2639 "Analisis_Sintactico/parser.c"
+#line 2639 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 98: /* declaradores: declarador  */
-#line 581 "Analisis_Sintactico/gramatica.y"
+#line 581 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2645 "Analisis_Sintactico/parser.c"
+#line 2645 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 99: /* declaradores: declaradores COMMA declarador  */
-#line 583 "Analisis_Sintactico/gramatica.y"
+#line 583 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = yyvsp[-2];
         if (yyval->tipo != AST_DECLARACIONES) {
@@ -2656,17 +2656,17 @@ yyreduce:
         yyval->ubicacion = (yyloc);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2660 "Analisis_Sintactico/parser.c"
+#line 2660 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 100: /* listas: declarador_lista  */
-#line 597 "Analisis_Sintactico/gramatica.y"
+#line 597 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2666 "Analisis_Sintactico/parser.c"
+#line 2666 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 101: /* listas: listas COMMA declarador_lista  */
-#line 599 "Analisis_Sintactico/gramatica.y"
+#line 599 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = yyvsp[-2];
         if (yyval->tipo != AST_DECLARACIONES) {
@@ -2677,11 +2677,11 @@ yyreduce:
         yyval->ubicacion = (yyloc);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2681 "Analisis_Sintactico/parser.c"
+#line 2681 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 102: /* constante: DECLARE_CONST IDENTIFIER STAR tipo_variable ASSIGN expresion SEMICOLON  */
-#line 613 "Analisis_Sintactico/gramatica.y"
+#line 613 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_CONSTANTE, NULL, (yyloc));
         if (!yyval) YYNOMEM;
@@ -2689,17 +2689,17 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2693 "Analisis_Sintactico/parser.c"
+#line 2693 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 103: /* declaracion_lista: DECLARE_LIST listas SEMICOLON  */
-#line 624 "Analisis_Sintactico/gramatica.y"
+#line 624 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); }
-#line 2699 "Analisis_Sintactico/parser.c"
+#line 2699 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 104: /* declarador_lista: IDENTIFIER STAR tipo inicializador_opcional  */
-#line 629 "Analisis_Sintactico/gramatica.y"
+#line 629 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_LISTA, NULL, (yyloc));
         if (!yyval) YYNOMEM;
@@ -2707,11 +2707,11 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2711 "Analisis_Sintactico/parser.c"
+#line 2711 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 105: /* recorrido: CYCLE IDENTIFIER LET expresion UNTIL expresion paso_opcional bloque ENDGAME SEMICOLON  */
-#line 640 "Analisis_Sintactico/gramatica.y"
+#line 640 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_RECORRIDO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
@@ -2721,53 +2721,53 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-2]);
       }
-#line 2725 "Analisis_Sintactico/parser.c"
+#line 2725 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 106: /* paso_opcional: %empty  */
-#line 653 "Analisis_Sintactico/gramatica.y"
+#line 653 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_ENTERO, "1", (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2734 "Analisis_Sintactico/parser.c"
+#line 2734 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 107: /* paso_opcional: STEP expresion  */
-#line 658 "Analisis_Sintactico/gramatica.y"
+#line 658 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2740 "Analisis_Sintactico/parser.c"
+#line 2740 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 108: /* intentar: SEEK bloque capturas  */
-#line 663 "Analisis_Sintactico/gramatica.y"
+#line 663 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_INTENTAR, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-1]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2751 "Analisis_Sintactico/parser.c"
+#line 2751 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 109: /* capturas: captura  */
-#line 673 "Analisis_Sintactico/gramatica.y"
+#line 673 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_CAPTURAS, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2761 "Analisis_Sintactico/parser.c"
+#line 2761 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 110: /* capturas: capturas captura  */
-#line 679 "Analisis_Sintactico/gramatica.y"
+#line 679 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2767 "Analisis_Sintactico/parser.c"
+#line 2767 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 111: /* captura: SEIZE LPAREN IDENTIFIER IDENTIFIER RPAREN bloque  */
-#line 684 "Analisis_Sintactico/gramatica.y"
+#line 684 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_CAPTURA, NULL, (yyloc));
         if (!yyval) YYNOMEM;
@@ -2775,88 +2775,88 @@ yyreduce:
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2779 "Analisis_Sintactico/parser.c"
+#line 2779 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 112: /* referencia: IDENTIFIER  */
-#line 695 "Analisis_Sintactico/gramatica.y"
+#line 695 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2785 "Analisis_Sintactico/parser.c"
+#line 2785 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 113: /* referencia: referencia DOT IDENTIFIER  */
-#line 697 "Analisis_Sintactico/gramatica.y"
+#line 697 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_ACCESO_MIEMBRO, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-2]);
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2796 "Analisis_Sintactico/parser.c"
+#line 2796 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 114: /* referencia: referencia LBRACKET expresion RBRACKET  */
-#line 704 "Analisis_Sintactico/gramatica.y"
+#line 704 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_INDICE, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[-3]);
         ast_agregar_hijo(yyval, yyvsp[-1]);
       }
-#line 2807 "Analisis_Sintactico/parser.c"
+#line 2807 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 115: /* destino_llamada: referencia  */
-#line 714 "Analisis_Sintactico/gramatica.y"
+#line 714 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2813 "Analisis_Sintactico/parser.c"
+#line 2813 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 116: /* destino_llamada: MAIN  */
-#line 716 "Analisis_Sintactico/gramatica.y"
+#line 716 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2819 "Analisis_Sintactico/parser.c"
+#line 2819 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 117: /* literal_coleccion: LBRACKET elementos_opcionales RBRACKET  */
-#line 721 "Analisis_Sintactico/gramatica.y"
+#line 721 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-1]; yyval->ubicacion = (yyloc); }
-#line 2825 "Analisis_Sintactico/parser.c"
+#line 2825 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 118: /* elementos_opcionales: %empty  */
-#line 726 "Analisis_Sintactico/gramatica.y"
+#line 726 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_LITERAL_COLECCION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
       }
-#line 2834 "Analisis_Sintactico/parser.c"
+#line 2834 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 119: /* elementos_opcionales: elementos  */
-#line 731 "Analisis_Sintactico/gramatica.y"
+#line 731 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[0]; }
-#line 2840 "Analisis_Sintactico/parser.c"
+#line 2840 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 120: /* elementos: expresion  */
-#line 736 "Analisis_Sintactico/gramatica.y"
+#line 736 "src/Analisis_Sintactico/gramatica.y"
       {
         yyval = ast_crear(ctx->arbol, AST_LITERAL_COLECCION, NULL, (yyloc));
         if (!yyval) YYNOMEM;
         ast_agregar_hijo(yyval, yyvsp[0]);
       }
-#line 2850 "Analisis_Sintactico/parser.c"
+#line 2850 "src/Analisis_Sintactico/parser.c"
     break;
 
   case 121: /* elementos: elementos COMMA expresion  */
-#line 742 "Analisis_Sintactico/gramatica.y"
+#line 742 "src/Analisis_Sintactico/gramatica.y"
       { yyval = yyvsp[-2]; ast_agregar_hijo(yyval, yyvsp[0]); }
-#line 2856 "Analisis_Sintactico/parser.c"
+#line 2856 "src/Analisis_Sintactico/parser.c"
     break;
 
 
-#line 2860 "Analisis_Sintactico/parser.c"
+#line 2860 "src/Analisis_Sintactico/parser.c"
 
         default: break;
       }
@@ -3096,7 +3096,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 745 "Analisis_Sintactico/gramatica.y"
+#line 745 "src/Analisis_Sintactico/gramatica.y"
 
 
 /* yylex y yyerror estan implementadas en puente_lexer.c.

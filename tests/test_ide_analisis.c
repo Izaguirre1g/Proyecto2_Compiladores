@@ -1,5 +1,5 @@
 /*
- * Pruebas del análisis del editor (src/ide_analisis.c).
+ * Pruebas del análisis del editor (src/IDE/ide_analisis.c).
  *
  * Revisa que el IDE pueda analizar texto SIN guardar:
  *   - que encuentre los errores y los reporte con el nombre original,

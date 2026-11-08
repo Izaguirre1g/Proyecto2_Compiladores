@@ -1,5 +1,5 @@
 /*
- * Pruebas de la detección de clones (src/clones.c).
+ * Pruebas de la detección de clones (src/Deteccion_Clones/clones.c).
  *
  * Se ejecuta con: make test-clones
  */
