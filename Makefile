@@ -21,6 +21,13 @@ BINARIO    := src/Codificacion_Binaria
 CLI        := src/Linea_Comandos
 CLONES     := src/Deteccion_Clones
 IDE        := src/IDE
+LL1        := src/LL1
+
+# Analisis predictivo LL(1): gramatica de BAL sin recursividad izquierda y
+# factorizada, PRIMERO, SIGUIENTE, tabla M[A, a] y analizador con pila.
+# Lo usa el IDE para predecir que tokens pueden venir (sugerencias y
+# correcciones). Bison sigue siendo el parser que construye el AST.
+LL1_SRC := $(LL1)/ll1_gramatica.c $(LL1)/ll1_tabla.c $(LL1)/ll1_analizador.c $(LL1)/ll1_recuperacion.c
 
 # Carpetas donde se buscan los archivos .h.
 # include/ tiene las interfaces públicas; las otras tres tienen encabezados
@@ -42,7 +49,7 @@ SRC := $(CLI)/main.c $(CLI)/cli.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token
        $(BINARIO)/codificacion_binaria.c $(BINARIO)/formato_binario.c $(CLI)/diagnosticos.c $(CLONES)/clones.c $(IR)/ir.c
 
 # Estos nombres son comandos de Make, no archivos.
-.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones ide clean
+.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ll1 tabla-ll1 ide clean
 
 # Al ejecutar make, se construye balc.
 all: balc
@@ -69,7 +76,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -110,7 +117,7 @@ test-generacion: tests/test_generacion
 # Sirve para volver a compilar todo desde cero.
 # Elimina los ejecutables y archivos generados.
 clean:
-	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones balc-ide $(LEXER_GEN)
+	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones tests/test_ll1 balc-ll1 balc-ide $(LEXER_GEN)
 
 # Pruebas de la tabla de símbolos
 .PHONY: test-symbol-table
@@ -619,7 +626,7 @@ test-diagnosticos: tests/test_diagnosticos balc
 
 # Pruebas del nucleo del IDE: sugerencias, autocierre y delimitadores.
 # Usa el lexer real del compilador, por eso compila tambien lexer.c y token.c.
-IDE_NUCLEO_SRC := $(IDE)/ide_nucleo.c $(CLI)/diagnosticos.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+IDE_NUCLEO_SRC := $(IDE)/ide_nucleo.c $(CLI)/diagnosticos.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c $(LL1_SRC)
 
 tests/test_ide_nucleo: tests/test_ide_nucleo.c $(IDE_NUCLEO_SRC) include/ide_nucleo.h include/diagnosticos.h include/lexer.h include/token.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_nucleo.c $(IDE_NUCLEO_SRC) -o $@
@@ -690,3 +697,25 @@ tests/test_ir: tests/test_ir.c $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h inclu
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir.c $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
 test-ir: tests/test_ir
 	./tests/test_ir
+
+# Analisis predictivo LL(1) (LL1_SRC se define arriba, junto a las carpetas).
+# Programas con los que se compara el LL(1) contra Bison.
+LL1_PROGRAMAS := $(wildcard examples/*.bal tests/*.bal tests/modulos/*.bal tests/fixtures/*.bal)
+
+# La prueba compara el LL(1) con Bison, asi que tambien compila el parser.
+tests/test_ll1: tests/test_ll1.c $(LL1_SRC) include/ll1.h $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c include/sintactico.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ll1.c $(LL1_SRC) $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
+
+test-ll1: tests/test_ll1
+	@echo './tests/test_ll1 <$(words $(LL1_PROGRAMAS)) programas .bal>'
+	@./tests/test_ll1 $(LL1_PROGRAMAS)
+
+# Herramienta para la defensa:
+#   ./balc-ll1 --tabla               PRIMERO, SIGUIENTE y tabla M en Markdown
+#   ./balc-ll1 --traza archivo.bal   pila, entrada y accion paso a paso
+balc-ll1: $(LL1)/ll1_herramienta.c $(LL1_SRC) include/ll1.h $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LL1)/ll1_herramienta.c $(LL1_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
+
+# Regenera docs/ll1_tabla.md a partir de la gramatica.
+tabla-ll1: balc-ll1
+	./balc-ll1 --tabla > docs/ll1_tabla.md

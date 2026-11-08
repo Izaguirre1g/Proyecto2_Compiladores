@@ -73,6 +73,7 @@ mismo orden en que un programa `.bal` las atraviesa:
 | — | `src/Linea_Comandos/` | Programa `balc`: opciones de la terminal y diagnósticos en JSON. | `main.c`, `cli.c`, `diagnosticos.c` |
 | — | `src/Deteccion_Clones/` | Clones Tipo I y II entre archivos (lo usan `balc --clones` y el IDE). | `clones.c` |
 | — | `src/IDE/` | Editor GTK: sugerencias, autocierre, errores y correcciones. | `ide_*.c` |
+| — | `src/LL1/` | Gramática LL(1), PRIMERO/SIGUIENTE, tabla M y analizador predictivo; el IDE la consulta para sugerir y corregir. Ver [docs/ll1.md](docs/ll1.md). | `ll1_*.c` |
 
 Las interfaces públicas (`.h`) están todas en `include/`. Solo tres
 encabezados viven junto a su código porque son internos o generados:

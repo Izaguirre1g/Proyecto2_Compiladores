@@ -1,7 +1,9 @@
 #include "ide_arreglos.h"
 
 #include "lexer.h"
+#include "ll1.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,8 @@ typedef struct {
     TokenType tipo;
     size_t linea, columna;          /* Dónde empieza. */
     size_t linea_fin, columna_fin;  /* Dónde termina (la posición justo después). */
+    char *lexema;                   /* Lo escrito, solo en los nombres (NULL en los demás).
+                                     * Sirve para reconocer palabras mal escritas. */
 } TokenUbicado;
 
 typedef struct {
@@ -41,14 +45,25 @@ static int leer_tokens(const char *texto, size_t largo, ListaTokens *lista)
         int sin_memoria = (t.error == TOKEN_OUT_OF_MEMORY);
 
         /* Después de lexer_next, el lexer quedó justo al final del token. */
-        TokenUbicado u = {t.type, t.line, t.column, lexer.line, lexer.column};
+        TokenUbicado u = {t.type, t.line, t.column, lexer.line, lexer.column, NULL};
+        if (!sin_memoria && t.type == TOKEN_IDENTIFIER && t.lexeme != NULL) {
+            u.lexema = malloc(t.length + 1);  /* Copia propia: el token se libera ya. */
+            if (u.lexema == NULL) {
+                sin_memoria = 1;
+            } else {
+                memcpy(u.lexema, t.lexeme, t.length + 1);
+            }
+        }
         token_dispose(&t);
         if (sin_memoria) return -1;
 
         if (lista->cantidad == lista->capacidad) {
             size_t nueva = (lista->capacidad == 0) ? 64 : lista->capacidad * 2;
             TokenUbicado *mas = realloc(lista->elementos, nueva * sizeof *mas);
-            if (mas == NULL) return -1;
+            if (mas == NULL) {
+                free(u.lexema);
+                return -1;
+            }
             lista->elementos = mas;
             lista->capacidad = nueva;
         }
@@ -56,6 +71,14 @@ static int leer_tokens(const char *texto, size_t largo, ListaTokens *lista)
 
         if (u.tipo == TOKEN_EOF) return 0;
     }
+}
+
+/* Libera la lista de tokens (y los lexemas copiados). */
+static void liberar_tokens(ListaTokens *lista)
+{
+    for (size_t i = 0; i < lista->cantidad; ++i) free(lista->elementos[i].lexema);
+    free(lista->elementos);
+    memset(lista, 0, sizeof *lista);
 }
 
 /* Busca el token que empieza en (linea, columna). Devuelve su índice, o -1. */
@@ -168,79 +191,13 @@ static int preparar(IdeArreglo *a, size_t linea, size_t columna, size_t borrar,
     return 1;
 }
 
-/* ¿Puede este token ser el final de una sentencia? Por ejemplo, en
- * "numero : 10" el último token es el número 10. Después de estos tokens
- * es donde suele faltar el ';'. */
-static int puede_terminar_sentencia(TokenType tipo)
-{
-    switch (tipo) {
-        case TOKEN_IDENTIFIER:
-        case TOKEN_INTEGER:
-        case TOKEN_STRING:
-        case TOKEN_CHARACTER:
-        case TOKEN_RPAREN:
-        case TOKEN_RBRACKET:
-        case TOKEN_DECLARE_TRUE:
-        case TOKEN_DECLARE_FALSE:
-        case TOKEN_STOP:
-            return 1;
-        default:
-            return 0;
-    }
-}
-
 /* ------------------------------------------------------------------ */
-/* Arreglos para los errores del parser                                */
+/* Arreglo para los errores del parser: lo predice la tabla LL(1)      */
 /* ------------------------------------------------------------------ */
 
-/*
- * El parser marca el token donde NO pudo seguir. Mirando ese token y el
- * anterior se adivina qué faltaba.
- */
-static int arreglar_error_del_parser(const ListaTokens *tokens, const Diagnostico *d,
-                                     IdeArreglo *a)
-{
-    long k = buscar_token(tokens, d->linea, d->columna);
-    if (k <= 0) return 0;  /* No se encontró el token, o no hay nada antes. */
-
-    const TokenUbicado *donde = &tokens->elementos[k];
-    const TokenUbicado *antes = &tokens->elementos[k - 1];
-
-    /*
-     * Caso 1: falta ')' antes de '{'.
-     *   whether (x == 1 {      ->   whether (x == 1) {
-     * Se cuentan los paréntesis de esa línea antes del '{': si quedó
-     * alguno abierto, el ')' que falta va justo antes del '{'.
-     */
-    if (donde->tipo == TOKEN_LBRACE) {
-        long abiertos = 0;
-        for (long i = k - 1; i >= 0 && tokens->elementos[i].linea == donde->linea; --i) {
-            if (tokens->elementos[i].tipo == TOKEN_LPAREN) abiertos++;
-            if (tokens->elementos[i].tipo == TOKEN_RPAREN) abiertos--;
-        }
-        if (abiertos > 0) {
-            snprintf(a->descripcion, sizeof a->descripcion,
-                     "agregar ')' antes de '{' en la linea %zu", donde->linea);
-            return preparar(a, antes->linea_fin, antes->columna_fin, 0, ")");
-        }
-    }
-
-    /*
-     * Caso 2: falta ';' al final de la línea anterior.
-     *   numero * declare_int : 10      <- aquí falta el ';'
-     *   numero : 5;                    <- pero el parser se queja aquí
-     * El token anterior al error está en otra línea y puede cerrar una
-     * sentencia, así que el ';' va pegado a él.
-     */
-    int otra_linea = (antes->linea_fin < donde->linea) || donde->tipo == TOKEN_EOF;
-    if (otra_linea && puede_terminar_sentencia(antes->tipo)) {
-        snprintf(a->descripcion, sizeof a->descripcion,
-                 "agregar ';' al final de la linea %zu", antes->linea_fin);
-        return preparar(a, antes->linea_fin, antes->columna_fin, 0, ";");
-    }
-
-    return 0;
-}
+/* Está más abajo, junto con lo demás del LL(1). */
+static int arreglar_con_ll1(const char *texto, size_t largo, const ListaTokens *tokens,
+                            const Diagnostico *d, IdeArreglo *a);
 
 /* ------------------------------------------------------------------ */
 /* Arreglos para los paréntesis, corchetes y llaves                    */
@@ -384,11 +341,11 @@ int ide_proponer_arreglo(const char *texto, size_t largo,
     if (leer_tokens(texto, largo, &tokens) != 0) {
         resultado = -1;
     } else if (es_del_parser) {
-        resultado = arreglar_error_del_parser(&tokens, error, arreglo);
+        resultado = arreglar_con_ll1(texto, largo, &tokens, error, arreglo);
     } else {
         resultado = arreglar_sin_cerrar(texto, largo, &tokens, error, arreglo);
     }
-    free(tokens.elementos);
+    liberar_tokens(&tokens);
     return resultado;
 }
 
@@ -427,4 +384,216 @@ char *ide_aplicar_arreglo(const char *texto, size_t largo,
 
     *nuevo_largo = total;
     return nuevo;
+}
+
+/* ------------------------------------------------------------------ */
+/* El arreglo con la tabla LL(1)                                       */
+/* ------------------------------------------------------------------ */
+
+/* Los tokens que se pegan al anterior sin espacio: "x;"  "f(x)"  "a[1]". */
+static int va_pegado(int terminal)
+{
+    return terminal == TOKEN_SEMICOLON || terminal == TOKEN_COMMA || terminal == TOKEN_RPAREN ||
+           terminal == TOKEN_RBRACKET || terminal == TOKEN_DOT;
+}
+
+/*
+ * Cómo nombrar un token del archivo en una descripción, entre comillas:
+ * 'gauss', ';', o lo que esté escrito si es un nombre o un número
+ * ('declar_int', '12'). Si no se puede leer del texto, "un nombre".
+ */
+static void nombrar_token(const char *texto, size_t largo, const TokenUbicado *t,
+                          char *destino, size_t tamano)
+{
+    if (ll1_texto_fijo(t->tipo)) {
+        snprintf(destino, tamano, "'%s'", ll1_texto(t->tipo));
+        return;
+    }
+    size_t inicio, fin;
+    if (t->linea == t->linea_fin &&
+        byte_de_posicion(texto, largo, t->linea, t->columna, &inicio) == 0 &&
+        byte_de_posicion(texto, largo, t->linea_fin, t->columna_fin, &fin) == 0 &&
+        fin > inicio && fin - inicio + 3 <= tamano) {
+        snprintf(destino, tamano, "'%.*s'", (int)(fin - inicio), texto + inicio);
+        return;
+    }
+    snprintf(destino, tamano, "%s", ll1_texto(t->tipo));
+}
+
+/*
+ * Arreglo que borra el token i. Si entre él y el token anterior hay un solo
+ * carácter en la misma línea (un espacio), se borra también, para no dejar
+ * dos espacios seguidos: "x : 5 gauss ;" -> "x : 5 ;".
+ */
+static int borrar_token(const char *texto, size_t largo, const ListaTokens *tokens,
+                        size_t i, IdeArreglo *a)
+{
+    const TokenUbicado *t = &tokens->elementos[i];
+    char nombre[48];
+    nombrar_token(texto, largo, t, nombre, sizeof nombre);
+    if (ll1_texto_fijo(t->tipo)) {
+        snprintf(a->descripcion, sizeof a->descripcion, "borrar %s de la linea %zu",
+                 nombre, t->linea);
+    } else {
+        /* Un nombre o un número puede repetirse en la línea: se dice la columna. */
+        snprintf(a->descripcion, sizeof a->descripcion, "borrar %s de la linea %zu, columna %zu",
+                 nombre, t->linea, t->columna);
+    }
+
+    size_t columna = t->columna;
+    size_t cuantos = (t->linea_fin == t->linea) ? t->columna_fin - t->columna : 1;
+    if (i > 0) {
+        const TokenUbicado *antes = &tokens->elementos[i - 1];
+        if (antes->linea_fin == t->linea && antes->columna_fin + 1 == t->columna) {
+            columna--;
+            cuantos++;
+        }
+    }
+    return preparar(a, t->linea, columna, cuantos, "");
+}
+
+/*
+ * Convierte la corrección del LL(1) en un arreglo concreto del texto
+ * (posición, qué borrar, qué escribir, descripción).
+ *
+ *   k:        índice del token del error.
+ *   anterior: índice del token que el analizador tenía antes del error.
+ */
+static int armar_arreglo(const char *texto, size_t largo, const ListaTokens *tokens,
+                         size_t k, size_t anterior, const Ll1Correccion *c, IdeArreglo *a)
+{
+    const TokenUbicado *donde = &tokens->elementos[k];
+    char nombre_donde[48];
+    nombrar_token(texto, largo, donde, nombre_donde, sizeof nombre_donde);
+
+    if (c->tipo == LL1_BORRAR) return borrar_token(texto, largo, tokens, k, a);
+    if (c->tipo == LL1_BORRAR_ANTERIOR) {
+        if (anterior == SIZE_MAX) return 0;  /* Era un token insertado: no está en el texto. */
+        return borrar_token(texto, largo, tokens, anterior, a);
+    }
+
+    if (c->tipo == LL1_CAMBIAR) {
+        size_t cuantos = (donde->linea_fin == donde->linea) ? donde->columna_fin - donde->columna : 1;
+        snprintf(a->descripcion, sizeof a->descripcion, "cambiar %s por '%s'",
+                 nombre_donde, ll1_texto(c->terminales[0]));
+        return preparar(a, donde->linea, donde->columna, cuantos, ll1_texto(c->terminales[0]));
+    }
+
+    /* INSERTAR: uno o dos tokens, con espacio solo donde hace falta. */
+    char nuevo[48];
+    snprintf(nuevo, sizeof nuevo, "%s%s%s", ll1_texto(c->terminales[0]),
+             (c->cantidad > 1 && !va_pegado(c->terminales[1])) ? " " : "",
+             c->cantidad > 1 ? ll1_texto(c->terminales[1]) : "");
+
+    if (k == 0) {  /* No hay token antes: se escribe al inicio, antes del error. */
+        char insertar[64];
+        snprintf(insertar, sizeof insertar, "%s ", nuevo);
+        snprintf(a->descripcion, sizeof a->descripcion, "agregar '%s' al inicio", nuevo);
+        return preparar(a, donde->linea, donde->columna, 0, insertar);
+    }
+
+    /* Va pegado al token anterior del archivo, porque el parser marca el
+     * error en el token SIGUIENTE, que muchas veces está en la línea de abajo. */
+    const TokenUbicado *antes = &tokens->elementos[k - 1];
+    int otra_linea = antes->linea_fin < donde->linea || donde->tipo == TOKEN_EOF;
+
+    /* Un '}' que falta al final de una línea va en una línea nueva, con la
+     * misma sangría que la línea que abrió esa llave:
+     *     numero : 10;          numero : 10;
+     *                    ->   }
+     */
+    if (c->terminales[0] == TOKEN_RBRACE && c->cantidad == 1 && otra_linea) {
+        /* Buscar hacia atrás la '{' que quedó abierta. */
+        long abiertas = 0, i = (long)k - 1;
+        for (; i >= 0; --i) {
+            if (tokens->elementos[i].tipo == TOKEN_RBRACE) abiertas++;
+            if (tokens->elementos[i].tipo == TOKEN_LBRACE && abiertas-- == 0) break;
+        }
+        if (i >= 0) {
+            size_t linea_llave = tokens->elementos[i].linea;
+            char *sangria = sangria_de_linea(texto, largo, linea_llave);
+            if (sangria == NULL) return -1;
+            char *insertar_llave = malloc(strlen(sangria) + 3);
+            if (insertar_llave == NULL) {
+                free(sangria);
+                return -1;
+            }
+            sprintf(insertar_llave, "\n%s}", sangria);
+            free(sangria);
+            snprintf(a->descripcion, sizeof a->descripcion,
+                     "agregar '}' para cerrar la '{' de la linea %zu", linea_llave);
+            int r = preparar(a, antes->linea_fin, antes->columna_fin, 0, insertar_llave);
+            free(insertar_llave);
+            return r;
+        }
+    }
+
+    char insertar[64];
+    snprintf(insertar, sizeof insertar, "%s%s", va_pegado(c->terminales[0]) ? "" : " ", nuevo);
+    if (otra_linea) {
+        snprintf(a->descripcion, sizeof a->descripcion, "agregar '%s' al final de la linea %zu",
+                 nuevo, antes->linea_fin);
+    } else {
+        snprintf(a->descripcion, sizeof a->descripcion, "agregar '%s' antes de %s en la linea %zu",
+                 nuevo, nombre_donde, donde->linea);
+    }
+    return preparar(a, antes->linea_fin, antes->columna_fin, 0, insertar);
+}
+
+/*
+ * El arreglo de un error del parser.
+ *
+ * Se analiza el archivo COMPLETO con recuperación (ll1_analizar_con_recuperacion):
+ * el LL(1) corrige cada error y sigue, así que cada error del archivo tiene
+ * su corrección, no solo el primero. Aquí se busca el error que está en el
+ * token del diagnóstico y se convierte su corrección en un arreglo del texto.
+ *
+ * La corrección es la que PREDICE la tabla (por ejemplo, el ';' que falta),
+ * o si la tabla no obliga a un token único, la mejor corrección local
+ * validada con el LL(1). Ver ll1_recuperacion.c.
+ *
+ * Devuelve 1 si hay arreglo, 0 si no, -1 sin memoria.
+ */
+static int arreglar_con_ll1(const char *texto, size_t largo, const ListaTokens *tokens,
+                            const Diagnostico *d, IdeArreglo *a)
+{
+    long encontrado = buscar_token(tokens, d->linea, d->columna);
+    if (encontrado < 0) return 0;
+    size_t k = (size_t)encontrado, n = tokens->cantidad;
+
+    /* El LL(1) recibe los tipos de token y, para reconocer palabras mal
+     * escritas, lo escrito en cada nombre. */
+    TokenType *tipos = malloc(n * sizeof *tipos);
+    const char **lexemas = malloc(n * sizeof *lexemas);
+    if (tipos == NULL || lexemas == NULL) {
+        free(tipos);
+        free(lexemas);
+        return -1;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        tipos[i] = tokens->elementos[i].tipo;
+        lexemas[i] = tokens->elementos[i].lexema;
+    }
+
+    Ll1Errores errores;
+    int estado = ll1_analizar_con_recuperacion(tipos, lexemas, n, &errores);
+    free(tipos);
+    free(lexemas);
+    if (estado != 0) return -1;
+
+    /* En un mismo token puede haber dos errores (una palabra mal escrita y,
+     * ahí mismo, un ';' que faltaba antes). El del diagnóstico se reconoce
+     * por su mensaje: el de la palabra mal escrita lo dice. */
+    int pide_palabra = strstr(d->mensaje, "mal escrita") != NULL;
+    estado = 0;
+    for (size_t i = 0; i < errores.cantidad; ++i) {
+        const Ll1Error *e = &errores.elementos[i];
+        if (e->posicion != k || e->palabra_mal_escrita != pide_palabra) continue;
+        if (e->tiene_correccion) {
+            estado = armar_arreglo(texto, largo, tokens, k, e->anterior, &e->correccion, a);
+        }
+        break;
+    }
+    ll1_liberar_errores(&errores);
+    return estado;
 }

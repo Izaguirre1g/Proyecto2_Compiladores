@@ -108,34 +108,36 @@ int main(void)
             "agregar ';' al final de la linea 2",
             INICIO "    numero * declare_int : 10;\n" FINAL);
 
-    /* 3. Falta ')' antes de '{'. */
+    /* 3. Falta ')' antes de '{': la tabla LL(1) lo predice. */
     revisar(__LINE__,
             INICIO "    x * declare_int : 1;\n    whether (x == 1 {\n    }\n" FINAL,
             "agregar ')' antes de '{' en la linea 3",
             INICIO "    x * declare_int : 1;\n    whether (x == 1) {\n    }\n" FINAL);
 
-    /* 4. Una llave sin cerrar: se agrega '}' al final, con la sangría de su línea. */
+    /* 4. Una llave sin cerrar: la tabla predice '}', y se pone en una línea
+     *    nueva con la sangría de la línea que abrió la llave. */
     revisar(__LINE__,
             INICIO "    numero * declare_int : 10;\n",
-            "agregar '}' al final del archivo para cerrar la '{' de la linea 1",
+            "agregar '}' para cerrar la '{' de la linea 1",
             INICIO "    numero * declare_int : 10;\n" FINAL);
 
     /* 5. Igual, pero el archivo no termina en salto de línea. */
     revisar(__LINE__,
             INICIO "    numero * declare_int : 10;",
-            "agregar '}' al final del archivo para cerrar la '{' de la linea 1",
-            INICIO "    numero * declare_int : 10;\n" FINAL);
+            "agregar '}' para cerrar la '{' de la linea 1",
+            INICIO "    numero * declare_int : 10;\n}");
 
-    /* 6. Un '(' sin cerrar: el ')' va antes del ';' final. */
+    /* 6. Un '(' sin cerrar: la tabla predice ')' justo antes del ';'. */
     revisar(__LINE__,
             INICIO "    numero * declare_int : (10 gauss 2;\n" FINAL,
-            "agregar ')' para cerrar el '(' de la linea 2",
+            "agregar ')' antes de ';' en la linea 2",
             INICIO "    numero * declare_int : (10 gauss 2);\n" FINAL);
 
-    /* 7. Un ')' que sobra: se borra. */
+    /* 7. Un ')' que sobra: la tabla no espera nada que lo arregle, así que
+     *    se prueban correcciones y la mejor es borrarlo. */
     revisar(__LINE__,
             INICIO "    numero * declare_int : 10);\n" FINAL,
-            "borrar el ')' que sobra",
+            "borrar ')' de la linea 2",
             INICIO "    numero * declare_int : 10;\n" FINAL);
 
     /* 8. Un cierre equivocado en la misma línea: se cambia. */
@@ -177,6 +179,38 @@ int main(void)
         IdeArreglo fuera = {5, 1, 0, "X", "prueba"};
         VERIFICAR(ide_aplicar_arreglo("ñañ", strlen("ñañ"), &fuera, &nuevo_largo) == NULL);
     }
+
+    /* 11. Errores del parser: UN arreglo, el que predice la tabla LL(1). */
+
+    /* La tabla obliga a dos tokens seguidos: después del bloque de whale
+     * solo puede ir 'stop', y después de 'stop' solo ';'. */
+    revisar(__LINE__,
+            INICIO "    x * declare_int : 0;\n"
+                   "    whale (x < 3) {\n        x : x gauss 1;\n    }\n" FINAL,
+            "agregar 'stop;' al final de la linea 5",
+            INICIO "    x * declare_int : 0;\n"
+                   "    whale (x < 3) {\n        x : x gauss 1;\n    } stop;\n" FINAL);
+
+    /* Falta el '#' después de create_funk: la tabla solo permite '#'. */
+    revisar(__LINE__,
+            "create_funk declare_infinite_void# main() {\n}\n",
+            "agregar '#' antes de 'declare_infinite_void' en la linea 1",
+            "create_funk # declare_infinite_void# main() {\n}\n");
+
+    /* Aquí la tabla NO obliga a un token (después de 'gauss' puede ir
+     * cualquier valor): se prueban correcciones y gana borrar el 'gauss'. */
+    revisar(__LINE__,
+            INICIO "    x * declare_int : 1;\n    x : 5 gauss ;\n" FINAL,
+            "borrar 'gauss' de la linea 3",
+            INICIO "    x * declare_int : 1;\n    x : 5 ;\n" FINAL);
+
+    /* Un número de más: lo más sencillo es borrarlo (la columna dice cuál). */
+    revisar(__LINE__,
+            "create_funk #declare_int# uno() {\n    give 1 1;\n}\n"
+            "create_funk #declare_infinite_void# main() {\n}\n",
+            "borrar '1' de la linea 2, columna 12",
+            "create_funk #declare_int# uno() {\n    give 1;\n}\n"
+            "create_funk #declare_infinite_void# main() {\n}\n");
 
     if (fallos > 0) {
         fprintf(stderr, "test_ide_arreglos: %d fallos\n", fallos);

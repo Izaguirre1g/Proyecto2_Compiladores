@@ -1,6 +1,7 @@
 #include "ide_nucleo.h"
 
 #include "lexer.h"
+#include "ll1.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,18 +115,19 @@ static int comparar_sugerencias(const void *a, const void *b)
     return strcmp(x->texto, y->texto);
 }
 
-int ide_sugerencias(const char *texto, size_t largo, const char *prefijo,
-                    IdeSugerencias *lista)
+/*
+ * Paso "identificadores": recorre el archivo con el analizador léxico del
+ * compilador y agrega los identificadores que empiezan con el prefijo, en
+ * orden alfabético y sin repetidos.
+ *
+ * Se usa el lexer (y no se buscan palabras a mano) para que no salgan
+ * palabras que están dentro de comentarios o de cadenas de texto.
+ */
+static int agregar_identificadores(const char *texto, size_t largo, const char *prefijo,
+                                   IdeSugerencias *lista)
 {
     size_t inicio = lista->cantidad;  /* Donde empiezan los identificadores nuevos. */
 
-    /*
-     * Paso 1: recorrer el archivo con el analizador léxico del compilador
-     * y quedarnos con los identificadores que empiezan con el prefijo.
-     *
-     * Usamos el lexer (y no buscamos palabras a mano) para que no salgan
-     * palabras que están dentro de comentarios o de cadenas de texto.
-     */
     Lexer lexer;
     lexer_init(&lexer, texto, largo, "<editor>");
     for (;;) {
@@ -146,24 +148,123 @@ int ide_sugerencias(const char *texto, size_t largo, const char *prefijo,
         if (tipo == TOKEN_EOF) break;
     }
 
-    /* Paso 2: ordenar alfabéticamente los identificadores encontrados.
+    /* Ordenar alfabéticamente los identificadores encontrados.
      * (Si no se encontró ninguno, no hay nada que ordenar.) */
     if (lista->cantidad > inicio) {
         qsort(lista->elementos + inicio, lista->cantidad - inicio,
               sizeof lista->elementos[0], comparar_sugerencias);
     }
+    return 0;
+}
 
-    /* Paso 3: agregar las palabras clave (ya están en orden alfabético). */
+/* El tipo de token de una palabra clave: se le pregunta al lexer. */
+static TokenType tipo_de_palabra(const char *palabra)
+{
+    Lexer lexer;
+    lexer_init(&lexer, palabra, strlen(palabra), "<palabra>");
+    Token t = lexer_next(&lexer);
+    TokenType tipo = t.type;
+    token_dispose(&t);
+    return tipo;
+}
+
+/*
+ * Paso "palabras clave": agrega las que empiezan con el prefijo (ya están
+ * en orden alfabético). Si "permitidos" no es NULL, solo las palabras cuyo
+ * token está en ese conjunto (lo que la tabla LL(1) dice que puede venir).
+ */
+static int agregar_palabras_clave(const char *prefijo, const Ll1Conjunto *permitidos,
+                                  IdeSugerencias *lista)
+{
     for (size_t i = 0; i < CANTIDAD_PALABRAS; ++i) {
         const char *palabra = PALABRAS_CLAVE[i].palabra;
-        if (empieza_con(palabra, prefijo) && strcmp(palabra, prefijo) != 0) {
-            if (agregar_sugerencia(lista, palabra, strlen(palabra), IDE_PALABRA_CLAVE,
-                                   PALABRAS_CLAVE[i].descripcion) != 0) {
-                return -1;
-            }
+        if (!empieza_con(palabra, prefijo) || strcmp(palabra, prefijo) == 0) continue;
+        if (permitidos != NULL && !permitidos->tiene[tipo_de_palabra(palabra)]) continue;
+        if (agregar_sugerencia(lista, palabra, strlen(palabra), IDE_PALABRA_CLAVE,
+                               PALABRAS_CLAVE[i].descripcion) != 0) {
+            return -1;
         }
     }
     return 0;
+}
+
+int ide_sugerencias(const char *texto, size_t largo, const char *prefijo,
+                    IdeSugerencias *lista)
+{
+    if (agregar_identificadores(texto, largo, prefijo, lista) != 0) return -1;
+    return agregar_palabras_clave(prefijo, NULL, lista);
+}
+
+/*
+ * Qué tokens pueden venir después de los primeros "hasta" bytes del texto,
+ * según la tabla LL(1).
+ *
+ * Se pasan por el lexer solo esos bytes y se le dan los tokens al
+ * analizador predictivo SIN el $ final: así analiza un comienzo de
+ * programa, y al acabarse los tokens devuelve los terminales que podían
+ * seguir (consultando la tabla M con la pila de ese momento).
+ *
+ * Devuelve 1 si se pudo predecir, 0 si no (el código antes del cursor ya
+ * tiene un error, y entonces no hay un "lugar" en la gramática), o -1 si
+ * no hubo memoria.
+ */
+static int tokens_esperados(const char *texto, size_t hasta, Ll1Conjunto *esperados)
+{
+    TokenType *tipos = NULL;
+    size_t cantidad = 0, capacidad = 0;
+
+    Lexer lexer;
+    lexer_init(&lexer, texto, hasta, "<editor>");
+    for (;;) {
+        Token t = lexer_next(&lexer);
+        TokenType tipo = t.type;
+        int sin_memoria = (t.error == TOKEN_OUT_OF_MEMORY);
+        token_dispose(&t);
+        if (sin_memoria) {
+            free(tipos);
+            return -1;
+        }
+        if (tipo == TOKEN_EOF) break;  /* El $ no se agrega: es solo un comienzo. */
+
+        if (cantidad == capacidad) {
+            capacidad = (capacidad == 0) ? 256 : capacidad * 2;
+            TokenType *mas = realloc(tipos, capacidad * sizeof *mas);
+            if (mas == NULL) {
+                free(tipos);
+                return -1;
+            }
+            tipos = mas;
+        }
+        tipos[cantidad++] = tipo;
+    }
+
+    Ll1Resultado r;
+    int estado = ll1_analizar(tipos, cantidad, &r);
+    free(tipos);
+    if (estado != 0) return -1;
+    if (r.estado != LL1_INCOMPLETA) return 0;  /* Hay un error antes del cursor. */
+    *esperados = r.esperados;
+    return 1;
+}
+
+int ide_sugerencias_predictivas(const char *texto, size_t largo, size_t hasta,
+                                const char *prefijo, IdeSugerencias *lista)
+{
+    if (hasta > largo) hasta = largo;
+
+    Ll1Conjunto esperados;
+    int prediccion = tokens_esperados(texto, hasta, &esperados);
+    if (prediccion < 0) return -1;
+
+    /* Sin predicción (hay un error antes), se sugiere todo, como antes. */
+    if (prediccion == 0) return ide_sugerencias(texto, largo, prefijo, lista);
+
+    /* Los nombres del archivo solo tienen sentido si la tabla espera un nombre. */
+    if (esperados.tiene[TOKEN_IDENTIFIER] &&
+        agregar_identificadores(texto, largo, prefijo, lista) != 0) {
+        return -1;
+    }
+    return agregar_palabras_clave(prefijo, &esperados, lista);
 }
 
 void ide_liberar_sugerencias(IdeSugerencias *lista)
