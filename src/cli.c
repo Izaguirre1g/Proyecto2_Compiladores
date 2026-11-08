@@ -11,6 +11,7 @@
 #include "diagnosticos.h"
 #include "clones.h"
 #include "ir.h"
+#include "loop_unrolling.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -177,6 +178,8 @@ typedef struct {
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
     int ir;                 /* --ir: IR de tres direcciones */
+    int unroll;             /* --unroll[=k]: IR antes/despues del loop unrolling */
+    unsigned unroll_factor; /* k de --unroll=k (0: valor por defecto) */
 } Compilacion;
 
 typedef struct {
@@ -199,6 +202,8 @@ static void usage(FILE *out) {
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
+          "--unroll[=k]  muestra la IR antes y despues del loop unrolling (factor k,\n"
+          "              por defecto 4); no genera ningun archivo\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
@@ -214,6 +219,19 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
+        if (!posicional && !strncmp(arg, "--unroll", 8) && (arg[8] == '\0' || arg[8] == '=')) {
+            c->ir = c->unroll = 1;
+            if (arg[8] == '=') {
+                char *fin = NULL;
+                unsigned long k = strtoul(arg + 9, &fin, 10);
+                if (!arg[9] || *fin || k < 2 || k > 64) {
+                    fputs("--unroll=k necesita un factor entero entre 2 y 64\n", stderr);
+                    return -1;
+                }
+                c->unroll_factor = (unsigned)k;
+            }
+            continue;
+        }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -241,7 +259,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (!c->entrada) { usage(stderr); return -1; }
     if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
-        fputs("--ir se ejecuta de forma independiente (sin otras banderas)\n", stderr);
+        fputs("--ir y --unroll se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         return -1;
     }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
@@ -713,11 +731,29 @@ static int buscar_clones(int argc, char **argv)
 /* Solo para visualizar IR validada: no genera ensamblador ni binario. */
 static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag)
 {
-    (void)ctx;
+    const Compilacion *op = ctx;
     (void)tabla;
     IrPrograma ir = {0};
     int estado = ir_desde_ast(arbol, &ir, diag);
-    if (estado == 0) {
+    if (estado == 0 && op && op->unroll) {
+        LuOpciones opciones;
+        LuResumen resumen;
+        lu_opciones_defecto(&opciones);
+        if (op->unroll_factor) opciones.factor = op->unroll_factor;
+        puts("[IR antes del loop unrolling]");
+        estado = ir_imprimir(&ir, stdout);
+        if (estado == 0) {
+            puts("\n[Loop unrolling]");
+            estado = lu_desenrollar(&ir, &opciones, &resumen, stdout);
+        }
+        if (estado == 0) {
+            printf("[unroll] resumen: %zu ciclos, %zu totales, %zu parciales, %zu sin cambios; "
+                   "instrucciones IR %zu -> %zu\n", resumen.ciclos, resumen.totales,
+                   resumen.parciales, resumen.rechazados, resumen.instr_antes, resumen.instr_despues);
+            puts("\n[IR despues del loop unrolling]");
+            estado = ir_imprimir(&ir, stdout);
+        }
+    } else if (estado == 0) {
         puts("[IR de tres direcciones]");
         estado = ir_imprimir(&ir, stdout);
     }
@@ -731,7 +767,7 @@ int cli_run(int argc, char **argv) {
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
-    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, NULL);
+    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }
