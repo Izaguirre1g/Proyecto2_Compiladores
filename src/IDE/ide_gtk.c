@@ -10,6 +10,8 @@
  *
  * Qué hace el IDE:
  *   1. Sugerencias: al escribir una palabra aparece una lista para completarla.
+ *      Solo salen las palabras que la gramática permite en ese lugar: se
+ *      consulta la tabla LL(1) con el código que hay antes del cursor.
  *      Flechas para elegir, Enter o Tab para aceptar, Esc para cerrar.
  *      Ctrl+Espacio la abre a mano.
  *   2. Autocierre: al escribir ( [ { " $ se agrega el cierre solo. Si se
@@ -18,12 +20,16 @@
  *   3. Errores: medio segundo después de dejar de escribir, se revisa el
  *      código. Los errores se subrayan en rojo; al pasar el mouse encima se
  *      ve la explicación. Abajo hay una lista: un clic lleva al error.
- *   4. Corrección automática: si el IDE sabe cómo arreglar un error (por
- *      ejemplo, un ';' que falta), la lista muestra el arreglo y un botón
- *      "Corregir". Ctrl+. corrige el error de la línea del cursor.
+ *   4. Corrección automática: si el IDE sabe cómo arreglar un error, la
+ *      lista muestra EL arreglo y un botón "Corregir". Para los errores del
+ *      parser, el arreglo es el token que predice la tabla LL(1) (ver
+ *      ide_arreglos.c y src/LL1/). Ctrl+. corrige el error de la línea del cursor.
  *   5. Clones: el botón "Buscar clones" compara el archivo abierto con los
  *      demás .bal de su carpeta. Los clones se pintan de amarillo y la
  *      pestaña "Clones" dice dónde está cada copia.
+ *   6. Números de línea: a la izquierda del editor. El de la línea del cursor
+ *      va en negrita y los de las líneas con errores van en rojo, para que
+ *      coincidan con lo que dicen la lista de errores y la barra de estado.
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -41,6 +47,9 @@
 
 /* Máximo de sugerencias que se muestran a la vez. */
 #define MAX_SUGERENCIAS 12
+
+/* Espacio (en píxeles) a cada lado de los números de línea. */
+#define MARGEN_NUMEROS 8
 
 /* Todo lo que la ventana necesita recordar. */
 typedef struct {
@@ -64,6 +73,7 @@ typedef struct {
     IdeArreglo *arreglos;       /* Un arreglo por error (insertar == NULL: no tiene). */
     gboolean revision_vigente;  /* FALSE si el texto cambió después de revisarlo. */
     int largo_prefijo;          /* Letras ya escritas de la palabra que se sugiere. */
+    int digitos_numeros;        /* Cifras que caben en la columna de números de línea. */
 } Ide;
 
 /* ================================================================== */
@@ -155,6 +165,148 @@ static void actualizar_estado(Ide *ide)
     }
     gtk_label_set_text(ide->barra_estado, texto);
     g_free(texto);
+}
+
+/* ================================================================== */
+/* Números de línea                                                    */
+/* ================================================================== */
+
+/*
+ * Cómo funciona: un GtkTextView puede tener una franja aparte a cada lado
+ * del texto (una "ventana de borde"). Se usa la de la izquierda para los
+ * números. GTK no escribe nada en ella; cada vez que el editor se redibuja
+ * (al escribir, al mover el cursor o al desplazarse) se llama a
+ * al_dibujar_numeros, que escribe el número de cada línea visible a la
+ * misma altura que su texto.
+ */
+
+/*
+ * Ajusta el ancho de la franja a la cantidad de cifras de la última línea
+ * (mínimo 2). Así un archivo de 1000 líneas no corta el "1000". Solo
+ * cambia el ancho cuando cambia la cantidad de cifras.
+ */
+static void ajustar_margen_numeros(Ide *ide)
+{
+    int lineas = gtk_text_buffer_get_line_count(ide->buffer);
+    int digitos = 2;
+    for (int n = lineas; n >= 100; n /= 10) digitos++;
+    if (digitos == ide->digitos_numeros) return;
+    ide->digitos_numeros = digitos;
+
+    /* Se mide un número de ejemplo ("888...") con la letra del editor. */
+    char muestra[16];
+    memset(muestra, '8', (size_t)digitos);
+    muestra[digitos] = '\0';
+    PangoLayout *medida = gtk_widget_create_pango_layout(GTK_WIDGET(ide->vista), muestra);
+    int ancho = 0;
+    pango_layout_get_pixel_size(medida, &ancho, NULL);
+    g_object_unref(medida);
+
+    gtk_text_view_set_border_window_size(ide->vista, GTK_TEXT_WINDOW_LEFT,
+                                         ancho + 2 * MARGEN_NUMEROS);
+}
+
+/* TRUE si la revisión encontró un error en esa línea (empieza en 1) de este archivo. */
+static gboolean linea_con_error(const Ide *ide, size_t linea)
+{
+    for (size_t i = 0; i < ide->errores.cantidad; ++i) {
+        const Diagnostico *d = &ide->errores.elementos[i];
+        if (d->linea == linea && strcmp(d->archivo, nombre_actual(ide)) == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+/*
+ * Escribe los números de las líneas visibles en la franja izquierda.
+ * GTK llama a "draw" una vez por cada parte del editor (el texto y cada
+ * franja); solo se dibuja cuando le toca a la franja izquierda.
+ */
+static gboolean al_dibujar_numeros(GtkWidget *widget, cairo_t *cr, gpointer datos)
+{
+    Ide *ide = datos;
+    GtkTextView *vista = GTK_TEXT_VIEW(widget);
+    GdkWindow *franja = gtk_text_view_get_window(vista, GTK_TEXT_WINDOW_LEFT);
+    if (franja == NULL || !gtk_cairo_should_draw_window(cr, franja)) return FALSE;
+
+    cairo_save(cr);
+    gtk_cairo_transform_to_window(cr, widget, franja);  /* (0, 0) = esquina de la franja. */
+    int ancho = gdk_window_get_width(franja);
+    int alto = gdk_window_get_height(franja);
+
+    /* Se usa el color de la letra del tema, así se ve bien en claro y en oscuro. */
+    GdkRGBA letra;
+    gtk_style_context_get_color(gtk_widget_get_style_context(widget),
+                                gtk_widget_get_state_flags(widget), &letra);
+
+    /* Fondo un poco más oscuro que el texto y una raya que separa la franja. */
+    cairo_set_source_rgba(cr, letra.red, letra.green, letra.blue, 0.05);
+    cairo_rectangle(cr, 0, 0, ancho, alto);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, letra.red, letra.green, letra.blue, 0.20);
+    cairo_rectangle(cr, ancho - 1, 0, 1, alto);
+    cairo_fill(cr);
+
+    /* Línea del cursor (empieza en 0, como las de GTK). */
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(ide->buffer, &cursor,
+                                     gtk_text_buffer_get_insert(ide->buffer));
+    int linea_cursor = gtk_text_iter_get_line(&cursor);
+
+    /* Parte del texto que se ve ahora, en coordenadas del texto completo. */
+    GdkRectangle visible;
+    gtk_text_view_get_visible_rect(vista, &visible);
+
+    /* Se empieza en la primera línea visible y se baja hasta salir de la vista. */
+    GtkTextIter linea;
+    gtk_text_view_get_line_at_y(vista, &linea, visible.y, NULL);
+    PangoLayout *numero = gtk_widget_create_pango_layout(widget, NULL);
+    GdkRGBA rojo = {0.85, 0.10, 0.10, 1.0};
+
+    for (;;) {
+        /* Altura de la línea en el texto completo -> altura dentro de la franja. */
+        int y_texto, alto_linea, y_franja;
+        gtk_text_view_get_line_yrange(vista, &linea, &y_texto, &alto_linea);
+        if (y_texto > visible.y + visible.height) break;
+        gtk_text_view_buffer_to_window_coords(vista, GTK_TEXT_WINDOW_LEFT, 0, y_texto,
+                                              NULL, &y_franja);
+
+        int indice = gtk_text_iter_get_line(&linea);
+        char texto[16];
+        g_snprintf(texto, sizeof texto, "%d", indice + 1);  /* Se muestra desde 1. */
+        pango_layout_set_text(numero, texto, -1);
+
+        /* La línea del cursor en negrita. */
+        PangoAttrList *atributos = pango_attr_list_new();
+        if (indice == linea_cursor) {
+            pango_attr_list_insert(atributos, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
+        }
+        pango_layout_set_attributes(numero, atributos);
+        pango_attr_list_unref(atributos);
+
+        /* Rojo si tiene error; color normal si es la del cursor; tenue las demás. */
+        if (linea_con_error(ide, (size_t)indice + 1)) {
+            gdk_cairo_set_source_rgba(cr, &rojo);
+        } else {
+            double opacidad = (indice == linea_cursor) ? 1.0 : 0.45;
+            cairo_set_source_rgba(cr, letra.red, letra.green, letra.blue, opacidad);
+        }
+
+        /* Alineado a la derecha y centrado en la altura de la línea. */
+        int ancho_numero, alto_numero;
+        pango_layout_get_pixel_size(numero, &ancho_numero, &alto_numero);
+        cairo_move_to(cr, ancho - MARGEN_NUMEROS - ancho_numero,
+                      y_franja + (alto_linea - alto_numero) / 2);
+        pango_cairo_show_layout(cr, numero);
+
+        /* Pasar a la siguiente. No se usa lo que devuelve forward_line porque
+         * da FALSE al llegar a una última línea vacía, y esa también se numera. */
+        gtk_text_iter_forward_line(&linea);
+        if (gtk_text_iter_get_line(&linea) == indice) break;  /* Era la última línea. */
+    }
+
+    g_object_unref(numero);
+    cairo_restore(cr);
+    return FALSE;  /* FALSE: GTK sigue dibujando lo demás normalmente. */
 }
 
 /* ================================================================== */
@@ -331,6 +483,7 @@ static gboolean revisar_codigo(gpointer datos)
     gtk_text_buffer_get_bounds(ide->buffer, &inicio, &fin);
     gtk_text_buffer_remove_tag(ide->buffer, ide->marca_error, &inicio, &fin);
     vaciar_lista(ide->lista_errores);
+    gtk_widget_queue_draw(GTK_WIDGET(ide->vista));  /* Repintar los números en rojo. */
 
     if (resultado != 0) {
         gtk_label_set_text(ide->barra_estado,
@@ -520,10 +673,18 @@ static void actualizar_sugerencias(Ide *ide)
     }
 
     /* Paso 2: pedirle las sugerencias al núcleo. */
+    /* Se usa la predicción LL(1): el núcleo analiza el código que hay ANTES
+     * de la palabra y solo sugiere lo que la tabla permite ahí. Para eso
+     * necesita saber dónde empieza la palabra, en bytes. */
     gchar *prefijo = gtk_text_buffer_get_text(ide->buffer, &inicio, &cursor, FALSE);
     gchar *texto = texto_del_editor(ide);
+    GtkTextIter comienzo;
+    gtk_text_buffer_get_start_iter(ide->buffer, &comienzo);
+    gchar *antes = gtk_text_buffer_get_text(ide->buffer, &comienzo, &inicio, TRUE);
     IdeSugerencias sugerencias = {0};
-    int resultado = ide_sugerencias(texto, strlen(texto), prefijo, &sugerencias);
+    int resultado = ide_sugerencias_predictivas(texto, strlen(texto), strlen(antes),
+                                                prefijo, &sugerencias);
+    g_free(antes);
     g_free(texto);
     g_free(prefijo);
 
@@ -779,16 +940,19 @@ static void al_cambiar_texto(GtkTextBuffer *buffer, gpointer datos)
         ide->modificado = TRUE;
         actualizar_titulo(ide);
     }
+    ajustar_margen_numeros(ide);  /* Por si ahora hacen falta más cifras. */
     programar_revision(ide);
 }
 
-/* El cursor se movió: actualizar "Línea X, columna Y". */
+/* El cursor se movió: actualizar "Línea X, columna Y" y el número en negrita. */
 static void al_mover_marca(GtkTextBuffer *buffer, GtkTextIter *posicion, GtkTextMark *marca,
                            gpointer datos)
 {
     (void)posicion;
     Ide *ide = datos;
-    if (marca == gtk_text_buffer_get_insert(buffer)) actualizar_estado(ide);
+    if (marca != gtk_text_buffer_get_insert(buffer)) return;
+    actualizar_estado(ide);
+    gtk_widget_queue_draw(GTK_WIDGET(ide->vista));
 }
 
 /* ================================================================== */
@@ -1271,6 +1435,11 @@ static void construir_ventana(Ide *ide)
     g_signal_connect(vista, "key-release-event", G_CALLBACK(al_soltar_tecla), ide);
     g_signal_connect(vista, "button-press-event", G_CALLBACK(al_hacer_clic), ide);
     g_signal_connect(vista, "query-tooltip", G_CALLBACK(al_pedir_ayuda), ide);
+
+    /* Números de línea: se reserva la franja izquierda y se dibujan en ella.
+     * "_after" para escribir encima de lo que GTK ya pintó en la franja. */
+    ajustar_margen_numeros(ide);
+    g_signal_connect_after(vista, "draw", G_CALLBACK(al_dibujar_numeros), ide);
     g_signal_connect(ide->buffer, "changed", G_CALLBACK(al_cambiar_texto), ide);
     g_signal_connect(ide->buffer, "mark-set", G_CALLBACK(al_mover_marca), ide);
 
@@ -1315,7 +1484,8 @@ static void construir_ventana(Ide *ide)
     gtk_notebook_append_page(ide->pestanas, desplazar_errores, gtk_label_new("Errores"));
     gtk_notebook_append_page(ide->pestanas, caja_clones, gtk_label_new("Clones"));
     gtk_paned_pack2(GTK_PANED(divisor), pestanas, FALSE, FALSE);
-    gtk_paned_set_position(GTK_PANED(divisor), 500);
+    /* El editor ocupa 400 px; el resto queda para la lista de errores. */
+    gtk_paned_set_position(GTK_PANED(divisor), 400);
 
     /* --- Barra de estado --- */
     GtkWidget *estado = gtk_label_new("");
