@@ -13,6 +13,8 @@
 #include "ir.h"
 #include "loop_unrolling.h"
 #include "lu_reporte.h"
+#include "reordenamiento.h"
+#include "ro_reporte.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -181,6 +183,8 @@ typedef struct {
     int ir;                 /* --ir: IR de tres direcciones */
     int unroll;             /* --unroll[=k]: IR antes/despues del loop unrolling */
     unsigned unroll_factor; /* k de --unroll=k (0: valor por defecto) */
+    int reorder;            /* --reorder[=L]: reordenamiento seguro en bloques */
+    unsigned reorder_lat;   /* L de --reorder=L (0: valor por defecto) */
 } Compilacion;
 
 typedef struct {
@@ -205,6 +209,9 @@ static void usage(FILE *out) {
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
           "--unroll[=k]  muestra la IR antes y despues del loop unrolling (factor k,\n"
           "              por defecto 4); no genera ningun archivo\n"
+          "--reorder[=L] reordena cada bloque basico respetando RAW/WAR/WAW y muestra\n"
+          "              la IR antes y despues (latencia L, por defecto 3); se puede\n"
+          "              combinar con --unroll (primero desenrolla y luego reordena)\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
@@ -230,6 +237,19 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
                     return -1;
                 }
                 c->unroll_factor = (unsigned)k;
+            }
+            continue;
+        }
+        if (!posicional && !strncmp(arg, "--reorder", 9) && (arg[9] == '\0' || arg[9] == '=')) {
+            c->ir = c->reorder = 1;
+            if (arg[9] == '=') {
+                char *fin = NULL;
+                unsigned long l = strtoul(arg + 10, &fin, 10);
+                if (!arg[10] || *fin || l < 1 || l > 16) {
+                    fputs("--reorder=L necesita una latencia entera entre 1 y 16\n", stderr);
+                    return -1;
+                }
+                c->reorder_lat = (unsigned)l;
             }
             continue;
         }
@@ -260,7 +280,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (!c->entrada) { usage(stderr); return -1; }
     if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
-        fputs("--ir y --unroll se ejecutan de forma independiente (sin otras banderas)\n", stderr);
+        fputs("--ir, --unroll y --reorder se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         return -1;
     }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
@@ -736,7 +756,8 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
     (void)tabla;
     IrPrograma ir = {0};
     int estado = ir_desde_ast(arbol, &ir, diag);
-    if (estado == 0 && op && op->unroll) {
+    if (estado == 0 && op && (op->unroll || op->reorder)) {
+      if (op->unroll) {
         /* --unroll: foto de la IR, desenrollado, otra foto y reporte visual. */
         LuOpciones opciones;
         LuResumen resumen = {0};
@@ -751,6 +772,17 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
         lu_vista_liberar(&antes);
         lu_vista_liberar(&despues);
         lu_resumen_liberar(&resumen);
+      }
+      if (estado == 0 && op->reorder) {
+        /* --reorder: reordena (despues del unrolling si tambien se pidio). */
+        RoOpciones ro;
+        RoResumen rr = {0};
+        ro_opciones_defecto(&ro);
+        if (op->reorder_lat) ro.latencia = op->reorder_lat;
+        estado = ro_reordenar(&ir, &ro, &rr);
+        if (estado == 0) ro_reporte(stdout, op->entrada, &ir, &rr, ro.latencia, ro_usar_color(stdout));
+        ro_resumen_liberar(&rr);
+      }
     } else if (estado == 0) {
         puts("[IR de tres direcciones]");
         estado = ir_imprimir(&ir, stdout);

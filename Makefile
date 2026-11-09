@@ -15,6 +15,9 @@ CPPFLAGS ?= -Iinclude -Isrc
 # Proyecto II: optimizacion de loop unrolling (carpeta propia).
 CPPFLAGS += -Iloop_unrolling
 
+# Proyecto II: reordenamiento seguro dentro de bloques basicos.
+CPPFLAGS += -Ireordenamiento
+
 # Archivos del parser y del AST.
 PARSER_SRC := Analisis_Sintactico/parser.c Analisis_Sintactico/puente_lexer.c Analisis_Sintactico/ast.c
 
@@ -27,7 +30,8 @@ SRC := src/main.c src/cli.c src/lexer.c $(LEXER_GEN) src/token.c src/generacion_
        src/funciones_marco.c src/funciones_llamada.c src/referencias_integracion.c \
        src/resolucion_referencias.c src/resolucion_saltos.c src/enlace_funciones.c \
        src/codificacion_binaria.c src/formato_binario.c src/diagnosticos.c src/clones.c src/ir.c \
-       loop_unrolling/loop_unrolling.c loop_unrolling/lu_reporte.c
+       loop_unrolling/loop_unrolling.c loop_unrolling/lu_reporte.c \
+       reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c
 
 # Estos nombres son comandos de Make, no archivos.
 .PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones ide clean
@@ -49,7 +53,8 @@ Analisis_Sintactico/parser.c Analisis_Sintactico/parser.h &: Analisis_Sintactico
 balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h Analisis_Sintactico/parser.h \
       include/enlace_funciones.h include/resolucion_saltos.h include/resolucion_referencias.h include/codificacion_binaria.h \
       include/referencias_integracion.h include/generacion_adaptador.h include/generacion_funciones.h \
-      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h loop_unrolling/loop_unrolling.h loop_unrolling/lu_reporte.h
+      src/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h loop_unrolling/loop_unrolling.h loop_unrolling/lu_reporte.h \
+      reordenamiento/reordenamiento.h reordenamiento/ro_reporte.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SRC) -o $@
 
 # Compila las pruebas del lexer, sin necesitar el parser.
@@ -57,7 +62,7 @@ tests/test_lexer: tests/test_lexer.c src/lexer.c $(LEXER_GEN) src/token.c includ
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c src/lexer.c $(LEXER_GEN) src/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-loop-unrolling test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -689,3 +694,14 @@ loop_unrolling/pruebas/test_loop_unrolling: loop_unrolling/pruebas/test_loop_unr
 test-loop-unrolling: loop_unrolling/pruebas/test_loop_unrolling balc
 	./loop_unrolling/pruebas/test_loop_unrolling
 	sh loop_unrolling/pruebas/test_bal.sh
+
+# Proyecto II: reordenamiento seguro. Pruebas unitarias (interprete que
+# compara resultados y pruebas aleatorias) y de extremo a extremo con balc.
+.PHONY: test-reordenamiento
+reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+      reordenamiento/reordenamiento.h src/ir.c Analisis_Sintactico/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+	      src/ir.c Analisis_Sintactico/ast.c -o $@
+test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
+	./reordenamiento/pruebas/test_reordenamiento
+	sh reordenamiento/pruebas/test_bal.sh
