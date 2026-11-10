@@ -296,7 +296,12 @@ typedef enum {
     LL1_INSERTAR,        /* Agregar uno o dos tokens antes del token del error. */
     LL1_CAMBIAR,         /* Reemplazar el token del error por otro. */
     LL1_BORRAR,          /* Quitar el token del error. */
-    LL1_BORRAR_ANTERIOR  /* Quitar el token de antes: en  x : 5 gauss ;  sobra 'gauss'. */
+    LL1_BORRAR_ANTERIOR, /* Quitar el token de antes: en  x : 5 gauss ;  sobra 'gauss'. */
+    /* Agregar un token ANTES del token anterior al error. Por ejemplo, en
+     *     i let 0 until 5 { ... } endgame;      (falta 'cycle')
+     * el parser lee 'i' como inicio de una asignación y falla recién en
+     * 'let': lo que falta va antes de 'i'. */
+    LL1_INSERTAR_ANTES_ANTERIOR
 } Ll1TipoCorreccion;
 
 /* UNA corrección para un error. */
@@ -335,7 +340,21 @@ typedef struct {
      * nombre parecido a una palabra del lenguaje ("whethr" en vez de
      * "whether") y la corrección es LL1_CAMBIAR por esa palabra. */
     int palabra_mal_escrita;
+
+    /* Si a una operación le falta un operando ("i gauss ;" o "x : gauss 1;"):
+     * LL1_FALTA_DERECHO o LL1_FALTA_IZQUIERDO, y "operador" es el token del
+     * operador (en ese caso "posicion" apunta al operador). Estos errores NO
+     * tienen corrección: no se puede saber qué valor faltaba, así que lo
+     * escribe la persona. Para seguir analizando, la recuperación supone que
+     * ahí hay un operando (sin reportarlo como corrección). */
+    int falta_operando;
+    int operador;
 } Ll1Error;
+
+/* Valores de Ll1Error.falta_operando. */
+#define LL1_SIN_FALTA 0
+#define LL1_FALTA_DERECHO 1
+#define LL1_FALTA_IZQUIERDO 2
 
 typedef struct {
     Ll1Error *elementos;

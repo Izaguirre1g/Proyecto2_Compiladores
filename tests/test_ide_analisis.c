@@ -9,6 +9,7 @@
  * Se ejecuta con: make test-ide-analisis
  */
 #include "ide_analisis.h"
+#include "ide_arreglos.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -187,6 +188,47 @@ int main(void)
             "}\n";
         VERIFICAR(ide_analizar_texto(nombre_parecido, strlen(nombre_parecido),
                                      "tests/editor.bal", &lista) == 0);
+        VERIFICAR(lista.cantidad == 0);
+        diag_liberar(&lista);
+    }
+
+    /* Prueba: a cada operación se le revisan los dos operandos. Si falta
+     * uno, el error se marca EN EL OPERADOR, dice qué lado falta y no tiene
+     * arreglo automático (no se puede saber qué valor iba). Después se
+     * sigue analizando: el ';' que falta en la línea 7 también se detecta. */
+    {
+        const char *sin_operando =
+            "create_funk #declare_infinite_void# main() {\n"
+            "    i * declare_int : 1;\n"
+            "    i : i gauss ;\n"              /* Falta el de la derecha. */
+            "    i : euclides 2;\n"            /* Falta el de la izquierda. */
+            "    whether (i < ) {\n    }\n"    /* También en comparaciones. */
+            "    i : 5\n"                      /* Otro error después. */
+            "}\n";
+        VERIFICAR(ide_analizar_texto(sin_operando, strlen(sin_operando),
+                                     "tests/editor.bal", &lista) == 0);
+        VERIFICAR(lista.cantidad == 4);
+        if (lista.cantidad == 4) {
+            const Diagnostico *e = lista.elementos;
+            VERIFICAR(e[0].linea == 3 && e[0].columna == 11);  /* En 'gauss'. */
+            VERIFICAR(strcmp(e[0].mensaje, "a 'gauss' le falta el operando de la derecha") == 0);
+            VERIFICAR(e[1].linea == 4 && e[1].columna == 9);   /* En 'euclides'. */
+            VERIFICAR(strcmp(e[1].mensaje, "a 'euclides' le falta el operando de la izquierda") == 0);
+            VERIFICAR(e[2].linea == 5);
+            VERIFICAR(strcmp(e[2].mensaje, "a '<' le falta el operando de la derecha") == 0);
+            VERIFICAR(e[3].linea == 8);
+            for (size_t i = 0; i < 3; ++i) {
+                IdeArreglo arreglo;
+                VERIFICAR(ide_proponer_arreglo(sin_operando, strlen(sin_operando),
+                                               &e[i], &arreglo) == 0);
+            }
+        }
+        diag_liberar(&lista);
+
+        /* 'neumann' también es el menos unario: "i : neumann 1;" es válido. */
+        const char *menos = "create_funk #declare_infinite_void# main() {\n"
+                            "    i * declare_int : neumann 1;\n}\n";
+        VERIFICAR(ide_analizar_texto(menos, strlen(menos), "tests/editor.bal", &lista) == 0);
         VERIFICAR(lista.cantidad == 0);
         diag_liberar(&lista);
     }

@@ -104,6 +104,7 @@ Nunca se propone un nombre, un número ni `declare_true`/`declare_false`, porque
 
 - **Palabras clave mal escritas.** En cada error se buscan, hacia atrás en la misma sentencia, nombres parecidos a una palabra clave: a 1 o 2 letras de diferencia según la distancia de edición (Levenshtein). Si cambiar ese nombre por la palabra deja el archivo con **menos errores**, esa es la corrección, y el error se marca en el nombre. Por ejemplo, `whethr (n <= 1)` se lee como una llamada a `whethr`, y el parser se quejaría recién en la línea siguiente; la recuperación detecta que es `whether` mal escrito. Un nombre que de verdad es un nombre (`whales`) no se toca, porque cambiarlo no reduce los errores.
 - **Modo pánico** (diapositiva 4). Si ningún arreglo local sirve (por ejemplo, falta `cycle` al inicio de la sentencia), se descarta la sentencia completa hasta el siguiente `;`, `{` o `}`, y se reporta **un** error. Si justo donde se reanuda vuelve a fallar, es la misma falla en cascada y no se reporta otra vez (como hacen Yacc y Bison).
+- **Dos errores seguidos.** Si ninguna corrección sirve sola, se acepta una inserción que avanza al menos un token cuando el error siguiente también tiene un buen arreglo. Así `resultado  declare_int 1;` (faltan `*` y `:`) da dos errores: agregar `*` y luego agregar `:`. En BAL el `*` es el separador de las declaraciones (`nombre * tipo`), no la multiplicación (`pitagoras`), así que olvidarlo cuenta igual que olvidar `;` o `:`.
 - **Sin errores duplicados de delimitadores.** Si con las correcciones el programa completo queda válido, los paréntesis y llaves también quedan balanceados. En ese caso el IDE no agrega los errores del revisor de delimitadores, que solo cuenta símbolos: si falta un `{`, ese revisor diría que "sobra" el último `}`, y borrarlo dañaría el código.
 
 | Código | Errores que muestra el IDE |
@@ -112,11 +113,20 @@ Nunca se propone un nombre, un número ni `declare_true`/`declare_false`, porque
 | `i * declar_int : 2;` | `declar_int` parece `declare_int` mal escrita |
 | `whethr (n <= 1)` | `whethr` parece `whether` mal escrita |
 | …y sin `{` después | se esperaba `{`: agregar `{` al final de la línea |
+| `resultado  declare_int 1;` | agregar `*` antes de `declare_int`, y agregar `:` antes de `1` |
 
 **Sugerencias** (`src/IDE/ide_nucleo.c`, `ide_sugerencias_predictivas`). Al escribir una palabra, se analiza el código que hay antes del cursor (sin `$`) y la tabla dice qué tokens pueden seguir. Solo se sugieren esas palabras clave, y los nombres del archivo solo si ahí puede ir un nombre. Por ejemplo:
 
 - tras el bloque de un `whether`, `al` sugiere `alif` y `also`, pero no `aka`;
 - tras `x : 5 `, `e` sugiere `euclides` y `euler`, pero no `endgame`.
+
+**Ver la tabla** (`src/IDE/ide_tabla_ll1.c`). El botón **Tabla LL(1)** del IDE abre una ventana con tres pestañas, en el orden en que se construye la tabla:
+
+1. **Tabla M[A, a]**, con la misma notación de las diapositivas: una fila por no terminal (en cursiva) y una columna por terminal (en negrita, escrito como en BAL: `create_funk`, `#`, `(`, `;`; los que no tienen texto fijo se abrevian `id`, `num`, `cadena`, `car`, y `$` va en la última columna). Cada celda llena tiene el **lado derecho** de la producción (o `ε`); una vacía es error. Al hacer clic en una celda se ve la producción completa y su número (por ejemplo, `M[sentencia, id] = producción 36: sentencia → id resto_identificador`). La columna de los no terminales queda fija al desplazarse a la derecha.
+2. **Producciones**: las 132 producciones numeradas.
+3. **PRIMERO y SIGUIENTE** de cada no terminal.
+
+Arriba se indica la cantidad de conflictos: con 0, la gramática es LL(1). La ventana no calcula nada: muestra lo mismo que `ll1_tabla()` le da al analizador.
 
 ## 5. Pruebas
 

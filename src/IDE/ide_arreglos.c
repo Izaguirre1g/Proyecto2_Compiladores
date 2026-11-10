@@ -582,6 +582,20 @@ static int armar_arreglo(const char *texto, size_t largo, const ListaTokens *tok
         return borrar_token(texto, largo, tokens, anterior, a);
     }
 
+    /* Agregar antes del token anterior: "cycle " justo antes de la 'i' de
+     *     i let 0 until 5 {    ->    cycle i let 0 until 5 {            */
+    if (c->tipo == LL1_INSERTAR_ANTES_ANTERIOR) {
+        if (anterior == SIZE_MAX) return 0;  /* Era un token insertado: no está en el texto. */
+        const TokenUbicado *previo = &tokens->elementos[anterior];
+        char nombre_previo[48];
+        nombrar_token(texto, largo, previo, nombre_previo, sizeof nombre_previo);
+        char insertar[64];
+        snprintf(insertar, sizeof insertar, "%s ", ll1_texto(c->terminales[0]));
+        snprintf(a->descripcion, sizeof a->descripcion, "agregar '%s' antes de %s en la linea %zu",
+                 ll1_texto(c->terminales[0]), nombre_previo, previo->linea);
+        return preparar(a, previo->linea, previo->columna, 0, insertar);
+    }
+
     if (c->tipo == LL1_CAMBIAR) {
         size_t cuantos = (donde->linea_fin == donde->linea) ? donde->columna_fin - donde->columna : 1;
         snprintf(a->descripcion, sizeof a->descripcion, "cambiar %s por '%s'",
@@ -635,6 +649,28 @@ static int armar_arreglo(const char *texto, size_t largo, const ListaTokens *tok
             int r = preparar(a, antes->linea_fin, antes->columna_fin, 0, insertar_llave);
             free(insertar_llave);
             return r;
+        }
+    }
+
+    /* Si en la misma línea ya hay 2 o más espacios entre los dos tokens
+     * (porque la persona borró el token y dejó sus espacios), se escribe
+     * DENTRO del hueco, después del primer espacio:
+     *     "n  declare_int"  ->  "n * declare_int"   (y no "n *  declare_int")
+     */
+    if (!otra_linea && !va_pegado(c->terminales[0]) &&
+        donde->columna >= antes->columna_fin + 2) {
+        size_t desde, hasta;
+        int solo_espacios = byte_de_posicion(texto, largo, antes->linea_fin,
+                                             antes->columna_fin, &desde) == 0 &&
+                            byte_de_posicion(texto, largo, donde->linea,
+                                             donde->columna, &hasta) == 0;
+        for (size_t i = desde; solo_espacios && i < hasta; ++i) {
+            if (texto[i] != ' ' && texto[i] != '\t') solo_espacios = 0;
+        }
+        if (solo_espacios) {
+            snprintf(a->descripcion, sizeof a->descripcion,
+                     "agregar '%s' antes de %s en la linea %zu", nuevo, nombre_donde, donde->linea);
+            return preparar(a, antes->linea_fin, antes->columna_fin + 1, 0, nuevo);
         }
     }
 

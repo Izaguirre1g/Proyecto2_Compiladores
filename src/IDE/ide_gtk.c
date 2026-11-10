@@ -30,6 +30,9 @@
  *   6. Números de línea: a la izquierda del editor. El de la línea del cursor
  *      va en negrita y los de las líneas con errores van en rojo, para que
  *      coincidan con lo que dicen la lista de errores y la barra de estado.
+ *   7. Tabla LL(1): el botón "Tabla LL(1)" abre una ventana con la tabla
+ *      M[A, a], las producciones y PRIMERO/SIGUIENTE, que son lo que usan
+ *      las sugerencias y las correcciones (ver ide_tabla_ll1.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -41,6 +44,7 @@
 #include "ide_analisis.h"
 #include "ide_arreglos.h"
 #include "ide_nucleo.h"
+#include "ide_tabla_ll1.h"
 
 /* Milisegundos que se espera, después de la última tecla, para revisar el código. */
 #define ESPERA_ANALISIS_MS 500
@@ -1373,6 +1377,14 @@ static void al_destruir(GtkWidget *widget, gpointer datos)
 /* Construcción de la ventana                                          */
 /* ================================================================== */
 
+/* Botón "Tabla LL(1)": abre la ventana con la tabla (ide_tabla_ll1.c). */
+static void al_pulsar_tabla_ll1(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    ide_mostrar_tabla_ll1(GTK_WINDOW(ide->ventana));
+}
+
 /* Crea un botón para la barra de arriba y lo conecta a su función. */
 static void agregar_boton(GtkWidget *barra, const char *texto, GCallback funcion, Ide *ide)
 {
@@ -1402,6 +1414,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "_Guardar", G_CALLBACK(al_pulsar_guardar), ide);
     agregar_boton(barra, "Guardar _como", G_CALLBACK(al_pulsar_guardar_como), ide);
     agregar_boton(barra, "Buscar c_lones", G_CALLBACK(al_pulsar_buscar_clones), ide);
+    agregar_boton(barra, "_Tabla LL(1)", G_CALLBACK(al_pulsar_tabla_ll1), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */
