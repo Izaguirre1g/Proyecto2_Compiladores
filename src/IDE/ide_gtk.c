@@ -42,6 +42,9 @@
  *   9. Ensamblador: el botón "Ensamblador" genera el ensamblador VLIW del
  *      código del editor, el mismo de "balc -s", y lo muestra con su
  *      codificación binaria (ide_ensamblador.c e ide_ensamblador_ventana.c).
+ *  10. Colores: el código se colorea como en VS Code (tema Dark+): palabras
+ *      de control, tipos, funciones, variables, números, textos, comentarios
+ *      y pares de paréntesis por nivel (ide_colores.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -52,6 +55,7 @@
 #include "clones.h"
 #include "ide_analisis.h"
 #include "ide_arreglos.h"
+#include "ide_colores.h"
 #include "ide_dce.h"
 #include "ide_dce_ventana.h"
 #include "ide_ensamblador.h"
@@ -78,6 +82,7 @@ typedef struct {
     GtkTextTag *marca_clon;        /* Estilo del fondo amarillo de los clones. */
     GtkListBox *lista_clones;      /* Lista de clones (pestaña "Clones"). */
     GtkLabel *resumen_clones;      /* "2 clones en este archivo...". */
+    GtkTextTag *marca_color[IDE_COLOR_CANTIDAD];  /* Colores del código (ide_colores.c). */
     GtkTextTag *marca_muerta;      /* Línea eliminada completa: tachada y en gris. */
     GtkTextTag *marca_parcial;     /* Línea a la que se le quitó una parte: fondo gris. */
     GtkListBox *lista_dce;         /* Lista de la pestaña "Código muerto". */
@@ -284,7 +289,7 @@ static gboolean al_dibujar_numeros(GtkWidget *widget, cairo_t *cr, gpointer dato
     GtkTextIter linea;
     gtk_text_view_get_line_at_y(vista, &linea, visible.y, NULL);
     PangoLayout *numero = gtk_widget_create_pango_layout(widget, NULL);
-    GdkRGBA rojo = {0.85, 0.10, 0.10, 1.0};
+    GdkRGBA rojo = {0.96, 0.30, 0.30, 1.0};  /* Claro: se ve sobre el fondo oscuro. */
 
     for (;;) {
         /* Altura de la línea en el texto completo -> altura dentro de la franja. */
@@ -404,6 +409,7 @@ static void liberar_arreglos(Ide *ide)
 
 static void al_pulsar_corregir(GtkWidget *boton, gpointer datos);
 static void limpiar_dce(Ide *ide, const char *mensaje);
+static void aplicar_colores(Ide *ide);
 
 /* Lo que dice la pestaña "Código muerto" antes de usar el botón. */
 #define DCE_SIN_ANALIZAR "Pulsa \"Código muerto\" para eliminar el código muerto de este archivo " \
@@ -972,6 +978,7 @@ static void al_cambiar_texto(GtkTextBuffer *buffer, gpointer datos)
         actualizar_titulo(ide);
     }
     ajustar_margen_numeros(ide);  /* Por si ahora hacen falta más cifras. */
+    aplicar_colores(ide);         /* Volver a colorear el código. */
     /* Las líneas marcadas por el DCE ya pueden no coincidir: se borran. */
     if (ide->dce_mostrado) limpiar_dce(ide, DCE_CODIGO_CAMBIO);
     programar_revision(ide);
@@ -1169,7 +1176,7 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
     /* Paso 2: buscar. */
     ClonLista lista = {0};
     int resultado = clones_buscar((const ClonFuente *)(void *)fuentes->data, fuentes->len,
-                                  CLONES_MINIMO_NODOS, &lista);
+                                  CLONES_MINIMO_TOKENS, &lista);
 
     /* Paso 3: mostrar los clones del archivo abierto. */
     size_t mostrados = 0;
@@ -1213,6 +1220,103 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
     g_free(carpeta);
     g_array_free(fuentes, TRUE);
     g_ptr_array_free(por_liberar, TRUE);
+}
+
+/* ================================================================== */
+/* Colores del código (como VS Code, tema Dark+)                       */
+/* ================================================================== */
+
+/*
+ * Colores del tema Dark+ de VS Code, uno por categoría de ide_colores.h,
+ * en el mismo orden que IdeColor.
+ */
+static const char *const COLORES_DARK_PLUS[IDE_COLOR_CANTIDAD] = {
+    [IDE_COLOR_CONTROL] = "#C586C0",     /* como return, if, while */
+    [IDE_COLOR_PALABRA] = "#569CD6",     /* como static, const */
+    [IDE_COLOR_TIPO] = "#4EC9B0",        /* como AstNodo */
+    [IDE_COLOR_FUNCION] = "#DCDCAA",     /* como ast_crear */
+    [IDE_COLOR_VARIABLE] = "#9CDCFE",    /* como a, tipo, texto */
+    [IDE_COLOR_NUMERO] = "#B5CEA8",
+    [IDE_COLOR_TEXTO] = "#CE9178",
+    [IDE_COLOR_COMENTARIO] = "#6A9955",
+    [IDE_COLOR_PAR_1] = "#FFD700",       /* pares por nivel: dorado, */
+    [IDE_COLOR_PAR_2] = "#DA70D6",       /* rosado */
+    [IDE_COLOR_PAR_3] = "#179FFF",       /* y azul, y se repite */
+};
+
+/* El fondo, la letra y la selección del editor, como en VS Code. */
+static const char *const CSS_EDITOR =
+    "textview, textview text, textview border {"
+    "  background-color: #1E1E1E; color: #D4D4D4; caret-color: #AEAFAD; }"
+    "textview text selection { background-color: #264F78; color: #D4D4D4; }";
+
+/*
+ * El panel de abajo (Errores, Clones y Código muerto) con los colores del
+ * panel "Problemas" de VS Code. Se aplica a toda la pantalla, pero los
+ * selectores empiezan con #panel_inferior o #editor (los nombres que se les
+ * dan en construir_ventana), así que la barra de botones no cambia.
+ */
+static const char *const CSS_PANEL =
+    /* Fondo y letra del panel, sus listas y sus filas. */
+    "#panel_inferior, #panel_inferior stack, #panel_inferior scrolledwindow,"
+    "#panel_inferior viewport, #panel_inferior list, #panel_inferior row {"
+    "  background-color: #1E1E1E; color: #CCCCCC; }"
+    "#panel_inferior label { color: #CCCCCC; }"
+    /* Las pestañas: la elegida más clara, con la raya azul de VS Code. */
+    "#panel_inferior header { background-color: #252526; border-color: #3C3C3C; }"
+    "#panel_inferior tab { color: #969696; }"
+    "#panel_inferior tab label { color: #969696; }"
+    "#panel_inferior tab:checked label { color: #E7E7E7; }"
+    "#panel_inferior tab:checked { box-shadow: inset 0 -2px #0078D4; }"
+    /* El fondo de las pestañas en TODOS sus estados: si no, GTK pone su fondo
+     * claro al pasar el mouse sobre la pestaña elegida y el texto no se ve. */
+    "#panel_inferior tab, #panel_inferior tab:checked {"
+    "  background-color: #252526; background-image: none; }"
+    "#panel_inferior tab:hover, #panel_inferior tab:checked:hover {"
+    "  background-color: #2A2D2E; background-image: none; }"
+    "#panel_inferior tab:hover label { color: #E7E7E7; }"
+    /* Las filas al pasar el mouse y la elegida. */
+    "#panel_inferior row:hover { background-color: #2A2D2E; }"
+    "#panel_inferior row:selected { background-color: #04395E; }"
+    /* Botones (Corregir, Ver IR y variables vivas): el azul de VS Code. */
+    "#panel_inferior button { background-image: none; background-color: #0E639C;"
+    "  border-color: #0E639C; box-shadow: none; text-shadow: none; }"
+    "#panel_inferior button label { color: #FFFFFF; }"
+    "#panel_inferior button:hover { background-color: #1177BB; }"
+    "#panel_inferior button:disabled { background-color: #3C3C3C; border-color: #3C3C3C; }"
+    "#panel_inferior button:disabled label { color: #8C8C8C; }"
+    /* Barras de desplazamiento oscuras, en el panel y en el editor. */
+    "#panel_inferior scrollbar, #editor scrollbar {"
+    "  background-color: #1E1E1E; border-color: #1E1E1E; }"
+    "#panel_inferior scrollbar slider, #editor scrollbar slider {"
+    "  background-color: #424242; border-color: #424242; }"
+    "#panel_inferior scrollbar slider:hover, #editor scrollbar slider:hover {"
+    "  background-color: #4F4F4F; }";
+
+/* Vuelve a colorear todo el código del editor (se llama en cada cambio). */
+static void aplicar_colores(Ide *ide)
+{
+    GtkTextIter inicio, fin;
+    gtk_text_buffer_get_bounds(ide->buffer, &inicio, &fin);
+    for (int i = 0; i < IDE_COLOR_CANTIDAD; ++i) {
+        gtk_text_buffer_remove_tag(ide->buffer, ide->marca_color[i], &inicio, &fin);
+    }
+
+    gchar *texto = texto_del_editor(ide);
+    IdeColores colores;
+    if (ide_colorear(texto, strlen(texto), &colores) == 0) {
+        for (size_t i = 0; i < colores.cantidad; ++i) {
+            const IdeTramoColor *t = &colores.elementos[i];
+            GtkTextIter desde, hasta;
+            if (!ir_a_posicion(ide->buffer, t->linea, t->columna, &desde)) continue;
+            if (!ir_a_posicion(ide->buffer, t->linea_fin, t->columna_fin, &hasta)) {
+                gtk_text_buffer_get_end_iter(ide->buffer, &hasta);
+            }
+            gtk_text_buffer_apply_tag(ide->buffer, ide->marca_color[t->color], &desde, &hasta);
+        }
+        ide_liberar_colores(&colores);
+    }
+    g_free(texto);
 }
 
 /* ================================================================== */
@@ -1700,6 +1804,28 @@ static void construir_ventana(Ide *ide)
     gtk_text_view_set_top_margin(ide->vista, 6);
     gtk_widget_set_has_tooltip(vista, TRUE);
 
+    /* Tema oscuro del editor (Dark+ de VS Code) y los estilos de los colores
+     * del código. Se crean PRIMERO: en GTK manda el estilo creado después,
+     * así que los clones, el código muerto y los errores quedan encima. */
+    GtkCssProvider *css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css, CSS_EDITOR, -1, NULL);
+    gtk_style_context_add_provider(gtk_widget_get_style_context(vista),
+                                   GTK_STYLE_PROVIDER(css),
+                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(css);
+
+    /* El panel de abajo y las barras de desplazamiento, también oscuros. */
+    GtkCssProvider *css_panel = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css_panel, CSS_PANEL, -1, NULL);
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
+                                              GTK_STYLE_PROVIDER(css_panel),
+                                              GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(css_panel);
+    for (int i = 0; i < IDE_COLOR_CANTIDAD; ++i) {
+        ide->marca_color[i] = gtk_text_buffer_create_tag(ide->buffer, NULL, "foreground",
+                                                         COLORES_DARK_PLUS[i], NULL);
+    }
+
     /* Estilo de los clones: fondo amarillo suave. Se crea ANTES que el de
      * errores para que, si se juntan, el rojo del error quede encima. */
     GdkRGBA amarillo = {1.0, 0.85, 0.0, 0.25};
@@ -1738,6 +1864,7 @@ static void construir_ventana(Ide *ide)
     g_signal_connect(ide->buffer, "mark-set", G_CALLBACK(al_mover_marca), ide);
 
     GtkWidget *desplazar_editor = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_name(desplazar_editor, "editor");  /* Para el CSS (CSS_PANEL). */
     gtk_container_add(GTK_CONTAINER(desplazar_editor), vista);
     gtk_paned_pack1(GTK_PANED(divisor), desplazar_editor, TRUE, FALSE);
 
@@ -1803,6 +1930,7 @@ static void construir_ventana(Ide *ide)
 
     /* --- Pestañas de abajo: Errores, Clones y Código muerto --- */
     GtkWidget *pestanas = gtk_notebook_new();
+    gtk_widget_set_name(pestanas, "panel_inferior");  /* Para el CSS (CSS_PANEL). */
     ide->pestanas = GTK_NOTEBOOK(pestanas);
     gtk_notebook_append_page(ide->pestanas, desplazar_errores, gtk_label_new("Errores"));
     gtk_notebook_append_page(ide->pestanas, caja_clones, gtk_label_new("Clones"));

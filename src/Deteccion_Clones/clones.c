@@ -1,37 +1,82 @@
 #include "clones.h"
 
-#include "ast.h"
-#include "sintactico.h"
+#include "lexer.h"
+#include "ll1.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Detección de clones siguiendo el CAMINO DE LA GRAMÁTICA.
+ *
+ * Cada archivo se analiza con el analizador predictivo LL(1) (src/LL1/), que
+ * deja su árbol de derivación: qué producción se aplicó en cada paso y qué
+ * token se leyó en cada hoja (ll1_derivar). Dos fragmentos son clones si su
+ * subárbol de derivación es el mismo: las MISMAS producciones, en el MISMO
+ * orden. Es decir, si el analizador recorrió el mismo camino en la gramática.
+ *
+ *   Tipo I:  mismo camino y mismos tokens, con el mismo texto. Solo pueden
+ *            cambiar los espacios, los saltos de línea y los comentarios
+ *            (el lexer los descarta: no llegan a la gramática).
+ *   Tipo II: mismo camino; solo cambia el texto de los nombres y valores
+ *            (id, num, cadena, car). Los demás terminales (palabras clave,
+ *            operadores, tipos, símbolos) son parte del camino: si cambian,
+ *            la derivación es otra y ya no es clon.
+ *
+ * Por ejemplo, "x : (a gauss 1);" y "x : a gauss 1;" NO son clones: los
+ * paréntesis hacen que el analizador use  primario → ( expresion ) , un
+ * camino distinto. Y un whale con el mismo cuerpo que un whether tampoco:
+ * sentencia → ciclo  frente a  sentencia → condicional.
+ *
+ * Para comparar rápido se usa una HUELLA por nodo, calculada de las hojas
+ * hacia arriba (recorrido ascendente, diapositiva 8 de "Optimización de
+ * Código"): dos subárboles iguales tienen la misma huella, igual que en el
+ * DAG (diapositiva 17), donde dos cálculos iguales caen en el mismo nodo.
+ */
+
 /* ------------------------------------------------------------------ */
-/* Información de cada nodo del AST                                    */
+/* Información de cada nodo                                            */
 /* ------------------------------------------------------------------ */
 
 /* Las dos formas de comparar: con nombres y valores (Tipo I) o sin ellos (Tipo II). */
 enum { MODO_TIPO_1 = 0, MODO_TIPO_2 = 1 };
 
+/* Un token de un archivo, con su texto y dónde está. */
+typedef struct {
+    TokenType tipo;
+    char *texto;                    /* Copia propia del lexema. */
+    size_t linea, columna;          /* Dónde empieza. */
+    size_t linea_fin, columna_fin;  /* Dónde termina (justo después). */
+} TokenClon;
+
+/* Los tokens de un archivo. */
+typedef struct {
+    TokenClon *elementos;
+    size_t cantidad;
+    size_t capacidad;
+} ListaTokens;
+
 /*
- * Todos los nodos de todos los archivos se guardan en un solo arreglo, en
- * PREORDEN: cada nodo va antes que sus hijos. Así, los descendientes de un
- * nodo quedan juntos, justo después de él:
+ * Todos los nodos de derivación de todos los archivos van en un solo
+ * arreglo, en PREORDEN (cada nodo antes que sus hijos; así los queda
+ * ll1_derivar). Los descendientes de un nodo quedan juntos, justo después:
  *
- *     Asignacion           [0]   tamano 5  -> sus descendientes son [1..4]
- *       Identificador x    [1]   tamano 1
- *       Binario gauss      [2]   tamano 3  -> sus descendientes son [3..4]
- *         Identificador a  [3]   tamano 1
- *         Entero 1         [4]   tamano 1
+ *     sentencia → id resto_identificador   [0]  tamano 5
+ *       id  (x)                            [1]  tamano 1
+ *       resto_identificador → : expr ;     [2]  tamano 3  -> descendientes [3..4]
+ *       ...
  */
 typedef struct {
-    const AstNodo *nodo;
+    int simbolo;            /* Terminal o no terminal de la gramática LL(1). */
+    int produccion;         /* La producción aplicada (-1 en las hojas). */
+    const TokenClon *token; /* En las hojas: el token leído. */
     size_t fuente;          /* De qué archivo es (posición en el arreglo de fuentes). */
     size_t tamano;          /* Cuántos nodos tiene su subárbol, contándolo a él. */
+    size_t tokens;          /* Cuántos tokens cubre su subárbol. */
+    const TokenClon *primero, *ultimo;  /* Primer y último token que cubre (NULL si ninguno). */
     uint64_t huella[2];     /* Huella para el Tipo I y para el Tipo II. */
-    size_t linea_fin, columna_fin;  /* Hasta dónde llega su subárbol en el texto. */
     int cubierto;           /* 1 si ya es parte de un clon reportado. */
 } InfoNodo;
 
@@ -76,119 +121,120 @@ static uint64_t mezclar_texto(uint64_t huella, const char *texto)
     return mezclar(huella, 0xFF);
 }
 
-/*
- * ¿El Tipo II ignora el texto de este nodo? Sí para los nombres y los
- * valores: es lo que puede cambiar en una copia Tipo II. No para los
- * operadores ("gauss") ni los tipos ("declare_int"), que son la forma del código.
- */
-static int tipo2_ignora_texto(AstTipo tipo)
+/* ------------------------------------------------------------------ */
+/* Paso 1: tokens y árbol de derivación de cada archivo                */
+/* ------------------------------------------------------------------ */
+
+static void liberar_tokens(ListaTokens *lista)
 {
-    return tipo == AST_IDENTIFICADOR || tipo == AST_ENTERO || tipo == AST_CADENA ||
-           tipo == AST_CARACTER || tipo == AST_BOOLEANO;
+    for (size_t i = 0; i < lista->cantidad; ++i) free(lista->elementos[i].texto);
+    free(lista->elementos);
+    memset(lista, 0, sizeof *lista);
 }
 
-/* ------------------------------------------------------------------ */
-/* Paso 1: pasar el AST a la lista en preorden                         */
-/* ------------------------------------------------------------------ */
-
-static int agregar_nodo(ListaNodos *lista, const AstNodo *nodo, size_t fuente)
+/* Lee todos los tokens de un texto, hasta el TOKEN_EOF incluido.
+ * Devuelve 0 si funcionó o -1 si no hubo memoria. */
+static int leer_tokens(const ClonFuente *fuente, ListaTokens *lista)
 {
-    if (lista->cantidad == lista->capacidad) {
-        size_t nueva = (lista->capacidad == 0) ? 256 : lista->capacidad * 2;
+    Lexer lexer;
+    lexer_init(&lexer, fuente->texto, fuente->largo, fuente->nombre);
+    for (;;) {
+        Token t = lexer_next(&lexer);
+        if (t.error == TOKEN_OUT_OF_MEMORY) {
+            token_dispose(&t);
+            return -1;
+        }
+        if (lista->cantidad == lista->capacidad) {
+            size_t nueva = (lista->capacidad == 0) ? 256 : lista->capacidad * 2;
+            TokenClon *mas = realloc(lista->elementos, nueva * sizeof *mas);
+            if (mas == NULL) {
+                token_dispose(&t);
+                return -1;
+            }
+            lista->elementos = mas;
+            lista->capacidad = nueva;
+        }
+        /* Después de lexer_next, el lexer quedó justo al final del token. */
+        TokenClon c = {t.type, t.lexeme, t.line, t.column, lexer.line, lexer.column};
+        t.lexeme = NULL;  /* El texto ahora es de la lista. */
+        token_dispose(&t);
+        lista->elementos[lista->cantidad++] = c;
+        if (c.tipo == TOKEN_EOF) return 0;
+    }
+}
+
+/* Pasa el árbol de derivación de un archivo a la lista común de nodos. */
+static int agregar_arbol(ListaNodos *lista, const Ll1Derivacion *arbol,
+                         const ListaTokens *tokens, size_t fuente)
+{
+    if (lista->cantidad + arbol->cantidad > lista->capacidad) {
+        size_t nueva = (lista->capacidad == 0) ? 1024 : lista->capacidad;
+        while (nueva < lista->cantidad + arbol->cantidad) nueva *= 2;
         InfoNodo *mas = realloc(lista->elementos, nueva * sizeof *mas);
         if (mas == NULL) return -1;
         lista->elementos = mas;
         lista->capacidad = nueva;
     }
-    InfoNodo info = {0};
-    info.nodo = nodo;
-    info.fuente = fuente;
-    lista->elementos[lista->cantidad++] = info;
+    for (size_t k = 0; k < arbol->cantidad; ++k) {
+        const Ll1Nodo *n = &arbol->nodos[k];
+        InfoNodo info = {0};
+        info.simbolo = n->simbolo;
+        info.produccion = n->produccion;
+        info.token = LL1_ES_TERMINAL(n->simbolo) ? &tokens->elementos[n->token] : NULL;
+        info.fuente = fuente;
+        info.tamano = n->tamano;
+        info.tokens = n->fin_token - n->primer_token;
+        if (info.tokens > 0) {
+            info.primero = &tokens->elementos[n->primer_token];
+            info.ultimo = &tokens->elementos[n->fin_token - 1];
+        }
+        lista->elementos[lista->cantidad++] = info;
+    }
     return 0;
 }
 
 /*
- * Recorre el árbol en preorden sin recursión (con una pila propia), igual
- * que ast_imprimir, para no agotar la pila de C con árboles muy profundos.
+ * ¿El Tipo II ignora el texto de este terminal? Sí para los nombres y los
+ * valores: es lo único que puede cambiar en una copia Tipo II. Los demás
+ * terminales tienen siempre el mismo texto (una palabra clave o un símbolo).
  */
-static int recorrer_preorden(const AstNodo *raiz, size_t fuente, ListaNodos *lista)
+static int tipo2_ignora_texto(int simbolo)
 {
-    size_t capacidad = 64, cantidad = 0;
-    const AstNodo **pila = malloc(capacidad * sizeof *pila);
-    if (pila == NULL) return -1;
-    pila[cantidad++] = raiz;
-
-    int resultado = 0;
-    while (cantidad > 0 && resultado == 0) {
-        const AstNodo *nodo = pila[--cantidad];
-        if (agregar_nodo(lista, nodo, fuente) != 0) { resultado = -1; break; }
-
-        /* Apilar los hijos al revés, para que el primero salga primero. */
-        size_t desde = cantidad;
-        for (const AstNodo *h = nodo->primer_hijo; h != NULL; h = h->siguiente) {
-            if (cantidad == capacidad) {
-                capacidad *= 2;
-                const AstNodo **mas = realloc(pila, capacidad * sizeof *mas);
-                if (mas == NULL) { resultado = -1; break; }
-                pila = mas;
-            }
-            pila[cantidad++] = h;
-        }
-        for (size_t i = desde, j = cantidad; resultado == 0 && i + 1 < j; ++i, --j) {
-            const AstNodo *t = pila[i];
-            pila[i] = pila[j - 1];
-            pila[j - 1] = t;
-        }
-    }
-    free(pila);
-    return resultado;
+    return simbolo == TOKEN_IDENTIFIER || simbolo == TOKEN_INTEGER ||
+           simbolo == TOKEN_STRING || simbolo == TOKEN_CHARACTER;
 }
 
 /* ------------------------------------------------------------------ */
 /* Paso 2: huellas, de las hojas hacia arriba                          */
 /* ------------------------------------------------------------------ */
 
-/* ¿(l1, c1) va después que (l2, c2) en el texto? */
-static int despues_de(size_t l1, size_t c1, size_t l2, size_t c2)
-{
-    return l1 > l2 || (l1 == l2 && c1 > c2);
-}
-
 /*
- * Recorre la lista de atrás hacia adelante. En preorden, los hijos están
- * DESPUÉS del padre, así que al ir hacia atrás los hijos se calculan antes:
- * es el recorrido ascendente (post-orden) de la diapositiva 8.
+ * La huella de un nodo junta: su símbolo, la producción que se aplicó (el
+ * paso del camino), y las huellas de sus hijos en orden. En las hojas, el
+ * Tipo I agrega el texto del token; el Tipo II, solo si no es un nombre o
+ * un valor.
  *
- * Los hijos de un nodo i se encuentran así: el primero está en i + 1; el
- * siguiente, saltando el subárbol del anterior (i + 1 + su tamaño); etc.
+ * Se recorre la lista de atrás hacia adelante: en preorden, los hijos están
+ * DESPUÉS del padre, así que se calculan antes (recorrido ascendente). Los
+ * hijos de i se encuentran así: el primero en i + 1; el siguiente, saltando
+ * el subárbol del anterior; hasta llegar a i + tamano.
  */
 static void calcular_huellas(ListaNodos *lista)
 {
     for (size_t k = lista->cantidad; k > 0; --k) {
         size_t i = k - 1;
         InfoNodo *info = &lista->elementos[i];
-        const AstNodo *nodo = info->nodo;
 
-        uint64_t h1 = mezclar(FNV_INICIO, (uint64_t)nodo->tipo);
-        uint64_t h2 = h1;
-        h1 = mezclar_texto(h1, nodo->texto);
-        h2 = mezclar_texto(h2, tipo2_ignora_texto(nodo->tipo) ? NULL : nodo->texto);
-
-        info->tamano = 1;
-        info->linea_fin = nodo->ubicacion.last_line;
-        info->columna_fin = nodo->ubicacion.last_column;
-
-        size_t hijo = i + 1;
-        for (const AstNodo *h = nodo->primer_hijo; h != NULL; h = h->siguiente) {
-            const InfoNodo *ih = &lista->elementos[hijo];
-            h1 = mezclar(h1, ih->huella[MODO_TIPO_1]);
-            h2 = mezclar(h2, ih->huella[MODO_TIPO_2]);
-            info->tamano += ih->tamano;
-            if (despues_de(ih->linea_fin, ih->columna_fin, info->linea_fin, info->columna_fin)) {
-                info->linea_fin = ih->linea_fin;
-                info->columna_fin = ih->columna_fin;
-            }
-            hijo += ih->tamano;
+        uint64_t h = mezclar(FNV_INICIO, (uint64_t)(unsigned)info->simbolo);
+        h = mezclar(h, (uint64_t)(unsigned)(info->produccion + 1));
+        uint64_t h1 = h, h2 = h;
+        if (info->token != NULL) {
+            h1 = mezclar_texto(h1, info->token->texto);
+            if (!tipo2_ignora_texto(info->simbolo)) h2 = mezclar_texto(h2, info->token->texto);
+        }
+        for (size_t hijo = i + 1; hijo < i + info->tamano; hijo += lista->elementos[hijo].tamano) {
+            h1 = mezclar(h1, lista->elementos[hijo].huella[MODO_TIPO_1]);
+            h2 = mezclar(h2, lista->elementos[hijo].huella[MODO_TIPO_2]);
         }
         info->huella[MODO_TIPO_1] = h1;
         info->huella[MODO_TIPO_2] = h2;
@@ -196,9 +242,10 @@ static void calcular_huellas(ListaNodos *lista)
 }
 
 /*
- * Compara dos subárboles de verdad (por si dos huellas chocaron).
- * Como están en preorden, basta comparar posición por posición: mismo
- * tipo, mismo tamaño (misma forma) y, si el modo lo pide, mismo texto.
+ * Compara dos subárboles de verdad (por si dos huellas chocaron). Como
+ * están en preorden, basta comparar posición por posición: mismo símbolo,
+ * misma producción y misma forma (tamaño) en cada paso del camino, y en
+ * las hojas el mismo texto (si el modo lo pide).
  */
 static int subarboles_iguales(const ListaNodos *lista, size_t a, size_t b, int modo)
 {
@@ -206,13 +253,13 @@ static int subarboles_iguales(const ListaNodos *lista, size_t a, size_t b, int m
     if (e[a].tamano != e[b].tamano) return 0;
 
     for (size_t k = 0; k < e[a].tamano; ++k) {
-        const AstNodo *x = e[a + k].nodo;
-        const AstNodo *y = e[b + k].nodo;
-        if (x->tipo != y->tipo || e[a + k].tamano != e[b + k].tamano) return 0;
-        if (modo == MODO_TIPO_2 && tipo2_ignora_texto(x->tipo)) continue;
-
-        const char *tx = (x->texto != NULL) ? x->texto : "";
-        const char *ty = (y->texto != NULL) ? y->texto : "";
+        const InfoNodo *x = &e[a + k], *y = &e[b + k];
+        if (x->simbolo != y->simbolo || x->produccion != y->produccion ||
+            x->tamano != y->tamano) return 0;
+        if (x->token == NULL) continue;
+        if (modo == MODO_TIPO_2 && tipo2_ignora_texto(x->simbolo)) continue;
+        const char *tx = x->token->texto ? x->token->texto : "";
+        const char *ty = y->token->texto ? y->token->texto : "";
         if (strcmp(tx, ty) != 0) return 0;
     }
     return 1;
@@ -222,25 +269,38 @@ static int subarboles_iguales(const ListaNodos *lista, size_t a, size_t b, int m
 /* Paso 3: candidatos y grupos de clones                               */
 /* ------------------------------------------------------------------ */
 
-/* ¿Qué se repite? Devuelve el nombre para mostrar, o NULL si este tipo de
- * nodo no se reporta (una expresión suelta, un nombre, un tipo...). */
-static const char *descripcion(AstTipo tipo)
+/*
+ * ¿Qué se repite? Devuelve el nombre para mostrar, o NULL si este nodo no
+ * se reporta (una expresión suelta, un tipo, una lista de parámetros...).
+ * Se reportan las funciones, los bloques y las sentencias; la sentencia se
+ * nombra por su primer token (y, si empieza con un nombre, por el segundo:
+ * "x * ..." declara, "x : ..." asigna, "x(...)" llama).
+ */
+static const char *descripcion(const InfoNodo *info)
 {
-    switch (tipo) {
-        case AST_FUNCION: return "funcion";
-        case AST_BLOQUE: return "bloque";
-        case AST_SI: return "condicional whether";
-        case AST_MIENTRAS: return "ciclo whale";
-        case AST_RECORRIDO: return "ciclo cycle";
-        case AST_INTENTAR: return "bloque seek";
-        case AST_DECLARACION: return "declaracion";
-        case AST_ASIGNACION: return "asignacion";
-        case AST_RETORNO: return "give";
-        case AST_LLAMADA: return "llamada";
-        case AST_AGREGAR: return "add";
-        case AST_ELIMINAR: return "remove";
-        case AST_CONSTANTE: return "constante";
-        default: return NULL;
+    if (info->simbolo == NT_FUNCION) return "funcion";
+    if (info->simbolo == NT_BLOQUE) return "bloque";
+    if (info->simbolo == NT_CONSTANTE) return "constante";
+    if (info->simbolo != NT_SENTENCIA || info->primero == NULL) return NULL;
+
+    switch (info->primero->tipo) {
+        case TOKEN_WHETHER: return "condicional whether";
+        case TOKEN_WHALE: return "ciclo whale";
+        case TOKEN_CYCLE: return "ciclo cycle";
+        case TOKEN_SEEK: return "bloque seek";
+        case TOKEN_GIVE: return "give";
+        case TOKEN_ADD: return "add";
+        case TOKEN_REMOVE: return "remove";
+        case TOKEN_DECLARE_LIST: return "declaracion de lista";
+        case TOKEN_IDENTIFIER:
+            if (info->tokens < 2) return "sentencia";
+            switch (info->primero[1].tipo) {
+                case TOKEN_STAR: return "declaracion";
+                case TOKEN_LPAREN: return "llamada";
+                default: return "asignacion";
+            }
+        default:
+            return "sentencia";
     }
 }
 
@@ -253,8 +313,8 @@ typedef struct {
 
 /*
  * Orden para revisar los candidatos:
- *   1. Del más grande al más pequeño: así el clon grande se reporta primero
- *      y sus partes ya no se repiten después.
+ *   1. Del más grande al más pequeño (en tokens; si empatan, en nodos):
+ *      así el clon grande se reporta primero y sus partes ya no se repiten.
  *   2. Con el mismo tamaño, Tipo I antes que Tipo II.
  *   3. Con la misma huella, juntos (así se forman los grupos).
  *   4. Por posición, para que el resultado siempre salga en el mismo orden.
@@ -265,6 +325,7 @@ static int comparar_candidatos(const void *pa, const void *pb)
     const InfoNodo *ia = &a->lista->elementos[a->indice];
     const InfoNodo *ib = &b->lista->elementos[b->indice];
 
+    if (ia->tokens != ib->tokens) return (ia->tokens > ib->tokens) ? -1 : 1;
     if (ia->tamano != ib->tamano) return (ia->tamano > ib->tamano) ? -1 : 1;
     if (a->modo != b->modo) return (a->modo < b->modo) ? -1 : 1;
     if (ia->huella[a->modo] != ib->huella[b->modo]) {
@@ -297,8 +358,8 @@ static int agregar_clon(ClonLista *resultado, const ListaNodos *lista,
     const InfoNodo *primero = &lista->elementos[miembros[0]];
     Clon clon = {0};
     clon.tipo = (modo == MODO_TIPO_1) ? CLON_TIPO_1 : CLON_TIPO_2;
-    clon.que = descripcion(primero->nodo->tipo);
-    clon.nodos = primero->tamano;
+    clon.que = descripcion(primero);
+    clon.tokens = primero->tokens;
     clon.fragmentos = calloc(cantidad, sizeof *clon.fragmentos);
     if (clon.fragmentos == NULL) return -1;
 
@@ -314,10 +375,11 @@ static int agregar_clon(ClonLista *resultado, const ListaNodos *lista,
             return -1;
         }
         strcpy(f->archivo, nombre);
-        f->linea = info->nodo->ubicacion.first_line;
-        f->columna = info->nodo->ubicacion.first_column;
-        f->linea_fin = info->linea_fin;
-        f->columna_fin = info->columna_fin;
+        /* Del primer token que cubre hasta el final del último. */
+        f->linea = info->primero->linea;
+        f->columna = info->primero->columna;
+        f->linea_fin = info->ultimo->linea_fin;
+        f->columna_fin = info->ultimo->columna_fin;
         clon.cantidad++;
     }
     resultado->elementos[resultado->cantidad++] = clon;
@@ -395,26 +457,47 @@ static int anotar_omitido(ClonLista *resultado, const char *nombre)
     return 0;
 }
 
-int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodos,
+/* Los tipos de los tokens, como los pide el analizador LL(1). */
+static TokenType *tipos_de(const ListaTokens *tokens)
+{
+    TokenType *tipos = malloc((tokens->cantidad ? tokens->cantidad : 1) * sizeof *tipos);
+    if (tipos != NULL) {
+        for (size_t i = 0; i < tokens->cantidad; ++i) tipos[i] = tokens->elementos[i].tipo;
+    }
+    return tipos;
+}
+
+int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_tokens,
                   ClonLista *resultado)
 {
     int estado = 0;
     ListaNodos lista = {0};
     Candidato *candidatos = NULL;
-    Ast *arboles = calloc(cantidad > 0 ? cantidad : 1, sizeof *arboles);
-    FILE *descartar = tmpfile();  /* Los errores de sintaxis no se muestran aquí. */
-    if (arboles == NULL || descartar == NULL) estado = -1;
+    ListaTokens *tokens = calloc(cantidad > 0 ? cantidad : 1, sizeof *tokens);
+    if (tokens == NULL) estado = -1;
 
-    /* Paso 1: el AST de cada archivo, pasado a la lista en preorden.
-     * Un archivo con errores de sintaxis no tiene AST: se cuenta y se salta. */
+    /* Paso 1: los tokens y el árbol de derivación de cada archivo. Un
+     * archivo con errores de sintaxis no tiene árbol: se cuenta y se salta. */
     for (size_t f = 0; f < cantidad && estado == 0; ++f) {
-        int r = construir_ast(fuentes[f].texto, fuentes[f].largo, fuentes[f].nombre,
-                              descartar, &arboles[f]);
-        if (r == 2) estado = -1;
-        else if (r != 0 || arboles[f].raiz == NULL) {
-            if (anotar_omitido(resultado, fuentes[f].nombre) != 0) estado = -1;
+        if (leer_tokens(&fuentes[f], &tokens[f]) != 0) {
+            estado = -1;
+            break;
         }
-        else if (recorrer_preorden(arboles[f].raiz, f, &lista) != 0) estado = -1;
+        TokenType *tipos = tipos_de(&tokens[f]);
+        if (tipos == NULL) {
+            estado = -1;
+            break;
+        }
+        Ll1Derivacion arbol = {0};
+        int r = ll1_derivar(tipos, tokens[f].cantidad, &arbol);
+        free(tipos);
+        if (r < 0) estado = -1;
+        else if (r != 0) {
+            if (anotar_omitido(resultado, fuentes[f].nombre) != 0) estado = -1;
+        } else if (agregar_arbol(&lista, &arbol, &tokens[f], f) != 0) {
+            estado = -1;
+        }
+        ll1_liberar_derivacion(&arbol);
     }
 
     /* Paso 2: las huellas de todos los nodos. */
@@ -429,7 +512,7 @@ int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodo
     }
     for (size_t i = 0; i < lista.cantidad && estado == 0; ++i) {
         const InfoNodo *info = &lista.elementos[i];
-        if (descripcion(info->nodo->tipo) == NULL || info->tamano < minimo_nodos) continue;
+        if (descripcion(info) == NULL || info->tokens < minimo_tokens) continue;
         for (int modo = MODO_TIPO_1; modo <= MODO_TIPO_2; ++modo) {
             Candidato c = {i, modo, &lista};
             candidatos[total++] = c;
@@ -446,7 +529,8 @@ int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodo
             size_t fin = inicio + 1;
             while (fin < total) {
                 const InfoNodo *b = &lista.elementos[candidatos[fin].indice];
-                if (b->tamano != a->tamano || candidatos[fin].modo != candidatos[inicio].modo ||
+                if (b->tokens != a->tokens || b->tamano != a->tamano ||
+                    candidatos[fin].modo != candidatos[inicio].modo ||
                     b->huella[candidatos[fin].modo] != a->huella[candidatos[inicio].modo]) break;
                 fin++;
             }
@@ -460,9 +544,8 @@ int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodo
 
     free(candidatos);
     free(lista.elementos);
-    for (size_t f = 0; arboles != NULL && f < cantidad; ++f) ast_liberar(&arboles[f]);
-    free(arboles);
-    if (descartar != NULL) fclose(descartar);
+    for (size_t f = 0; tokens != NULL && f < cantidad; ++f) liberar_tokens(&tokens[f]);
+    free(tokens);
     return estado;
 }
 
@@ -491,15 +574,15 @@ void clones_liberar(ClonLista *lista)
 static const char *nombre_tipo(ClonTipo tipo)
 {
     return (tipo == CLON_TIPO_1) ? "tipo I (codigo identico)"
-                                 : "tipo II (misma estructura, otros nombres o valores)";
+                                 : "tipo II (mismo camino en la gramatica, otros nombres o valores)";
 }
 
 int clones_escribir_texto(const ClonLista *lista, size_t archivos, FILE *salida)
 {
     for (size_t i = 0; i < lista->cantidad; ++i) {
         const Clon *c = &lista->elementos[i];
-        fprintf(salida, "Clon %zu: %s, %s de %zu nodos, %zu copias\n",
-                i + 1, nombre_tipo(c->tipo), c->que, c->nodos, c->cantidad);
+        fprintf(salida, "Clon %zu: %s, %s de %zu tokens, %zu copias\n",
+                i + 1, nombre_tipo(c->tipo), c->que, c->tokens, c->cantidad);
         for (size_t j = 0; j < c->cantidad; ++j) {
             const ClonFragmento *f = &c->fragmentos[j];
             if (f->linea == f->linea_fin) {
@@ -546,7 +629,7 @@ int clones_escribir_json(const ClonLista *lista, size_t archivos, FILE *salida)
         const Clon *c = &lista->elementos[i];
         fprintf(salida, "%s\n  {\"tipo\": %d, \"que\": ", i > 0 ? "," : "", (int)c->tipo);
         escribir_texto_json(c->que, salida);
-        fprintf(salida, ", \"nodos\": %zu, \"fragmentos\": [", c->nodos);
+        fprintf(salida, ", \"tokens\": %zu, \"fragmentos\": [", c->tokens);
         for (size_t j = 0; j < c->cantidad; ++j) {
             const ClonFragmento *f = &c->fragmentos[j];
             fprintf(salida, "%s\n    {\"archivo\": ", j > 0 ? "," : "");

@@ -72,7 +72,7 @@ mismo orden en que un programa `.bal` las atraviesa:
 | 6 | `src/Resolucion_y_Enlace/` | Resuelve variables, etiquetas y saltos, y enlaza las funciones. | `resolucion_*.c`, `enlace_funciones.c` |
 | 7 | `src/Codificacion_Binaria/` | Convierte cada bundle en palabras binarias y escribe `.bin`/`.mem`. | `codificacion_binaria.c`, `formato_binario.c` |
 | — | `src/Linea_Comandos/` | Programa `balc`: opciones de la terminal y diagnósticos en JSON. | `main.c`, `cli.c`, `diagnosticos.c` |
-| — | `src/Deteccion_Clones/` | Clones Tipo I y II entre archivos (lo usan `balc --clones` y el IDE). | `clones.c` |
+| — | `src/Deteccion_Clones/` | Clones Tipo I y II entre archivos, comparando el camino en la gramática LL(1) (lo usan `balc --clones` y el IDE). | `clones.c` |
 | — | `src/IDE/` | Editor GTK: sugerencias, autocierre, errores y correcciones. | `ide_*.c` |
 | — | `src/LL1/` | Gramática LL(1), PRIMERO/SIGUIENTE, tabla M y analizador predictivo; el IDE la consulta para sugerir y corregir. Ver [docs/ll1.md](docs/ll1.md). | `ll1_*.c` |
 
@@ -178,6 +178,7 @@ vuelve a generar al compilar.
 
 | Función | Cómo se usa |
 |---|---|
+| Colores | El código se colorea como en VS Code (tema oscuro Dark+): control (`whether`, `whale`, `give`…) en morado, palabras del lenguaje y operadores (`create_funk`, `gauss`…) en azul, tipos en verde agua, funciones en amarillo, variables en celeste, números en verde claro, textos en naranja, comentarios en verde y `( ) [ ] { }` con un color por nivel. Usa el mismo lexer del compilador. |
 | Errores en vivo | Medio segundo después de dejar de escribir, los errores se subrayan en rojo. Al pasar el mouse encima se ve la explicación. |
 | Lista de errores | Está abajo de la ventana. Al hacer clic en un error, el cursor salta a su línea. |
 | Sugerencias | Al escribir aparecen las palabras clave y variables que empiezan igual. Se eligen con ↑/↓ y se aceptan con Enter o Tab. Esc las cierra. |
@@ -217,17 +218,27 @@ make test-dce test-ide-dce                  # pruebas
 
 ### Clones desde la terminal
 
-`balc` también busca clones tipo I (código idéntico) y tipo II (misma estructura
-con otros nombres o valores) entre varios archivos:
+`balc` también busca clones tipo I (código idéntico) y tipo II (mismo camino en
+la gramática con otros nombres o valores) entre varios archivos:
 
 ```bash
 ./balc --clones examples/*.bal              # listado para leer
 ./balc --clones --json a.bal b.bal          # JSON
-./balc --clones --minimo 6 examples/*.bal   # clones más pequeños (por defecto 10 nodos del AST)
+./balc --clones --minimo 6 examples/*.bal   # clones más pequeños (por defecto 10 tokens)
 ```
 
-Se comparan los AST, así que los espacios, comentarios y paréntesis de más no
-cuentan. Un archivo con errores de sintaxis no se revisa y se avisa cuál es.
+Para decidir si dos fragmentos son clones se sigue el **camino de la gramática**:
+cada archivo se analiza con el analizador LL(1) (`src/LL1/`), y dos fragmentos
+son clones si el analizador aplicó las mismas producciones en el mismo orden.
+
+| Fragmentos | ¿Clon? | Por qué |
+|---|---|---|
+| Iguales salvo espacios, saltos de línea y comentarios | Tipo I | El lexer los descarta: la derivación es la misma. |
+| `factorial` copiada con otras variables y valores | Tipo II | Mismas producciones; solo cambian los `id` y `num`. |
+| `x : (a gauss 1);` y `x : a gauss 1;` | No | Los paréntesis usan `primario → ( expresion )`: otro camino. |
+| El mismo cuerpo en un `whale` y en un `whether` | No (solo el bloque de adentro) | `sentencia → ciclo` frente a `sentencia → condicional`. |
+
+Un archivo con errores de sintaxis no se revisa y se avisa cuál es.
 
 ### Diagnósticos en JSON
 
