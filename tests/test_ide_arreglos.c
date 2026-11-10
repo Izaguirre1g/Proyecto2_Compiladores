@@ -90,6 +90,47 @@ static void revisar(int linea, const char *codigo, const char *descripcion,
     free(nuevo);
 }
 
+/*
+ * Para un código con DOS errores: revisa que el primer arreglo sea
+ * "primera", lo aplica, y con el código que queda revisa el segundo con
+ * revisar() (que también exige que al final no queden errores).
+ */
+static void revisar_dos(int linea, const char *codigo, const char *primera,
+                        const char *segunda, const char *corregido)
+{
+    size_t largo = strlen(codigo);
+    DiagLista lista = {0};
+    if (ide_analizar_texto(codigo, largo, "tests/editor.bal", &lista) != 0) {
+        fprintf(stderr, "FALLO en la linea %d: no se pudo analizar\n", linea);
+        fallos++;
+        return;
+    }
+    IdeArreglo arreglo;
+    int hay = lista.cantidad == 2 &&
+              ide_proponer_arreglo(codigo, largo, &lista.elementos[0], &arreglo) == 1;
+    diag_liberar(&lista);
+    if (!hay) {
+        fprintf(stderr, "FALLO en la linea %d: no hay dos errores con arreglo\n", linea);
+        fallos++;
+        return;
+    }
+    if (strcmp(arreglo.descripcion, primera) != 0) {
+        fprintf(stderr, "FALLO en la linea %d:\n  descripcion esperada: %s\n  obtenida: %s\n",
+                linea, primera, arreglo.descripcion);
+        fallos++;
+    }
+    size_t nuevo_largo = 0;
+    char *nuevo = ide_aplicar_arreglo(codigo, largo, &arreglo, &nuevo_largo);
+    ide_liberar_arreglo(&arreglo);
+    if (nuevo == NULL) {
+        fprintf(stderr, "FALLO en la linea %d: no se pudo aplicar\n", linea);
+        fallos++;
+        return;
+    }
+    revisar(linea, nuevo, segunda, corregido);
+    free(nuevo);
+}
+
 /* El inicio y el final de main, para no repetirlos en cada caso. */
 #define INICIO "create_funk #declare_infinite_void# main() {\n"
 #define FINAL  "}\n"
@@ -197,12 +238,21 @@ int main(void)
             "agregar '#' antes de 'declare_infinite_void' en la linea 1",
             "create_funk # declare_infinite_void# main() {\n}\n");
 
-    /* Aquí la tabla NO obliga a un token (después de 'gauss' puede ir
-     * cualquier valor): se prueban correcciones y gana borrar el 'gauss'. */
-    revisar(__LINE__,
-            INICIO "    x * declare_int : 1;\n    x : 5 gauss ;\n" FINAL,
-            "borrar 'gauss' de la linea 3",
-            INICIO "    x * declare_int : 1;\n    x : 5 ;\n" FINAL);
+    /* A 'gauss' le falta el operando de la derecha: NO se propone arreglo
+     * (ni borrar el 'gauss' ni inventar un valor): lo escribe la persona. */
+    {
+        const char *codigo = INICIO "    x * declare_int : 1;\n    x : 5 gauss ;\n" FINAL;
+        DiagLista lista = {0};
+        VERIFICAR(ide_analizar_texto(codigo, strlen(codigo), "tests/editor.bal", &lista) == 0);
+        VERIFICAR(lista.cantidad == 1);
+        if (lista.cantidad == 1) {
+            VERIFICAR(strcmp(lista.elementos[0].mensaje,
+                             "a 'gauss' le falta el operando de la derecha") == 0);
+            IdeArreglo arreglo;
+            VERIFICAR(ide_proponer_arreglo(codigo, strlen(codigo), &lista.elementos[0], &arreglo) == 0);
+        }
+        diag_liberar(&lista);
+    }
 
     /* Un número de más: lo más sencillo es borrarlo (la columna dice cuál). */
     revisar(__LINE__,
@@ -211,6 +261,30 @@ int main(void)
             "borrar '1' de la linea 2, columna 12",
             "create_funk #declare_int# uno() {\n    give 1;\n}\n"
             "create_funk #declare_infinite_void# main() {\n}\n");
+
+    /* Falta el '*' de una declaración: en BAL "nombre * tipo" declara, así que
+     * lo correcto es agregar el '*' y NO borrar el tipo. */
+    revisar(__LINE__,
+            INICIO "    n  declare_int : 5;\n    n : n gauss 1;\n" FINAL,
+            "agregar '*' antes de 'declare_int' en la linea 2",
+            INICIO "    n * declare_int : 5;\n    n : n gauss 1;\n" FINAL);
+
+    /* Faltan el '*' Y el ':': son dos errores, cada uno con su arreglo
+     * (primero el '*', luego el ':'), no se borra nada. */
+    revisar_dos(__LINE__,
+                INICIO "    resultado  declare_int 1;\n" FINAL,
+                "agregar '*' antes de 'declare_int' en la linea 2",
+                "agregar ':' antes de '1' en la linea 2",
+                INICIO "    resultado * declare_int : 1;\n" FINAL);
+
+    /* Falta 'cycle': el parser lee 'i' como una asignación y falla en 'let',
+     * pero lo que falta va ANTES de 'i'. La tabla dice qué puede ir ahí. */
+    revisar(__LINE__,
+            INICIO "    s * declare_int : 0;\n"
+                   "    i let 0 until 5 step 2 {\n        s : s gauss i;\n    } endgame;\n" FINAL,
+            "agregar 'cycle' antes de 'i' en la linea 3",
+            INICIO "    s * declare_int : 0;\n"
+                   "    cycle i let 0 until 5 step 2 {\n        s : s gauss i;\n    } endgame;\n" FINAL);
 
     /* 12. Error semántico: una variable usada como función en una sentencia
      *     "i ( i gauss 1);" era una asignación. */

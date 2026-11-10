@@ -293,6 +293,21 @@ static int agregar_demas_errores(const char *texto, size_t largo, const char *no
             continue;
         }
 
+        /* A una operación le falta un operando: el error se marca en el
+         * operador. No tiene arreglo automático (no se sabe qué valor iba). */
+        if (e->falta_operando != LL1_SIN_FALTA) {
+            char aviso[256];
+            if (e->operador == TOKEN_NOT) {
+                snprintf(aviso, sizeof aviso, "a '%s' le falta su operando", ll1_texto(e->operador));
+            } else {
+                snprintf(aviso, sizeof aviso, "a '%s' le falta el operando de la %s",
+                         ll1_texto(e->operador),
+                         e->falta_operando == LL1_FALTA_DERECHO ? "derecha" : "izquierda");
+            }
+            estado = diag_agregar(lista, DIAG_SINTACTICO, nombre, t->linea, t->columna, aviso);
+            continue;
+        }
+
         /* Mensaje con el formato de Bison. Bison enumera lo esperado solo
          * si son 4 o menos; se hace igual. */
         char mensaje[512];

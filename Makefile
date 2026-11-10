@@ -688,8 +688,8 @@ GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
 ide: balc-ide
 
-balc-ide: $(IDE)/ide_gtk.c $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
+balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_tabla_ll1.c $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_tabla_ll1.c $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
 
 # Proyecto II: IR independiente del parser generado, prueba con AST construido en C.
 .PHONY: test-ir

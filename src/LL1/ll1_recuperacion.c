@@ -55,14 +55,25 @@ static size_t aplicar(const TokenType *tokens, const size_t *mapa, size_t n, siz
                       size_t *primero_original)
 {
     size_t m = 0;
-    size_t hasta = (c->tipo == LL1_BORRAR_ANTERIOR) ? k - 1 : k;  /* Lo que se copia igual. */
+    /* Lo que se copia igual: todo lo de antes del cambio. */
+    size_t hasta = (c->tipo == LL1_BORRAR_ANTERIOR || c->tipo == LL1_INSERTAR_ANTES_ANTERIOR)
+                       ? k - 1 : k;
     for (size_t i = 0; i < hasta; ++i) {
         if (mapa_destino != NULL) mapa_destino[m] = mapa[i];
         destino[m++] = tokens[i];
     }
 
     size_t desde;
-    if (c->tipo == LL1_INSERTAR || c->tipo == LL1_CAMBIAR) {
+    if (c->tipo == LL1_INSERTAR_ANTES_ANTERIOR) {
+        /* Los tokens nuevos van antes del k - 1, que sigue igual después. */
+        for (int j = 0; j < c->cantidad; ++j) {
+            if (mapa_destino != NULL) mapa_destino[m] = SIZE_MAX;
+            destino[m++] = (TokenType)c->terminales[j];
+        }
+        if (mapa_destino != NULL) mapa_destino[m] = mapa[k - 1];
+        destino[m++] = tokens[k - 1];
+        desde = k;
+    } else if (c->tipo == LL1_INSERTAR || c->tipo == LL1_CAMBIAR) {
         for (int j = 0; j < c->cantidad; ++j) {
             /* Un token insertado no está en el archivo (SIZE_MAX). Uno que
              * REEMPLAZA a otro sí: ocupa el mismo lugar, así que conserva
@@ -113,13 +124,18 @@ static size_t probar(const TokenType *tokens, size_t n, size_t k, const Ll1Corre
 /* Elegir la mejor corrección                                          */
 /* ------------------------------------------------------------------ */
 
-/* Cierres y separadores: lo que más se olvida al escribir. */
+/*
+ * Cierres y separadores: lo que más se olvida al escribir.
+ * En BAL el '*' NO es la multiplicación (esa es 'pitagoras'): es el
+ * separador de las declaraciones "nombre * tipo" (ver NT_RESTO_IDENTIFICADOR
+ * en ll1_gramatica.c). Por eso cuenta igual que ':' o '#'.
+ */
 static int es_cierre_o_separador(int terminal)
 {
     switch (terminal) {
         case TOKEN_SEMICOLON: case TOKEN_RPAREN: case TOKEN_RBRACE: case TOKEN_RBRACKET:
         case TOKEN_COMMA: case TOKEN_LPAREN: case TOKEN_LBRACE: case TOKEN_ASSIGN:
-        case TOKEN_HASH:
+        case TOKEN_HASH: case TOKEN_STAR:
             return 1;
         default:
             return 0;
@@ -129,10 +145,10 @@ static int es_cierre_o_separador(int terminal)
 /*
  * Qué tan "cara" es una corrección para la persona, cuando dos arreglan el
  * error igual de bien. Más barata = mejor:
- *   0  agregar un cierre o separador olvidado (';' ')' '}' ...)
+ *   0  agregar un cierre o separador olvidado (';' ')' '}' '*' ...)
  *   1  borrar un token que sobra
  *   2  cambiar un token por otro
- *   3  agregar una palabra u operador
+ *   3  agregar una palabra u operador (también antes del token anterior)
  */
 static int costo(const Ll1Correccion *c)
 {
@@ -142,6 +158,8 @@ static int costo(const Ll1Correccion *c)
             return 1;
         case LL1_CAMBIAR:
             return 2;
+        case LL1_INSERTAR_ANTES_ANTERIOR:
+            return 3;  /* Como agregar una palabra: lo más caro. */
         default:
             return es_cierre_o_separador(c->terminales[0]) ? 0 : 3;
     }
@@ -151,7 +169,8 @@ static int costo(const Ll1Correccion *c)
 static int preferencia(const Ll1Correccion *c)
 {
     static const int orden[] = {TOKEN_SEMICOLON, TOKEN_RPAREN, TOKEN_RBRACE, TOKEN_RBRACKET,
-                                TOKEN_COMMA, TOKEN_LPAREN, TOKEN_LBRACE, TOKEN_ASSIGN};
+                                TOKEN_COMMA, TOKEN_LPAREN, TOKEN_LBRACE, TOKEN_ASSIGN,
+                                TOKEN_STAR};
     if (c->cantidad == 0) return 0;
     for (size_t i = 0; i < sizeof orden / sizeof orden[0]; ++i) {
         if (orden[i] == c->terminales[0]) return (int)i;
@@ -197,7 +216,13 @@ static Ll1Correccion con_terminal(Ll1TipoCorreccion tipo, int terminal)
     return c;
 }
 
-int ll1_mejor_correccion(const TokenType *tokens, size_t cantidad, Ll1Correccion *correccion)
+/*
+ * La búsqueda de la mejor corrección. "profundidad" dice cuántas veces más
+ * se puede mirar el error SIGUIENTE (ver el paso 3): 1 desde afuera, 0 cuando
+ * ya se está mirando ese segundo error (así no se repite sin fin).
+ */
+static int mejor_correccion(const TokenType *tokens, size_t cantidad,
+                            Ll1Correccion *correccion, int profundidad)
 {
     memset(correccion, 0, sizeof *correccion);
 
@@ -222,7 +247,7 @@ int ll1_mejor_correccion(const TokenType *tokens, size_t cantidad, Ll1Correccion
     TokenType *trabajo = malloc((cantidad + LL1_MAX_INSERCION) * sizeof *trabajo);
     if (trabajo == NULL) return -1;
 
-    Ll1Correccion candidatas[2 * LL1_TERMINALES + 2];
+    Ll1Correccion candidatas[3 * LL1_TERMINALES + 2];
     size_t cuantas = 0;
     for (int t = 0; t < LL1_TERMINALES; ++t) {
         /* Solo tokens que se escriben siempre igual: un nombre, un número o
@@ -237,14 +262,32 @@ int ll1_mejor_correccion(const TokenType *tokens, size_t cantidad, Ll1Correccion
     if (tokens[k] != TOKEN_EOF) candidatas[cuantas++] = (Ll1Correccion){LL1_BORRAR, {0, 0}, 0, 0};
     if (k > 0) candidatas[cuantas++] = (Ll1Correccion){LL1_BORRAR_ANTERIOR, {0, 0}, 0, 0};
 
+    /* Agregar algo ANTES del token anterior (falta 'cycle' en  i let 0 ...).
+     * Qué puede ir ahí lo dice la tabla: se analiza hasta antes de ese token
+     * y se toman sus esperados. Solo palabras y símbolos de texto fijo. */
+    if (k > 0) {
+        Ll1Resultado antes;
+        if (ll1_analizar(tokens, k - 1, &antes) != 0) {
+            free(trabajo);
+            return -1;
+        }
+        for (int t = 0; antes.estado == LL1_INCOMPLETA && t < LL1_TERMINALES; ++t) {
+            if (!antes.esperados.tiene[t] || !ll1_texto_fijo(t)) continue;
+            if (t == TOKEN_DECLARE_TRUE || t == TOKEN_DECLARE_FALSE) continue;
+            candidatas[cuantas++] = con_terminal(LL1_INSERTAR_ANTES_ANTERIOR, t);
+        }
+    }
+
     int estado = 0;
     size_t mejor_avance = 0;
+    size_t avances[2 * LL1_TERMINALES + 2];  /* Lo que avanzó cada candidata. */
     for (size_t i = 0; i < cuantas; ++i) {
         size_t avance = probar(tokens, cantidad, k, &candidatas[i], trabajo);
         if (avance == (size_t)-1) {
-            estado = -1;
-            break;
+            free(trabajo);
+            return -1;
         }
+        avances[i] = avance;
         if (avance < AVANCE_MINIMO) continue;  /* No sirve. */
         if (estado == 0 || es_mejor(&candidatas[i], avance, correccion, mejor_avance)) {
             *correccion = candidatas[i];
@@ -252,8 +295,69 @@ int ll1_mejor_correccion(const TokenType *tokens, size_t cantidad, Ll1Correccion
             estado = 1;
         }
     }
+
+    /*
+     * Paso 3: ninguna corrección sirve SOLA. Puede pasar que haya DOS errores
+     * seguidos, por ejemplo en una declaración sin '*' ni ':':
+     *
+     *     resultado  declare_int 1;        (debía ser  resultado * declare_int : 1;)
+     *
+     * Agregar '*' lee 'declare_int' pero vuelve a fallar en el '1' (avanza
+     * solo 1 token). Aun así es la corrección correcta, porque ese segundo
+     * error también tiene arreglo: agregar ':'. Entonces se acepta una
+     * inserción que avanzó al menos un token si el error que sigue se puede
+     * corregir bien. Entre varias, gana la que deja corregir mejor el segundo
+     * error; si empatan, la más sencilla. El segundo error se reporta
+     * después, en su lugar, con su propia corrección.
+     */
+    if (estado == 0 && profundidad > 0) {
+        for (size_t i = 0; i < cuantas; ++i) {
+            if (candidatas[i].tipo != LL1_INSERTAR || avances[i] == 0) continue;
+
+            size_t primero_original;
+            size_t m = aplicar(tokens, NULL, cantidad, k, &candidatas[i], trabajo, NULL,
+                               &primero_original);
+            Ll1Correccion segunda;
+            int hay = mejor_correccion(trabajo, m, &segunda, profundidad - 1);
+            if (hay < 0) {
+                free(trabajo);
+                return -1;
+            }
+            if (hay == 0) continue;  /* El segundo error tampoco tiene arreglo. */
+
+            /* Cuánto avanza el programa con las dos correcciones. */
+            Ll1Resultado r2;
+            if (ll1_analizar(trabajo, m, &r2) != 0) {
+                free(trabajo);
+                return -1;
+            }
+            TokenType *trabajo2 = malloc((m + LL1_MAX_INSERCION) * sizeof *trabajo2);
+            if (trabajo2 == NULL) {
+                free(trabajo);
+                return -1;
+            }
+            size_t avance = probar(trabajo, m, r2.posicion, &segunda, trabajo2);
+            free(trabajo2);
+            if (avance == (size_t)-1) {
+                free(trabajo);
+                return -1;
+            }
+            if (avance < AVANCE_MINIMO) continue;
+            if (estado == 0 || es_mejor(&candidatas[i], avance, correccion, mejor_avance)) {
+                *correccion = candidatas[i];
+                mejor_avance = avance;
+                estado = 1;
+            }
+        }
+    }
+
     free(trabajo);
     return estado;
+}
+
+int ll1_mejor_correccion(const TokenType *tokens, size_t cantidad, Ll1Correccion *correccion)
+{
+    return mejor_correccion(tokens, cantidad, correccion, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -454,6 +558,55 @@ static int guardar_error(Ll1Errores *errores, const Ll1Error *error)
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Operandos que faltan                                                */
+/* ------------------------------------------------------------------ */
+
+/* Operadores que necesitan un operando a cada lado (ver las producciones
+ * resto_or, resto_xor, resto_and, operador_relacional, resto_suma,
+ * resto_producto y resto_potencia en ll1_gramatica.c). */
+static int es_operador_binario(int t)
+{
+    switch (t) {
+        case TOKEN_OR: case TOKEN_XOR: case TOKEN_AND:
+        case TOKEN_EQUAL: case TOKEN_NOT_EQUAL: case TOKEN_LESS: case TOKEN_GREATER:
+        case TOKEN_LESS_EQUAL: case TOKEN_GREATER_EQUAL:
+        case TOKEN_GAUSS: case TOKEN_NEUMANN:
+        case TOKEN_PITAGORAS: case TOKEN_EUCLIDES: case TOKEN_EULER: case TOKEN_DESCARTES:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/*
+ * ¿El error en el token k es una operación a la que le falta un operando?
+ * Se reconoce porque la tabla esperaba un OPERANDO en ese punto: entre los
+ * esperados está un número (al inicio de una sentencia, por ejemplo, no se
+ * espera un número, así que ahí no se confunde).
+ *   - Falta el de la DERECHA: el token anterior es un operador (binario o
+ *     unario, '~'):   i : i gauss ;     whether (x < ) {
+ *   - Falta el de la IZQUIERDA: el token del error es un operador binario
+ *     que llegó cuando se esperaba un operando:   x : gauss 1;
+ *     ('neumann' no cuenta: también es el menos unario, "x : neumann 1").
+ * Devuelve LL1_FALTA_DERECHO, LL1_FALTA_IZQUIERDO o LL1_SIN_FALTA, y en
+ * "operador" el índice del operador.
+ */
+static int falta_operando(const TokenType *tokens, size_t k, const Ll1Conjunto *esperados,
+                          size_t *operador)
+{
+    if (!esperados->tiene[TOKEN_INTEGER]) return LL1_SIN_FALTA;  /* No se esperaba un operando. */
+    if (k > 0 && (es_operador_binario(tokens[k - 1]) || tokens[k - 1] == TOKEN_NOT)) {
+        *operador = k - 1;
+        return LL1_FALTA_DERECHO;
+    }
+    if (es_operador_binario(tokens[k]) && tokens[k] != TOKEN_NEUMANN) {
+        *operador = k;
+        return LL1_FALTA_IZQUIERDO;
+    }
+    return LL1_SIN_FALTA;
+}
+
 static int recuperar(const TokenType *tokens, const char *const *lexemas, size_t cantidad,
                      Ll1Errores *errores)
 {
@@ -537,6 +690,47 @@ static int recuperar(const TokenType *tokens, const char *const *lexemas, size_t
             error.esperados = r.esperados;  /* Los del lugar donde falló el parser. */
         } else {
             error.esperados = r.esperados;
+
+            /* ¿Le falta un operando a una operación? Para seguir analizando
+             * se supone un operando (un nombre) en el lugar del error, pero
+             * solo si así el análisis avanza de verdad. */
+            size_t operador = 0;
+            int lado = falta_operando(actual, k, &r.esperados, &operador);
+            Ll1Correccion supuesto = con_terminal(LL1_INSERTAR, TOKEN_IDENTIFIER);
+            if (lado != LL1_SIN_FALTA) {
+                TokenType *prueba = malloc((n + LL1_MAX_INSERCION) * sizeof *prueba);
+                if (prueba == NULL) {
+                    estado = -1;
+                    break;
+                }
+                size_t avance = probar(actual, n, k, &supuesto, prueba);
+                free(prueba);
+                if (avance == (size_t)-1) {
+                    estado = -1;
+                    break;
+                }
+                if (avance < AVANCE_MINIMO) lado = LL1_SIN_FALTA;  /* No era eso. */
+            }
+
+            if (lado != LL1_SIN_FALTA) {
+                /* El error se marca en el operador, y NO tiene corrección
+                 * (no se inventa el valor). */
+                error.falta_operando = lado;
+                error.operador = actual[operador];
+                error.posicion = mapa[operador];
+                error.anterior = (operador > 0) ? mapa[operador - 1] : SIZE_MAX;
+                error.encontrado = actual[operador];
+                if (guardar_error(errores, &error) != 0) {
+                    estado = -1;
+                    break;
+                }
+                size_t primero_original;
+                n = aplicar(actual, mapa, n, k, &supuesto, siguiente, mapa_siguiente,
+                            &primero_original);
+                reanudar = SIZE_MAX;
+                goto cambiar_listas;
+            }
+
             int hay = ll1_mejor_correccion(actual, n, &c);
             if (hay < 0) {
                 estado = -1;
