@@ -1,5 +1,5 @@
 /*
- * Pruebas del núcleo del IDE (src/ide_nucleo.c).
+ * Pruebas del núcleo del IDE (src/IDE/ide_nucleo.c).
  *
  * Revisa las tres partes del núcleo:
  *   1. Sugerencias de código.
@@ -88,6 +88,69 @@ int main(void)
         VERIFICAR(strcmp(s.elementos[1].texto, "gauss") == 0);
     }
     ide_liberar_sugerencias(&s);
+
+    /* ---------- 1b. Sugerencias con la predicción LL(1) ---------- */
+
+    /* Prueba 1b.1: después del bloque de un whether, "al" solo puede ser
+     * "alif" o "also" (las dos están en la tabla); "aka" no. */
+    {
+        const char *codigo = "create_funk #declare_infinite_void# main() {\n"
+                             "    whether (1 < 2) { } al";
+        size_t hasta = strlen(codigo) - 2;  /* La palabra "al" empieza ahí. */
+        VERIFICAR(ide_sugerencias_predictivas(codigo, strlen(codigo), hasta, "al", &s) == 0);
+        VERIFICAR(s.cantidad == 2);
+        if (s.cantidad == 2) {
+            VERIFICAR(strcmp(s.elementos[0].texto, "alif") == 0);
+            VERIFICAR(strcmp(s.elementos[1].texto, "also") == 0);
+        }
+        ide_liberar_sugerencias(&s);
+
+        /* Sin predicción saldría también "aka" (son tres). */
+        VERIFICAR(ide_sugerencias(codigo, strlen(codigo), "a", &s) == 0);
+        int hay_aka = 0;
+        for (size_t i = 0; i < s.cantidad; ++i) hay_aka |= strcmp(s.elementos[i].texto, "aka") == 0;
+        VERIFICAR(hay_aka);
+        ide_liberar_sugerencias(&s);
+    }
+
+    /* Prueba 1b.2: después de "x : 5 " va un operador: "e" sugiere euclides
+     * y euler, pero no "endgame" ni nombres del archivo. */
+    {
+        const char *codigo = "create_funk #declare_infinite_void# main() {\n"
+                             "    edad * declare_int : 1;\n"
+                             "    edad : 5 e";
+        size_t hasta = strlen(codigo) - 1;
+        VERIFICAR(ide_sugerencias_predictivas(codigo, strlen(codigo), hasta, "e", &s) == 0);
+        VERIFICAR(s.cantidad == 2);
+        if (s.cantidad == 2) {
+            VERIFICAR(strcmp(s.elementos[0].texto, "euclides") == 0);
+            VERIFICAR(strcmp(s.elementos[1].texto, "euler") == 0);
+        }
+        ide_liberar_sugerencias(&s);
+    }
+
+    /* Prueba 1b.3: al inicio de una sentencia sí van los nombres del archivo
+     * (puede ser una asignación) y las palabras que empiezan sentencias. */
+    {
+        const char *codigo = "create_funk #declare_infinite_void# main() {\n"
+                             "    edad * declare_int : 1;\n"
+                             "    e";
+        size_t hasta = strlen(codigo) - 1;
+        VERIFICAR(ide_sugerencias_predictivas(codigo, strlen(codigo), hasta, "e", &s) == 0);
+        VERIFICAR(s.cantidad == 1 && strcmp(s.elementos[0].texto, "edad") == 0);
+        ide_liberar_sugerencias(&s);
+    }
+
+    /* Prueba 1b.4: si antes del cursor ya hay un error, no se puede predecir
+     * y se sugiere todo (como ide_sugerencias). */
+    {
+        const char *codigo = "create_funk #declare_infinite_void# main() {\n"
+                             "    ) wh";
+        size_t hasta = strlen(codigo) - 2;
+        VERIFICAR(ide_sugerencias_predictivas(codigo, strlen(codigo), hasta, "wh", &s) == 0);
+        VERIFICAR(s.cantidad == 2);  /* whale y whether */
+        ide_liberar_sugerencias(&s);
+    }
 
     /* ---------- 2. Autocierre ---------- */
 

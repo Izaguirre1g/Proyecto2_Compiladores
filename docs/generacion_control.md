@@ -1,15 +1,15 @@
 # Generacion de control de flujo — Meibel
 
 Esta entrega traduce `AST_SI` (`whether / alif / also`) y `AST_MIENTRAS` (`whale`) desde
-`src/generacion_control.c`. Reutiliza `gb_generar()` para condiciones sin
+`src/Generacion_Codigo/generacion_control.c`. Reutiliza `gb_generar()` para condiciones sin
 llamadas: el resultado booleano queda en `x4`. Requiere analisis semantico previo.
 
 ## Organizacion
 
-- `src/generacion_control.c`: bloques, condicionales y etiquetas. Tambien genera ciclos `whale`.
-- `src/generacion_funciones.c`: expresiones con llamadas, sentencias simples,
+- `src/Generacion_Codigo/generacion_control.c`: bloques, condicionales y etiquetas. Tambien genera ciclos `whale`.
+- `src/Generacion_Codigo/generacion_funciones.c`: expresiones con llamadas, sentencias simples,
   retornos y preparacion de la funcion.
-- `src/generacion_interna.h`: contexto compartido privado y puntos de conexion.
+- `src/Generacion_Codigo/generacion_interna.h`: contexto compartido privado y puntos de conexion.
   El contador de etiquetas sigue siendo unico dentro de cada funcion.
 
 ## Recorrido

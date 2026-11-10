@@ -13,8 +13,8 @@ Windows aparecen bajo `/mnt/c/`. Sustituye la ruta del ejemplo por la tuya:
 sudo apt update
 sudo apt install build-essential flex bison uthash-dev
 cd "/mnt/c/ruta/al/repositorio"
-flex -o src/lexer_flex.c src/lexer.l
-bison -Wall -Werror -d -o Analisis_Sintactico/parser.c Analisis_Sintactico/gramatica.y
+flex -o src/Analisis_Lexico/lexer_flex.c src/Analisis_Lexico/lexer.l
+bison -Wall -Werror -d -o src/Analisis_Sintactico/parser.c src/Analisis_Sintactico/gramatica.y
 make
 ./balc -v examples/factorial.bal
 ```
@@ -22,9 +22,9 @@ make
 Para ejecutar las pruebas del lexer sin `make`:
 
 ```bash
-flex -o src/lexer_flex.c src/lexer.l
-gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude -Isrc \
-  tests/test_lexer.c src/lexer.c src/lexer_flex.c src/token.c -o tests/test_lexer
+flex -o src/Analisis_Lexico/lexer_flex.c src/Analisis_Lexico/lexer.l
+gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude -Isrc/Analisis_Lexico \
+  tests/test_lexer.c src/Analisis_Lexico/lexer.c src/Analisis_Lexico/lexer_flex.c src/Analisis_Lexico/token.c -o tests/test_lexer
 ./tests/test_lexer
 ```
 
@@ -40,7 +40,7 @@ make
 make test
 ```
 
-`make` genera `src/lexer_flex.c` desde `src/lexer.l` y conserva la interfaz pública
+`make` genera `src/Analisis_Lexico/lexer_flex.c` desde `src/Analisis_Lexico/lexer.l` y conserva la interfaz pública
 `lexer_init`/`lexer_next`. Por eso el parser y el AST no necesitan cambios para usar
 el nuevo lexer.
 
@@ -55,6 +55,30 @@ gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 tests/test_parser.c -o tests/t
 ## Resultado esperado
 
 Las pruebas terminan con `OK: 18 casos del lexer, incluido factorial.bal`.
+
+## Estructura del código
+
+El código de `src/` está dividido en una carpeta por fase del compilador, en el
+mismo orden en que un programa `.bal` las atraviesa:
+
+| Orden | Carpeta | Qué hace | Archivos principales |
+|---|---|---|---|
+| 1 | `src/Analisis_Lexico/` | Convierte el texto en tokens (Flex). | `lexer.l`, `lexer.c`, `token.c` |
+| 2 | `src/Analisis_Sintactico/` | Revisa la gramática y construye el AST (Bison). | `gramatica.y`, `puente_lexer.c`, `ast.c` |
+| 3 | `src/Analisis_Semantico/` | Tabla de símbolos, tipos, módulos (`bring`) y memoria. | `semantic.c`, `symbol_table.c`, `semantic_modules.c`, `memory.c` |
+| 4 | `src/Representacion_Intermedia/` | Código de tres direcciones y bloques básicos. | `ir.c` |
+| 5 | `src/Generacion_Codigo/` | Traduce el AST a ensamblador VLIW (expresiones, control, funciones). | `generacion_*.c`, `funciones_*.c` |
+| 6 | `src/Resolucion_y_Enlace/` | Resuelve variables, etiquetas y saltos, y enlaza las funciones. | `resolucion_*.c`, `enlace_funciones.c` |
+| 7 | `src/Codificacion_Binaria/` | Convierte cada bundle en palabras binarias y escribe `.bin`/`.mem`. | `codificacion_binaria.c`, `formato_binario.c` |
+| — | `src/Linea_Comandos/` | Programa `balc`: opciones de la terminal y diagnósticos en JSON. | `main.c`, `cli.c`, `diagnosticos.c` |
+| — | `src/Deteccion_Clones/` | Clones Tipo I y II entre archivos (lo usan `balc --clones` y el IDE). | `clones.c` |
+| — | `src/IDE/` | Editor GTK: sugerencias, autocierre, errores y correcciones. | `ide_*.c` |
+| — | `src/LL1/` | Gramática LL(1), PRIMERO/SIGUIENTE, tabla M y analizador predictivo; el IDE la consulta para sugerir y corregir. Ver [docs/ll1.md](docs/ll1.md). | `ll1_*.c` |
+
+Las interfaces públicas (`.h`) están todas en `include/`. Solo tres
+encabezados viven junto a su código porque son internos o generados:
+`lexer_flex.h`, `parser.h` y `generacion_interna.h`. Las pruebas están en
+`tests/` y los programas de ejemplo en `examples/`.
 
 ## Uso del compilador
 
