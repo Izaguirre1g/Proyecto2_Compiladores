@@ -39,6 +39,9 @@
  *      parte (por ejemplo, se fue la copia del resultado pero la llamada se
  *      queda) se marcan en gris. La pestaña "Código muerto" lista cada línea,
  *      y "Ver IR y variables vivas" abre el detalle (ide_dce_ventana.c).
+ *   9. Ensamblador: el botón "Ensamblador" genera el ensamblador VLIW del
+ *      código del editor, el mismo de "balc -s", y lo muestra con su
+ *      codificación binaria (ide_ensamblador.c e ide_ensamblador_ventana.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -51,6 +54,8 @@
 #include "ide_arreglos.h"
 #include "ide_dce.h"
 #include "ide_dce_ventana.h"
+#include "ide_ensamblador.h"
+#include "ide_ensamblador_ventana.h"
 #include "ide_nucleo.h"
 #include "ide_tabla_ll1.h"
 
@@ -1365,10 +1370,12 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
     const DceResultado *r = &ide->dce.resultado;
     GString *resumen = g_string_new(NULL);
     if (r->cantidad_eliminadas == 0) {
-        g_string_append(resumen, "No hay código muerto: todas las asignaciones se usan.");
+        g_string_append(resumen, "No hay código muerto: cada asignación se lee después "
+                                 "o es parte del resultado final de main.");
     } else {
-        g_string_append_printf(resumen, "%zu de %zu instrucciones de la IR eliminadas, en %zu pasadas",
-                               r->cantidad_eliminadas, r->instrucciones_antes, r->pasadas);
+        g_string_append_printf(resumen, "%zu de %zu instrucciones de la IR eliminadas, en %zu pasada%s",
+                               r->cantidad_eliminadas, r->instrucciones_antes, r->pasadas,
+                               r->pasadas == 1 ? "" : "s");
     }
     if (r->llamadas_conservadas > 0) {
         g_string_append_printf(resumen, " · %zu llamada%s conservada%s por tener efectos",
@@ -1604,6 +1611,40 @@ static void al_destruir(GtkWidget *widget, gpointer datos)
 /* Construcción de la ventana                                          */
 /* ================================================================== */
 
+/*
+ * Botón "Ensamblador": genera el ensamblador del código del editor (aunque
+ * no esté guardado) con los mismos pasos que "balc -s" y lo muestra en una
+ * ventana con su codificación binaria. Si el código tiene errores, o el
+ * backend todavía no soporta algo, se avisa.
+ */
+static void al_pulsar_ensamblador(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    gchar *texto = texto_del_editor(ide);
+    IdeEnsamblador a;
+    int estado = ide_ensamblador_generar(texto, strlen(texto), ide->ruta, &a);
+    g_free(texto);
+
+    if (estado != 0) {
+        mostrar_aviso(ide, "No se pudo generar el ensamblador (falta de memoria o no se "
+                           "pudo escribir el archivo temporal).");
+        return;
+    }
+    if (a.estado == IDE_ASM_CON_ERRORES) {
+        mostrar_aviso(ide, "Este archivo tiene errores: corrígelos (pestaña Errores) "
+                           "para generar el ensamblador.");
+    } else if (a.estado == IDE_ASM_SIN_BACKEND) {
+        gchar *mensaje = g_strdup_printf("El código no tiene errores, pero el backend no "
+                                         "pudo generar el ensamblador:\n%s", a.motivo);
+        mostrar_aviso(ide, mensaje);
+        g_free(mensaje);
+    } else {
+        ide_mostrar_ensamblador(GTK_WINDOW(ide->ventana), &a, nombre_actual(ide));
+    }
+    ide_ensamblador_liberar(&a);
+}
+
 /* Botón "Tabla LL(1)": abre la ventana con la tabla (ide_tabla_ll1.c). */
 static void al_pulsar_tabla_ll1(GtkWidget *boton, gpointer datos)
 {
@@ -1643,6 +1684,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "Buscar c_lones", G_CALLBACK(al_pulsar_buscar_clones), ide);
     agregar_boton(barra, "_Tabla LL(1)", G_CALLBACK(al_pulsar_tabla_ll1), ide);
     agregar_boton(barra, "Código _muerto", G_CALLBACK(al_pulsar_dce), ide);
+    agregar_boton(barra, "_Ensamblador", G_CALLBACK(al_pulsar_ensamblador), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */

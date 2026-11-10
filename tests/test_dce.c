@@ -8,8 +8,8 @@
  *   - que se conserven las divisiones que pueden fallar;
  *   - el análisis de variables vivas con el ejercicio 4 de la presentación.
  *
- * Los tres programas con llamadas con efectos están en tests/dce/ y también
- * se pueden ver con:  ./balc --dce tests/dce/dce_llamadas.bal
+ * Los tres programas con llamadas con efectos están en examples/dce/ y también
+ * se pueden ver con:  ./balc --dce examples/dce/dce_llamadas.bal
  *
  * Se ejecuta con: make test-dce
  */
@@ -95,6 +95,17 @@ static int se_asigna(const IrPrograma *ir, const char *nombre)
     return 0;
 }
 
+/* ¿Queda la copia "nombre = valor"? */
+static int queda_copia(const IrPrograma *ir, const char *nombre, const char *valor)
+{
+    for (size_t i = 0; i < ir->cantidad; ++i) {
+        const IrInstr *x = &ir->codigo[i];
+        if (x->op == IR_COPY && x->dst && x->a && strcmp(x->dst, nombre) == 0 &&
+            strcmp(x->a, valor) == 0) return 1;
+    }
+    return 0;
+}
+
 /* ¿Queda una operación binaria "a operador b"? */
 static int queda_binaria(const IrPrograma *ir, const char *a, const char *operador, const char *b)
 {
@@ -143,16 +154,16 @@ static void verificar_conservadas(int linea, const Conservadas *antes, const Con
 static void prueba_llamadas(void)
 {
     IrPrograma ir = {0};
-    VERIFICAR(generar_ir_de_archivo("tests/dce/dce_llamadas.bal", &ir) == 0);
+    VERIFICAR(generar_ir_de_archivo("examples/dce/dce_llamadas.bal", &ir) == 0);
     Conservadas antes = contar_conservadas(&ir);
-    VERIFICAR(antes.llamadas == 2);
+    VERIFICAR(antes.llamadas == 3);  /* registrar dos veces y procesar. */
 
     DceResultado r = {0};
     VERIFICAR(dce_eliminar(&ir, &r) == 0);
     Conservadas despues = contar_conservadas(&ir);
     verificar_conservadas(__LINE__, &antes, &despues);
 
-    /* b y d no se leen nunca: sus cálculos desaparecen. */
+    /* En procesar(): b y d no se leen nunca: sus cálculos desaparecen. */
     VERIFICAR(!se_asigna(&ir, "b"));
     VERIFICAR(!se_asigna(&ir, "d"));
     VERIFICAR(!queda_binaria(&ir, "a", "pitagoras", "2"));
@@ -160,10 +171,12 @@ static void prueba_llamadas(void)
     /* c tampoco se lee: se va la copia "c = ...", pero la llamada se queda. */
     VERIFICAR(!se_asigna(&ir, "c"));
     VERIFICAR(r.llamadas_conservadas == 2);
-    /* a sí está viva: la usan las llamadas. */
-    VERIFICAR(se_asigna(&ir, "a"));
-    VERIFICAR(r.cantidad_eliminadas == 5);
-    VERIFICAR(r.instrucciones_despues == r.instrucciones_antes - 5);
+    /* En main: "total : 0" se reemplaza antes de leerse y se va; el valor
+     * final de total (lo que devuelve procesar) se queda: es el resultado. */
+    VERIFICAR(!queda_copia(&ir, "total", "0"));
+    VERIFICAR(se_asigna(&ir, "total"));
+    VERIFICAR(r.cantidad_eliminadas == 6);
+    VERIFICAR(r.instrucciones_despues == r.instrucciones_antes - 6);
 
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
@@ -176,7 +189,7 @@ static void prueba_llamadas(void)
 static void prueba_ciclo(void)
 {
     IrPrograma ir = {0};
-    VERIFICAR(generar_ir_de_archivo("tests/dce/dce_ciclo.bal", &ir) == 0);
+    VERIFICAR(generar_ir_de_archivo("examples/dce/dce_ciclo.bal", &ir) == 0);
     Conservadas antes = contar_conservadas(&ir);
 
     DceResultado r = {0};
@@ -194,9 +207,11 @@ static void prueba_ciclo(void)
     /* i sí está viva: la lee la condición del ciclo y la llamada. */
     VERIFICAR(se_asigna(&ir, "i"));
     VERIFICAR(queda_binaria(&ir, "i", "gauss", "1"));
-    /* La llamada a acumular se queda (escribe en conteo). */
-    VERIFICAR(despues.llamadas == 1);
+    /* Las llamadas a acumular (escribe en conteo) y a contar se quedan. */
+    VERIFICAR(despues.llamadas == 2);
     VERIFICAR(r.llamadas_conservadas == 1);
+    /* vueltas es una variable de main: es parte del resultado. */
+    VERIFICAR(se_asigna(&ir, "vueltas"));
 
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
@@ -209,7 +224,7 @@ static void prueba_ciclo(void)
 static void prueba_division(void)
 {
     IrPrograma ir = {0};
-    VERIFICAR(generar_ir_de_archivo("tests/dce/dce_division.bal", &ir) == 0);
+    VERIFICAR(generar_ir_de_archivo("examples/dce/dce_division.bal", &ir) == 0);
     Conservadas antes = contar_conservadas(&ir);
 
     DceResultado r = {0};
@@ -224,15 +239,16 @@ static void prueba_division(void)
     /* 100 euclides 4 no puede fallar: como seguro no se lee, se va. */
     VERIFICAR(!queda_binaria(&ir, "100", "euclides", "4"));
     VERIFICAR(!se_asigna(&ir, "seguro"));
-    /* 100 euclides divisor PUEDE fallar (divisor es 0): se queda, y por
-     * eso divisor sigue vivo. La copia a riesgo sí se va. */
+    /* 100 euclides divisor PUEDE fallar (main pasa divisor = 0): se queda.
+     * La copia a riesgo sí se va. */
     VERIFICAR(queda_binaria(&ir, "100", "euclides", "divisor"));
-    VERIFICAR(se_asigna(&ir, "divisor"));
     VERIFICAR(!se_asigna(&ir, "riesgo"));
     VERIFICAR(r.riesgosas_conservadas == 1);
     /* p no se lee, pero la llamada a promedio se queda. */
     VERIFICAR(!se_asigna(&ir, "p"));
     VERIFICAR(r.llamadas_conservadas == 1);
+    /* r es una variable de main: se queda. */
+    VERIFICAR(se_asigna(&ir, "r"));
 
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
@@ -313,8 +329,9 @@ static void prueba_ejercicio_4(void)
     VERIFICAR(!queda_binaria(&ir, "x", "pitagoras", "2"));
     VERIFICAR(queda_binaria(&ir, "d", "gauss", "a"));
     VERIFICAR(se_asigna(&ir, "x"));
-    /* "r = ejercicio(1, 2)": r no se lee, pero la llamada se queda. */
-    VERIFICAR(!se_asigna(&ir, "r"));
+    /* "r = ejercicio(1, 2)": r es una variable de main (el resultado del
+     * programa), así que se queda, igual que la llamada. */
+    VERIFICAR(se_asigna(&ir, "r"));
     VERIFICAR(contar(&ir, IR_CALL) == 1);
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
@@ -351,10 +368,13 @@ static void prueba_sin_codigo_muerto(void)
 static void prueba_potencia(void)
 {
     const char *programa =
-        "create_funk #declare_infinite_void# main() {\n"
-        "    k * declare_int : 3;\n"
+        "create_funk #declare_int# potencias(k * declare_int) {\n"
         "    p * declare_int : 2 descartes k;\n"
         "    q * declare_int : 2 descartes 3;\n"
+        "    give k;\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    r * declare_int : potencias(3);\n"
         "}\n";
     IrPrograma ir = {0};
     VERIFICAR(generar_ir(programa, strlen(programa), &ir) == 0);
@@ -365,6 +385,44 @@ static void prueba_potencia(void)
     VERIFICAR(r.riesgosas_conservadas == 1);
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
+}
+
+/*
+ * Las variables de main son el RESULTADO del programa: el simulador y las
+ * pruebas del equipo leen su valor final en memoria (factorial.bal deja
+ * resultado = 120). Por eso están vivas al terminar main y el DCE no puede
+ * quitar ninguna asignación que decida ese valor final.
+ */
+static void prueba_variables_de_main(void)
+{
+    /* factorial.bal: "resultado : 1" de la rama n <= 1 decide el valor
+     * final de resultado: no es código muerto. No se elimina nada. */
+    IrPrograma ir = {0};
+    VERIFICAR(generar_ir_de_archivo("examples/factorial.bal", &ir) == 0);
+    size_t antes = ir.cantidad;
+    DceResultado r = {0};
+    VERIFICAR(dce_eliminar(&ir, &r) == 0);
+    VERIFICAR(r.cantidad_eliminadas == 0);
+    VERIFICAR(ir.cantidad == antes);
+    dce_liberar_resultado(&r);
+    ir_liberar(&ir);
+
+    /* Pero un valor que se REEMPLAZA antes de leerse sí está muerto, también
+     * en main: "x : 1" nunca llega a la memoria final. */
+    const char *programa =
+        "create_funk #declare_infinite_void# main() {\n"
+        "    x * declare_int : 1;\n"
+        "    x : 2;\n"
+        "}\n";
+    IrPrograma ir2 = {0};
+    VERIFICAR(generar_ir(programa, strlen(programa), &ir2) == 0);
+    DceResultado r2 = {0};
+    VERIFICAR(dce_eliminar(&ir2, &r2) == 0);
+    VERIFICAR(!queda_copia(&ir2, "x", "1"));
+    VERIFICAR(queda_copia(&ir2, "x", "2"));
+    VERIFICAR(r2.cantidad_eliminadas == 1);
+    dce_liberar_resultado(&r2);
+    ir_liberar(&ir2);
 }
 
 /* Argumentos inválidos. */
@@ -388,6 +446,7 @@ int main(void)
     prueba_ejercicio_4();
     prueba_sin_codigo_muerto();
     prueba_potencia();
+    prueba_variables_de_main();
     prueba_argumentos();
 
     if (fallos > 0) {

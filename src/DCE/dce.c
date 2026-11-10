@@ -304,12 +304,53 @@ int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
     }
 
     /*
+     * Paso 1b: qué está vivo al TERMINAR cada función (OUT[SALIDA]).
+     *
+     * La regla de los libros es OUT[SALIDA] = ∅: al terminar, nadie mira las
+     * variables. Eso vale para las funciones comunes: sus variables locales
+     * desaparecen al hacer "give", y lo que devuelven ya cuenta como uso del
+     * "return".
+     *
+     * Pero en este proyecto el RESULTADO de un programa es la memoria final
+     * de las variables de main: BAL no tiene print, y el simulador (y las
+     * pruebas del equipo, por ejemplo tests/test_resolucion_saltos.c con
+     * factorial.bal) leen ahí el valor final, como "resultado = 120". Por la
+     * regla de oro (diapositiva 12, la salida observable no puede cambiar),
+     * las variables de main están VIVAS al terminar main:
+     *     OUT[SALIDA de main] = { variables de main }
+     * Así, en factorial.bal, "resultado : 1" (rama n <= 1) NO es código
+     * muerto: es el valor final que se lee. En main sí sigue siendo muerta
+     * una asignación que se REEMPLAZA antes de leerse (x : 1; x : 2;).
+     *
+     * Los temporales ($tN) no son variables del programa: nunca cuentan.
+     */
+    unsigned char *de_main = calloc(nv ? nv : 1, 1);     /* Variables de main. */
+    unsigned char *final_main = calloc(nb ? nb : 1, 1);  /* Bloques donde termina main. */
+    if (de_main == NULL || final_main == NULL) {
+        free(de_main);
+        free(final_main);
+        dce_liberar_vivas(v);
+        return 2;
+    }
+    int en_main = 0;  /* Los bloques de una función van seguidos, desde su "func". */
+    for (size_t b = 0; b < nb; ++b) {
+        const IrInstr *primera = &ir->codigo[ir->bloques[b].inicio];
+        if (primera->op == IR_FUNC) en_main = primera->dst && strcmp(primera->dst, "main") == 0;
+        if (!en_main) continue;
+        if (ir->bloques[b].cantidad_sucesores == 0) final_main[b] = 1;
+        for (size_t j = 0; j < nv; ++j) {
+            if (v->define[b * nv + j] && v->variables[j][0] != '$') de_main[j] = 1;
+        }
+    }
+
+    /*
      * Paso 2: algoritmo iterativo hasta el punto fijo (diapositiva 27).
      * Se empieza con todos los IN y OUT vacíos y se repite:
      *     OUT[B] = unión de IN[S] para cada sucesor S
      *     IN[B]  = use_B ∪ (OUT[B] − def_B)
      * hasta que ninguna vuelta cambie nada. Un bloque sin sucesores (el
-     * final de una función) queda con OUT = ∅, como OUT[SALIDA] = ∅.
+     * final de una función) tiene OUT = OUT[SALIDA] del paso 1b: vacío,
+     * salvo al final de main.
      * Como el análisis va hacia atrás, los bloques se recorren del último
      * al primero: así la información llega en menos vueltas.
      */
@@ -322,7 +363,8 @@ int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
             const unsigned char *usa = v->usa + b * nv, *define = v->define + b * nv;
             const IrBloque *bloque = &ir->bloques[b];
             for (size_t j = 0; j < nv; ++j) {
-                unsigned char nuevo_out = 0;
+                /* Al final de main, sus variables siguen vivas (paso 1b). */
+                unsigned char nuevo_out = final_main[b] & de_main[j];
                 for (size_t s = 0; s < bloque->cantidad_sucesores; ++s) {
                     nuevo_out |= v->entrada[bloque->sucesores[s] * nv + j];
                 }
@@ -333,6 +375,8 @@ int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
             }
         }
     }
+    free(de_main);
+    free(final_main);
     return 0;
 }
 
@@ -520,8 +564,9 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
 int dce_imprimir_resultado(const DceResultado *r, FILE *f)
 {
     if (r == NULL || f == NULL) return 2;
-    fprintf(f, "Codigo muerto eliminado: %zu de %zu instrucciones (quedan %zu), en %zu pasadas\n",
-            r->cantidad_eliminadas, r->instrucciones_antes, r->instrucciones_despues, r->pasadas);
+    fprintf(f, "Codigo muerto eliminado: %zu de %zu instrucciones (quedan %zu), en %zu pasada%s\n",
+            r->cantidad_eliminadas, r->instrucciones_antes, r->instrucciones_despues, r->pasadas,
+            r->pasadas == 1 ? "" : "s");
     for (size_t i = 0; i < r->cantidad_eliminadas; ++i) {
         fprintf(f, "  - linea %zu: %s\n", r->eliminadas[i].linea, r->eliminadas[i].texto);
     }

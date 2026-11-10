@@ -48,22 +48,22 @@ static const IdeDceLinea *buscar(const IdeDce *d, size_t linea)
 static void prueba_llamadas(void)
 {
     size_t largo = 0;
-    char *texto = leer_archivo("tests/dce/dce_llamadas.bal", &largo);
+    char *texto = leer_archivo("examples/dce/dce_llamadas.bal", &largo);
     VERIFICAR(texto != NULL);
     if (texto == NULL) return;
 
     IdeDce d;
-    VERIFICAR(ide_dce_analizar(texto, largo, "tests/dce/dce_llamadas.bal", &d) == 0);
+    VERIFICAR(ide_dce_analizar(texto, largo, "examples/dce/dce_llamadas.bal", &d) == 0);
     VERIFICAR(d.estado == IDE_DCE_LISTO);
-    VERIFICAR(d.resultado.cantidad_eliminadas == 5);
-    VERIFICAR(d.cantidad_lineas == 3);
+    VERIFICAR(d.resultado.cantidad_eliminadas == 6);
+    VERIFICAR(d.cantidad_lineas == 4);
 
     /* Línea 12, "b * declare_int : a pitagoras 2;": se elimina COMPLETA. */
     const IdeDceLinea *b = buscar(&d, 12);
     VERIFICAR(b != NULL && b->completa && b->eliminadas == 2);
-    VERIFICAR(b != NULL && strcmp(b->detalle, "$t5 = a pitagoras 2; b = $t5") == 0);
+    VERIFICAR(b != NULL && strcmp(b->detalle, "$t2 = a pitagoras 2; b = $t2") == 0);
 
-    /* Línea 13, "c * declare_int : registrar(datos, a);": solo se va la
+    /* Línea 13, "c * declare_int : registrar(v, a);": solo se va la
      * copia a c; la llamada (y sus argumentos) se queda: NO es completa. */
     const IdeDceLinea *c = buscar(&d, 13);
     VERIFICAR(c != NULL && !c->completa && c->eliminadas == 1 && c->total == 4);
@@ -75,9 +75,15 @@ static void prueba_llamadas(void)
     /* La línea 14 es solo una llamada: no se toca. */
     VERIFICAR(buscar(&d, 14) == NULL);
 
+    /* Línea 23 (en main), "total * declare_int : 0;": se reemplaza antes de
+     * leerse. La línea 24 (el valor final de total) no se toca. */
+    const IdeDceLinea *t = buscar(&d, 23);
+    VERIFICAR(t != NULL && t->completa);
+    VERIFICAR(buscar(&d, 24) == NULL);
+
     /* Los textos para la ventana de detalle. */
-    VERIFICAR(d.ir_antes != NULL && strstr(d.ir_antes, "b = $t5") != NULL);
-    VERIFICAR(d.ir_despues != NULL && strstr(d.ir_despues, "b = $t5") == NULL);
+    VERIFICAR(d.ir_antes != NULL && strstr(d.ir_antes, "b = $t2") != NULL);
+    VERIFICAR(d.ir_despues != NULL && strstr(d.ir_despues, "b = $t2") == NULL);
     VERIFICAR(d.ir_despues != NULL && strstr(d.ir_despues, "call registrar") != NULL);
     VERIFICAR(d.vivas != NULL && strstr(d.vivas, "IN  =") != NULL);
 
@@ -90,7 +96,7 @@ static void prueba_con_errores(void)
 {
     const char *texto = "create_funk #declare_infinite_void# main() {\n    x : 5;\n}\n";
     IdeDce d;
-    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "tests/dce/editor.bal", &d) == 0);
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
     VERIFICAR(d.estado == IDE_DCE_CON_ERRORES);
     VERIFICAR(d.cantidad_lineas == 0);
     ide_dce_liberar(&d);
@@ -107,7 +113,7 @@ static void prueba_sin_ir(void)
         "    } endgame;\n"
         "}\n";
     IdeDce d;
-    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "tests/dce/editor.bal", &d) == 0);
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
     VERIFICAR(d.estado == IDE_DCE_SIN_IR);
     VERIFICAR(d.motivo != NULL && strncmp(d.motivo, "línea 3: cycle", strlen("línea 3: cycle")) == 0);
     ide_dce_liberar(&d);
@@ -124,7 +130,7 @@ static void prueba_sin_codigo_muerto(void)
         "    doble(3);\n"
         "}\n";
     IdeDce d;
-    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "tests/dce/editor.bal", &d) == 0);
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
     VERIFICAR(d.estado == IDE_DCE_LISTO);
     VERIFICAR(d.cantidad_lineas == 0);
     VERIFICAR(d.resultado.cantidad_eliminadas == 0);

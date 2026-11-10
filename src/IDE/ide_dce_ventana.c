@@ -39,9 +39,9 @@ static gchar *texto_despues(const IdeDce *d)
     const DceResultado *r = &d->resultado;
     GString *t = g_string_new(NULL);
     g_string_append_printf(t, "Codigo muerto eliminado: %zu de %zu instrucciones "
-                              "(quedan %zu), en %zu pasadas\n",
+                              "(quedan %zu), en %zu pasada%s\n",
                            r->cantidad_eliminadas, r->instrucciones_antes,
-                           r->instrucciones_despues, r->pasadas);
+                           r->instrucciones_despues, r->pasadas, r->pasadas == 1 ? "" : "s");
     for (size_t i = 0; i < r->cantidad_eliminadas; ++i) {
         g_string_append_printf(t, "  - linea %zu: %s\n", r->eliminadas[i].linea,
                                r->eliminadas[i].texto);

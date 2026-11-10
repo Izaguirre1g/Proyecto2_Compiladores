@@ -159,11 +159,8 @@ static const char *almacen_sim(SimAlmacen a)
     return "desconocido";
 }
 
-/* Mapa de memoria del contrato: globales desde 0x4000 hasta 0x7FFF y pila
- * desde 0x10000 hacia abajo (0x8000-0xFFFF). El codigo empieza en 0. */
-#define CLI_GP_BASE 0x4000u
-#define CLI_FIN_GLOBALES 0x8000u
-#define CLI_TOPE_PILA 0x10000u
+/* El mapa de memoria (CLI_GP_BASE, CLI_FIN_GLOBALES, CLI_TOPE_PILA y
+ * CLI_CAPACIDAD_MARCO) esta en include/cli.h: lo comparte con el IDE. */
 
 /* Opciones de la especificacion. Todas agregan salidas a la compilacion. */
 typedef struct {
@@ -415,7 +412,7 @@ static int compilar_proyecto(void *ctx, const Ast *arbol, SimTabla *tabla, FILE 
     if (op->detallado) puts("[fase 3] semántico: declaraciones, tipos, ámbitos y llamadas válidos");
     MemProyectoMapa mapa = {0};
     MemProyectoResultado r = mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
-                                                  1020, &mapa);
+                                                  CLI_CAPACIDAD_MARCO, &mapa);
     if (r != MEM_PROYECTO_OK) {
         fprintf(diagnosticos, "asignacion de memoria no disponible (codigo %d)\n", (int)r);
         return 1;

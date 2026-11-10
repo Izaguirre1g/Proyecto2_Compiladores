@@ -10,12 +10,20 @@
  *
  *         IN[B]  = use_B ∪ (OUT[B] − def_B)
  *         OUT[B] = ∪ IN[S]   para cada sucesor S de B
- *         OUT[SALIDA] = ∅
+ *         OUT[SALIDA] = ∅                       (funciones comunes)
+ *         OUT[SALIDA de main] = variables de main
  *
  *     use_B: variables que B usa ANTES de asignarlas.
  *     def_B: variables que B asigna.
  *     Se resuelve con el algoritmo iterativo hasta un punto fijo
  *     (diapositiva 27): se recalculan IN y OUT hasta que nada cambie.
+ *
+ *     ¿Por qué main es distinto? En este proyecto el resultado de un
+ *     programa es la memoria final de las variables de main (BAL no tiene
+ *     print; el simulador y las pruebas leen ahí, por ejemplo,
+ *     "resultado = 120" en factorial.bal). Esa es la salida observable, así
+ *     que esas variables están vivas al terminar main. Las variables locales
+ *     de las demás funciones desaparecen al hacer "give".
  *
  *   - Diapositiva 28, eliminación global de código muerto. Una asignación
  *     "x = ..." es código muerto si x NO está viva justo después y la

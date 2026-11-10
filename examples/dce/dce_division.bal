@@ -7,10 +7,14 @@ create_funk #declare_int# promedio(v * declare_int[], n * declare_int) {
     give suma euclides n;
 }
 
-create_funk #declare_infinite_void# main() {
-    notas * declare_int[2] : [80, 90];
-    divisor * declare_int : 0;
+create_funk #declare_int# calcular(notas * declare_int[], divisor * declare_int) {
     riesgo * declare_int : 100 euclides divisor;  %% muerta, pero puede fallar: se queda
     seguro * declare_int : 100 euclides 4;        %% muerta y no puede fallar: se elimina
     p * declare_int : promedio(notas, 2);         %% p muerta, la llamada se queda
+    give divisor;
+}
+
+create_funk #declare_infinite_void# main() {
+    notas * declare_int[2] : [80, 90];
+    r * declare_int : calcular(notas, 0);
 }

@@ -51,7 +51,7 @@ SRC := $(CLI)/main.c $(CLI)/cli.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token
        $(DCE)/dce.c
 
 # Estos nombres son comandos de Make, no archivos.
-.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ll1 tabla-ll1 ide clean
+.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ll1 tabla-ll1 ide clean
 
 # Al ejecutar make, se construye balc.
 all: balc
@@ -78,7 +78,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-dce test-ide-dce test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-dce test-ide-dce test-ide-ensamblador test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -119,7 +119,7 @@ test-generacion: tests/test_generacion
 # Sirve para volver a compilar todo desde cero.
 # Elimina los ejecutables y archivos generados.
 clean:
-	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones tests/test_dce tests/test_ide_dce tests/test_ll1 balc-ll1 balc-ide $(LEXER_GEN)
+	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones tests/test_dce tests/test_ide_dce tests/test_ide_ensamblador tests/test_ll1 balc-ll1 balc-ide $(LEXER_GEN)
 
 # Pruebas de la tabla de símbolos
 .PHONY: test-symbol-table
@@ -659,6 +659,23 @@ tests/test_ide_dce: tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ANALISIS_SRC) incl
 test-ide-dce: tests/test_ide_dce
 	./tests/test_ide_dce
 
+# Boton "Ensamblador" del IDE: los mismos pasos que balc -s (memoria,
+# generacion, enlace y codificacion) sobre el texto del editor. La prueba
+# compara el resultado con los .asm de examples/, generados con balc -s.
+IDE_ASM_SRC := $(IDE)/ide_ensamblador.c $(SEMANTICO)/memory.c \
+               $(GENERACION)/generacion_basica.c $(GENERACION)/generacion_adaptador.c \
+               $(GENERACION)/generacion_funciones.c $(GENERACION)/generacion_control.c \
+               $(GENERACION)/funciones_marco.c $(GENERACION)/funciones_llamada.c \
+               $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c \
+               $(ENLACE)/resolucion_saltos.c $(ENLACE)/enlace_funciones.c \
+               $(BINARIO)/codificacion_binaria.c
+
+tests/test_ide_ensamblador: tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_ensamblador.h include/cli.h include/ide_analisis.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-ensamblador: tests/test_ide_ensamblador
+	./tests/test_ide_ensamblador
+
 tests/test_ide_analisis: tests/test_ide_analisis.c $(IDE_ANALISIS_SRC) include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_analisis.c $(IDE_ANALISIS_SRC) -o $@
 
@@ -700,11 +717,11 @@ GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
 ide: balc-ide
 
-balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE_DCE_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE_DCE_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
+balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS)
 
 # Eliminacion de codigo muerto (DCE) con analisis de variables vivas, sobre
-# la IR. La prueba arma la IR desde programas BAL (tests/dce/) con el parser,
+# la IR. La prueba arma la IR desde programas BAL (examples/dce/) con el parser,
 # y despues revisa la salida de balc --dce.
 DCE_SRC := $(DCE)/dce.c $(IR)/ir.c $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
 
@@ -713,10 +730,10 @@ tests/test_dce: tests/test_dce.c $(DCE_SRC) include/dce.h include/ir.h include/a
 
 test-dce: tests/test_dce balc
 	./tests/test_dce
-	./balc --dce tests/dce/dce_llamadas.bal | grep -q 'Codigo muerto eliminado: 5 de'
-	./balc --dce tests/dce/dce_ciclo.bal | grep -q 'en 3 pasadas'
-	./balc --dce tests/dce/dce_division.bal | grep -q 'pueden fallar (division o potencia): 1'
-	! ./balc --dce -s tests/dce/dce_llamadas.bal 2>/dev/null
+	./balc --dce examples/dce/dce_llamadas.bal | grep -q 'Codigo muerto eliminado: 6 de'
+	./balc --dce examples/dce/dce_ciclo.bal | grep -q 'en 3 pasadas'
+	./balc --dce examples/dce/dce_division.bal | grep -q 'pueden fallar (division o potencia): 1'
+	! ./balc --dce -s examples/dce/dce_llamadas.bal 2>/dev/null
 	@echo 'OK: eliminacion de codigo muerto (unitarias y con balc --dce)'
 
 # Proyecto II: IR independiente del parser generado, prueba con AST construido en C.
@@ -728,7 +745,7 @@ test-ir: tests/test_ir
 
 # Analisis predictivo LL(1) (LL1_SRC se define arriba, junto a las carpetas).
 # Programas con los que se compara el LL(1) contra Bison.
-LL1_PROGRAMAS := $(wildcard examples/*.bal tests/*.bal tests/modulos/*.bal tests/fixtures/*.bal)
+LL1_PROGRAMAS := $(wildcard examples/*.bal examples/dce/*.bal tests/*.bal tests/modulos/*.bal tests/fixtures/*.bal)
 
 # La prueba compara el LL(1) con Bison, asi que tambien compila el parser.
 tests/test_ll1: tests/test_ll1.c $(LL1_SRC) include/ll1.h $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c include/sintactico.h $(SINTACTICO)/parser.h

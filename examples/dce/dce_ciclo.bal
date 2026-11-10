@@ -7,14 +7,19 @@ create_funk #declare_int# acumular(v * declare_int[], i * declare_int) {
     give v[i];
 }
 
-create_funk #declare_infinite_void# main() {
-    conteo * declare_int[4] : [0, 0, 0, 0];
+create_funk #declare_int# contar(conteo * declare_int[], n * declare_int) {
     base * declare_int : 10;
     extra * declare_int : 0;
     i * declare_int : 0;
-    whale (i < 4) {
+    whale (i < n) {
         extra : base gauss i;   %% muerta: nadie lee extra
         acumular(conteo, i);    %% escribe en conteo: se queda
         i : i gauss 1;          %% viva: la lee la condicion del ciclo
     } stop;
+    give i;
+}
+
+create_funk #declare_infinite_void# main() {
+    conteo * declare_int[4] : [0, 0, 0, 0];
+    vueltas * declare_int : contar(conteo, 4);   %% resultado de main: se queda
 }
