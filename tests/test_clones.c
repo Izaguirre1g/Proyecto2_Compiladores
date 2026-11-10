@@ -31,7 +31,7 @@ static void mostrar(const ClonLista *lista)
 {
     for (size_t i = 0; i < lista->cantidad; ++i) {
         const Clon *c = &lista->elementos[i];
-        fprintf(stderr, "  clon Tipo %d, %s, %zu nodos:\n", (int)c->tipo, c->que, c->nodos);
+        fprintf(stderr, "  clon Tipo %d, %s, %zu tokens:\n", (int)c->tipo, c->que, c->tokens);
         for (size_t j = 0; j < c->cantidad; ++j) {
             const ClonFragmento *f = &c->fragmentos[j];
             fprintf(stderr, "    %s %zu:%zu-%zu:%zu\n", f->archivo, f->linea, f->columna,
@@ -55,22 +55,23 @@ static const char *FACTORIAL =
 int main(void)
 {
     /* Prueba 1: la misma función en dos archivos, con otros espacios,
-     * comentarios y paréntesis de más. Es un clon Tipo I de la función
-     * completa, y NO se reportan también sus partes (el whale, etc.). */
+     * saltos de línea y comentarios (el lexer los descarta: no cambian el
+     * camino en la gramática). Es un clon Tipo I de la función completa, y
+     * NO se reportan también sus partes (el whale, etc.). */
     {
         const char *copia =
             "%% copia con otro formato\n"
             "create_funk #declare_int# factorial(n * declare_int) {\n"
             "  resultado * declare_int : 1;   i * declare_int : 2;\n"
-            "  whale ((i <= n)) {\n"
-            "    resultado : (resultado pitagoras i);\n"
+            "  whale (i <= n) {\n"
+            "    resultado : resultado pitagoras i;\n"
             "    i : i gauss 1;   %% siguiente\n"
             "  } stop;\n"
             "  give resultado;\n"
             "}\n";
         ClonFuente fuentes[] = {fuente("a.bal", FACTORIAL), fuente("b.bal", copia)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 1);
         if (lista.cantidad == 1) {
             const Clon *c = &lista.elementos[0];
@@ -90,6 +91,88 @@ int main(void)
         clones_liberar(&lista);
     }
 
+    /* Prueba 1b: los paréntesis de más SÍ cambian el camino en la gramática
+     * (primario → ( expresion )), así que la función ya no es un clon Tipo I.
+     * Tampoco Tipo II: no cambió un nombre o valor, cambió la derivación. */
+    {
+        const char *con_parentesis =
+            "create_funk #declare_int# factorial(n * declare_int) {\n"
+            "    resultado * declare_int : 1;\n"
+            "    i * declare_int : 2;\n"
+            "    whale ((i <= n)) {\n"
+            "        resultado : (resultado pitagoras i);\n"
+            "        i : i gauss 1;\n"
+            "    } stop;\n"
+            "    give resultado;\n"
+            "}\n";
+        ClonFuente fuentes[] = {fuente("a.bal", FACTORIAL), fuente("p.bal", con_parentesis)};
+        ClonLista lista = {0};
+        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_TOKENS, &lista) == 0);
+        for (size_t i = 0; i < lista.cantidad; ++i) {
+            VERIFICAR(strcmp(lista.elementos[i].que, "funcion") != 0);
+            VERIFICAR(strcmp(lista.elementos[i].que, "ciclo whale") != 0);
+        }
+        clones_liberar(&lista);
+    }
+
+    /* Prueba 1c: el factorial copiado en el MISMO archivo con otras
+     * variables sigue el mismo camino en la gramática: Tipo II. Una versión
+     * con whether en vez de whale (sentencia → condicional, no ciclo) sigue
+     * otro camino: no es clon, aunque el resto sea igual. */
+    {
+        const char *mismo_archivo =
+            "create_funk #declare_int# factorial(n * declare_int) {\n"
+            "    resultado * declare_int : 1;\n"
+            "    i * declare_int : 2;\n"
+            "    whale (i <= n) {\n"
+            "        resultado : resultado pitagoras i;\n"
+            "        i : i gauss 1;\n"
+            "    } stop;\n"
+            "    give resultado;\n"
+            "}\n"
+            "create_funk #declare_int# producto(m * declare_int) {\n"
+            "    acumulado * declare_int : 1;\n"
+            "    k * declare_int : 2;\n"
+            "    whale (k <= m) {\n"
+            "        acumulado : acumulado pitagoras k;\n"
+            "        k : k gauss 1;\n"
+            "    } stop;\n"
+            "    give acumulado;\n"
+            "}\n"
+            "create_funk #declare_int# otro(m * declare_int) {\n"
+            "    acumulado * declare_int : 1;\n"
+            "    k * declare_int : 2;\n"
+            "    whether (k <= m) {\n"
+            "        acumulado : acumulado pitagoras k;\n"
+            "        k : k gauss 1;\n"
+            "    }\n"
+            "    give acumulado;\n"
+            "}\n";
+        ClonFuente fuentes[] = {fuente("g.bal", mismo_archivo)};
+        ClonLista lista = {0};
+        VERIFICAR(clones_buscar(fuentes, 1, CLONES_MINIMO_TOKENS, &lista) == 0);
+        VERIFICAR(lista.cantidad >= 1);
+        if (lista.cantidad >= 1) {
+            const Clon *c = &lista.elementos[0];
+            VERIFICAR(c->tipo == CLON_TIPO_2);
+            VERIFICAR(strcmp(c->que, "funcion") == 0);
+            VERIFICAR(c->cantidad == 2);  /* factorial y producto, NO otro. */
+            if (c->cantidad == 2) {
+                VERIFICAR(c->fragmentos[0].linea == 1 && c->fragmentos[0].linea_fin == 9);
+                VERIFICAR(c->fragmentos[1].linea == 10 && c->fragmentos[1].linea_fin == 18);
+            }
+        }
+        /* La función "otro" (líneas 19 a 27) no es parte de ningún clon de funciones. */
+        for (size_t i = 0; i < lista.cantidad; ++i) {
+            const Clon *c = &lista.elementos[i];
+            for (size_t j = 0; j < c->cantidad; ++j) {
+                if (strcmp(c->que, "funcion") == 0) VERIFICAR(c->fragmentos[j].linea != 19);
+            }
+        }
+        if (lista.cantidad == 0) mostrar(&lista);
+        clones_liberar(&lista);
+    }
+
     /* Prueba 2: la misma función con otros nombres y valores: Tipo II. */
     {
         const char *renombrada =
@@ -104,7 +187,7 @@ int main(void)
             "}\n";
         ClonFuente fuentes[] = {fuente("a.bal", FACTORIAL), fuente("c.bal", renombrada)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 1);
         if (lista.cantidad == 1) {
             VERIFICAR(lista.elementos[0].tipo == CLON_TIPO_2);
@@ -131,7 +214,7 @@ int main(void)
             "}\n";
         ClonFuente fuentes[] = {fuente("a.bal", FACTORIAL), fuente("d.bal", otra_operacion)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 2, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 0);
         if (lista.cantidad != 0) mostrar(&lista);
         clones_liberar(&lista);
@@ -157,7 +240,7 @@ int main(void)
             "}\n";
         ClonFuente fuentes[] = {fuente("e.bal", mismo_archivo)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 1, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 1, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 1);
         if (lista.cantidad == 1) {
             const Clon *c = &lista.elementos[0];
@@ -190,7 +273,7 @@ int main(void)
         ClonFuente fuentes[] = {fuente("a.bal", FACTORIAL), fuente("b.bal", FACTORIAL),
                                 fuente("c.bal", renombrada)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 3, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 3, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 2);
         if (lista.cantidad == 2) {
             VERIFICAR(lista.elementos[0].tipo == CLON_TIPO_1 && lista.elementos[0].cantidad == 2);
@@ -211,7 +294,7 @@ int main(void)
             "}\n";
         ClonFuente fuentes[] = {fuente("f.bal", corto)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 1, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 1, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 0);
         clones_liberar(&lista);
 
@@ -230,7 +313,7 @@ int main(void)
         ClonFuente fuentes[] = {fuente("a.bal", FACTORIAL), fuente("roto.bal", roto),
                                 fuente("b.bal", FACTORIAL)};
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(fuentes, 3, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(fuentes, 3, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.omitidos == 1);
         if (lista.omitidos == 1) {
             VERIFICAR(strcmp(lista.nombres_omitidos[0], "roto.bal") == 0);
@@ -242,7 +325,7 @@ int main(void)
     /* Prueba 8: sin archivos no hay clones. */
     {
         ClonLista lista = {0};
-        VERIFICAR(clones_buscar(NULL, 0, CLONES_MINIMO_NODOS, &lista) == 0);
+        VERIFICAR(clones_buscar(NULL, 0, CLONES_MINIMO_TOKENS, &lista) == 0);
         VERIFICAR(lista.cantidad == 0);
         clones_liberar(&lista);
     }

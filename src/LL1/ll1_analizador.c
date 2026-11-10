@@ -19,6 +19,7 @@
  */
 #include "ll1.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -349,4 +350,136 @@ int ll1_insercion_predicha(const TokenType *tokens, size_t cantidad, Ll1Insercio
     int estado = analizar(tokens, cantidad, &resultado, NULL, insercion);
     if (estado < 0) return -1;
     return insercion->cantidad > 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Árbol de derivación (ver ll1.h)                                     */
+/* ------------------------------------------------------------------ */
+
+/* Una entrada de la pila: el símbolo y quién es su padre en el árbol. */
+typedef struct {
+    int simbolo;
+    size_t padre;  /* SIZE_MAX para el símbolo inicial (y para el $). */
+} EntradaPila;
+
+/* Agrega un nodo al árbol. Devuelve su índice, o SIZE_MAX sin memoria. */
+static size_t nuevo_nodo(Ll1Derivacion *arbol, int simbolo)
+{
+    if (arbol->cantidad == arbol->capacidad) {
+        size_t nueva = (arbol->capacidad == 0) ? 256 : arbol->capacidad * 2;
+        Ll1Nodo *mas = realloc(arbol->nodos, nueva * sizeof *mas);
+        if (mas == NULL) return SIZE_MAX;
+        arbol->nodos = mas;
+        arbol->capacidad = nueva;
+    }
+    Ll1Nodo n = {simbolo, -1, SIZE_MAX, 1, SIZE_MAX, SIZE_MAX};
+    arbol->nodos[arbol->cantidad] = n;
+    return arbol->cantidad++;
+}
+
+int ll1_derivar(const TokenType *tokens, size_t cantidad, Ll1Derivacion *arbol)
+{
+    const Ll1Tabla *tabla = ll1_tabla();
+    memset(arbol, 0, sizeof *arbol);
+
+    /* El mismo algoritmo que analizar(), pero cada entrada de la pila
+     * recuerda a su padre, y cada símbolo se vuelve un nodo al SACARLO de
+     * la pila (así los nodos quedan en preorden). */
+    size_t capacidad = 64, tope = 0;
+    EntradaPila *pila = malloc(capacidad * sizeof *pila);
+    size_t *padres = NULL;
+    if (pila == NULL) return -1;
+    pila[tope++] = (EntradaPila){LL1_FIN, SIZE_MAX};
+    pila[tope++] = (EntradaPila){NT_PROGRAMA, SIZE_MAX};
+
+    /* Para cada nodo, su padre (para calcular los tamaños al final). */
+    size_t capacidad_padres = 256;
+    padres = malloc(capacidad_padres * sizeof *padres);
+    int estado = (padres == NULL) ? -1 : 1;
+
+    size_t i = 0;
+    while (estado == 1 && tope > 0 && i < cantidad) {
+        EntradaPila x = pila[--tope];
+        int a = (int)tokens[i];
+        if (a < 0 || a >= LL1_TERMINALES) a = TOKEN_ERROR;
+
+        if (x.simbolo == LL1_FIN) {        /* Regla 1 con $: aceptar si llegó el $. */
+            estado = (a == LL1_FIN) ? 0 : 1;
+            break;
+        }
+        int p = -1;
+        if (LL1_ES_TERMINAL(x.simbolo)) {
+            if (x.simbolo != a) break;     /* Regla 3: error de sintaxis. */
+        } else {
+            p = tabla->m[LL1_INDICE(x.simbolo)][a];
+            if (p < 0) break;              /* Celda vacía: error de sintaxis. */
+        }
+
+        /* El nodo de este símbolo, con su padre. */
+        size_t nodo = nuevo_nodo(arbol, x.simbolo);
+        if (nodo == SIZE_MAX) { estado = -1; break; }
+        if (nodo == capacidad_padres) {
+            capacidad_padres *= 2;
+            size_t *mas = realloc(padres, capacidad_padres * sizeof *mas);
+            if (mas == NULL) { estado = -1; break; }
+            padres = mas;
+        }
+        padres[nodo] = x.padre;
+
+        if (LL1_ES_TERMINAL(x.simbolo)) {  /* Regla 1: la hoja guarda su token. */
+            arbol->nodos[nodo].token = i;
+            arbol->nodos[nodo].primer_token = i;
+            arbol->nodos[nodo].fin_token = i + 1;
+            i++;
+            continue;
+        }
+
+        /* Regla 2: apilar el cuerpo al revés; sus símbolos son hijos de este nodo. */
+        arbol->nodos[nodo].produccion = p;
+        const Ll1Produccion *prod = &ll1_producciones[p];
+        int largo = ll1_largo_cuerpo(prod);
+        if (tope + (size_t)largo > capacidad) {
+            capacidad = (tope + (size_t)largo) * 2;
+            EntradaPila *mas = realloc(pila, capacidad * sizeof *mas);
+            if (mas == NULL) { estado = -1; break; }
+            pila = mas;
+        }
+        for (int k = largo - 1; k >= 0; --k) pila[tope++] = (EntradaPila){prod->cuerpo[k], nodo};
+    }
+
+    /*
+     * Tamaños y tokens cubiertos, de las hojas hacia la raíz: en preorden los
+     * hijos van DESPUÉS del padre, así que se recorre de atrás hacia
+     * adelante sumando cada nodo a su padre.
+     */
+    if (estado == 0) {
+        for (size_t k = arbol->cantidad; k-- > 1;) {
+            Ll1Nodo *n = &arbol->nodos[k], *padre = &arbol->nodos[padres[k]];
+            padre->tamano += n->tamano;
+            if (n->primer_token == SIZE_MAX) continue;  /* ε: no cubre tokens. */
+            if (padre->primer_token == SIZE_MAX || n->primer_token < padre->primer_token) {
+                padre->primer_token = n->primer_token;
+            }
+            if (padre->fin_token == SIZE_MAX || n->fin_token > padre->fin_token) {
+                padre->fin_token = n->fin_token;
+            }
+        }
+        /* Una producción ε no cubre tokens: [x, x), vacío. */
+        for (size_t k = 0; k < arbol->cantidad; ++k) {
+            if (arbol->nodos[k].primer_token == SIZE_MAX) {
+                arbol->nodos[k].primer_token = arbol->nodos[k].fin_token = 0;
+            }
+        }
+    }
+
+    free(pila);
+    free(padres);
+    if (estado != 0) ll1_liberar_derivacion(arbol);
+    return estado;
+}
+
+void ll1_liberar_derivacion(Ll1Derivacion *arbol)
+{
+    free(arbol->nodos);
+    memset(arbol, 0, sizeof *arbol);
 }

@@ -202,7 +202,7 @@ static void usage(FILE *out) {
           "              el codigo muerto (muestra la IR antes y despues)\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
-          "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
+          "--clones [--json] [--minimo <tokens>] <archivo.bal>...\n"
           "              busca codigo copiado (clones tipo I y II) entre los archivos;\n"
           "              no genera ningun archivo\n", out);
 }
@@ -657,7 +657,7 @@ static int exportar_diagnosticos(const char *ruta)
 static int buscar_clones(int argc, char **argv)
 {
     int json = 0;
-    size_t minimo = CLONES_MINIMO_NODOS;
+    size_t minimo = CLONES_MINIMO_TOKENS;
     ClonFuente *fuentes = calloc((size_t)argc, sizeof *fuentes);
     size_t cantidad = 0;
     int estado = 0;
@@ -670,7 +670,7 @@ static int buscar_clones(int argc, char **argv)
             char *fin = NULL;
             long valor = (i + 1 < argc) ? strtol(argv[i + 1], &fin, 10) : 0;
             if (i + 1 >= argc || *fin != '\0' || valor < 1) {
-                fputs("--minimo necesita un numero de nodos mayor que 0\n", stderr);
+                fputs("--minimo necesita un numero de tokens mayor que 0\n", stderr);
                 estado = 2;
                 break;
             }

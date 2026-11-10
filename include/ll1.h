@@ -256,6 +256,50 @@ int ll1_analizar(const TokenType *tokens, size_t cantidad, Ll1Resultado *resulta
 int ll1_trazar(const TokenType *tokens, size_t cantidad, FILE *salida);
 
 /* ------------------------------------------------------------------ */
+/* Árbol de derivación                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * El CAMINO que sigue el analizador en la gramática: cada vez que cambia un
+ * no terminal A por el cuerpo de una producción A → X1 ... Xk (regla 2),
+ * A queda como un nodo con hijos X1 ... Xk; cada terminal leído (regla 1) es
+ * una hoja con su token. Es el árbol de análisis sintáctico de la entrada.
+ *
+ * Los nodos quedan en PREORDEN (cada nodo antes que sus hijos): el análisis
+ * predictivo es una derivación por la izquierda, así que si cada nodo se
+ * crea al sacar su símbolo de la pila, salen en ese orden. Los descendientes
+ * de un nodo i son los "tamano - 1" nodos que van justo después de él.
+ *
+ * Dos fragmentos de código siguen el mismo camino en la gramática si sus
+ * subárboles tienen las mismas producciones en el mismo orden (lo usa la
+ * detección de clones, src/Deteccion_Clones/clones.c).
+ */
+typedef struct {
+    int simbolo;          /* Terminal (TokenType) o no terminal (NT_*). */
+    int produccion;       /* Con no terminal: la producción aplicada. Con terminal: -1. */
+    size_t token;         /* Con terminal: su índice en la lista de tokens. */
+    size_t tamano;        /* Nodos de su subárbol, contándolo a él. */
+    size_t primer_token;  /* Tokens que cubre: [primer_token, fin_token). */
+    size_t fin_token;     /* Si no cubre ninguno (una producción ε), los dos son iguales. */
+} Ll1Nodo;
+
+typedef struct {
+    Ll1Nodo *nodos;       /* nodos[0] es la raíz (programa). */
+    size_t cantidad;
+    size_t capacidad;
+} Ll1Derivacion;
+
+/*
+ * Analiza un programa completo (los tokens terminan en TOKEN_EOF) y arma su
+ * árbol de derivación. Se crea vacío así: Ll1Derivacion arbol = {0};
+ * Devuelve 0 si el programa es válido, 1 si tiene un error de sintaxis (el
+ * árbol queda vacío) o -1 si no hubo memoria.
+ */
+int ll1_derivar(const TokenType *tokens, size_t cantidad, Ll1Derivacion *arbol);
+
+void ll1_liberar_derivacion(Ll1Derivacion *arbol);
+
+/* ------------------------------------------------------------------ */
 /* Corrección predicha por la tabla                                    */
 /* ------------------------------------------------------------------ */
 
