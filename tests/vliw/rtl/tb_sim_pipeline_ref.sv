@@ -18,12 +18,17 @@ module tb_sim_pipeline_ref;
     // para identificar el bundle observado en WB; no realimenta el procesador.
     logic [31:0] wb_pc = 0;
     always @(posedge clk) begin
+        // La sonda acompaña el PC de EX hacia el contexto WB con asignación no bloqueante. El
+        // reset la limpia igual que el registro observado; no altera validez ni control del
+        // procesador.
         if (reset) wb_pc <= 0;
         else wb_pc <= DUT.ex_pc;
     end
 
     integer archivo, leidos, indice, codigo, ciclos, reset_despues = 0, ignorado;
     string ruta, previo;
+    // El modo ALU contrasta resultados combinacionales; el modo pipeline observa capturas ID y
+    // publicación WB sin realimentar el núcleo.
     initial begin
         if ($test$plusargs("ALU")) begin
             if (!$value$plusargs("VECTORES=%s", ruta)) $fatal(1, "falta VECTORES");
@@ -63,6 +68,8 @@ module tb_sim_pipeline_ref;
                     DUT.alu_rs1_data, DUT.alu_rs2_data, DUT.ex_operand_a,
                     DUT.ex_operand_b, DUT.alu_result, DUT.wb_we[0],
                     DUT.wb_waddr[0], DUT.wb_wdata[0]);
+                // La traza previo ya contiene operandos antes de WB; después del flanco y las
+                // NBA comparamos PC y los 32 registros actualizados.
                 #1; clk = 1; #1;
                 $write("%s %08h", previo, DUT.pc);
                 // Los 32 registros posteriores comprueban también la ausencia

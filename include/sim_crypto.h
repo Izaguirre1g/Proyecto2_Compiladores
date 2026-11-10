@@ -44,8 +44,19 @@ typedef struct {
     uint32_t a, b;
 } SimEfectoCrypto;
 
+/*
+ * Rota el valor de 32 bits según el contrato Feistel, sin desplazar por 32 cuando la rotación
+ * efectiva es cero.
+ */
 uint32_t sim_crypto_rol32(uint32_t x, unsigned cantidad);
+/*
+ * Calcula la función pública de ronda sobre los operandos recibidos sin modificar el estado
+ * criptográfico.
+ */
 uint32_t sim_crypto_f(uint32_t x, uint32_t llave);
+/*
+ * Borra la bóveda recibida; admite NULL y no modifica el pipeline, los GPR ni DMEM.
+ */
 void sim_crypto_reset(SimBoveda *boveda);
 /* Exige una instrucción S2 válida de CRIPTO. No convierte una palabra inválida
  * en excepción de privilegio; false indica error administrativo de contrato. */

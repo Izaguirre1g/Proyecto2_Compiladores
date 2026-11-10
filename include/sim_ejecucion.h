@@ -60,7 +60,15 @@ SimEjecucionCodigo sim_ejecucion_reiniciar(SimEjecucion *, bool restaurar);
  * liberarla con sim_metricas_liberar_reporte. Se conserva el JSON v1 de M1 y
  * se comparan snapshots con sim_metricas_comparar, sin contadores alternativos. */
 SimMetricasEstado sim_ejecucion_resultados(const SimEjecucion *, SimMetricasResumen *);
+/*
+ * Copia un trap de la sesión mediante M1, propagando argumentos inválidos u observaciones
+ * pendientes.
+ */
 SimMetricasEstado sim_ejecucion_trap(const SimEjecucion *, size_t, SimMetricaTrap *);
+/*
+ * Exporta las métricas de la sesión en el formato solicitado; exige una salida inicialmente
+ * NULL y deja su liberación al cliente.
+ */
 SimMetricasEstado sim_ejecucion_exportar(const SimEjecucion *, SimMetricasFormato, char **);
 /* Copia los 65536 bytes de DMEM pública en un destino del cliente de ese
  * tamaño exacto. No presta acceso al almacenamiento interno ni a la bóveda.

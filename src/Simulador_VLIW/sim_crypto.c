@@ -36,6 +36,9 @@ bool sim_crypto_capturar(const SimInstruccion *i, uint32_t a, uint32_t b,
     if (!i || !salida || i->estado != SIM_DECODE_OK ||
         i->familia != SIM_FAMILIA_CRIPTO || i->slot != 3 ||
         i->operacion < SIM_OP_FSL || i->operacion > SIM_OP_SETPWD) return false;
+    // Capturamos instrucción, operandos y permiso en ID. Falta AUTH o INIT según los bits
+    // requeridos: se conserva esa decisión para EX y no se vuelve a conceder permiso usando un
+    // WB posterior.
     *salida = (SimCryptoId){.valido = true, .instruccion = *i, .a = a, .b = b,
         .falta_permiso = (i->requiere_auth && !(estado & SIM_CRYPTO_AUTH)) ||
                          (i->requiere_init && !(estado & SIM_CRYPTO_INIT))};
@@ -91,6 +94,9 @@ bool sim_crypto_preparar(const SimBoveda *boveda, const SimMemoria *memoria,
          * selecciona una palabra incluso en direcciones no alineadas. */
         if (!sim_lsu_preparar(memoria, SIM_OP_CARGAI, i->direccion, 0, 0, &e.memoria)) return false;
         if (i->operacion == SIM_OP_VCR) {
+            // VCR compara la palabra leída con la contraseña solo si ya fue establecida. El
+            // resultado de autorización queda pendiente en WB; consultar la bóveda en EX no
+            // modifica aún el registro público AUTH.
             e.wb.auth_we = true;
             e.wb.auth = boveda->pwd_set && e.memoria.lectura == boveda->password;
         } else {

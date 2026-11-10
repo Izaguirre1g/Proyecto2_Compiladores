@@ -17,7 +17,7 @@ typedef struct {
     VliwDestino dest[8]; VliwDestinos destinos;
     VliwEntrada e;
 } Fixture;
-static void iniciar(Fixture *f, size_t n)
+/* Inicializa arreglos y estado del fixture. */ static void iniciar(Fixture *f, size_t n)
 {
     C(n <= 16); memset(f, 0, sizeof *f);
     f->e = (VliwEntrada){f->i,n,f->a,0,f->b,n?1:0,true};
@@ -26,25 +26,25 @@ static void iniciar(Fixture *f, size_t n)
     for (size_t j=0; j<n; ++j) f->i[j] = (VliwInstruccion){.id=100+11*j,
         .slot=VLIW_SLOT_ALU,.texto="sumai x0,x0,0"};
 }
-static VliwPlan *plan(Fixture *f)
+/* Invoca S7 sobre los metadatos del fixture y exige un plan completo antes de usar sus índices. */ static VliwPlan *plan(Fixture *f)
 {
     VliwPlan *p=NULL; VliwDiagnostico d;
     VliwEstado s=vliw_planificar(&f->e,&p,&d);
     if (s) fprintf(stderr,"S7: %s\n",d.mensaje);
     C(s==VLIW_OK && p); return p;
 }
-static char *mostrar(Fixture *f,VliwPlan *p,VliwVisualFormato formato)
+/* Solicita una representación al visualizador y exige éxito antes de examinar el texto propio. */ static char *mostrar(Fixture *f,VliwPlan *p,VliwVisualFormato formato)
 {
     char *salida=NULL; VliwVisualDiagnostico d;
     C(vliw_visualizar(&f->e,p,&f->destinos,formato,NULL,&salida,&d)==VLIW_VIS_OK);
     C(salida && d.estado==VLIW_VIS_OK); return salida;
 }
-static VliwEstadisticas medir(Fixture *f,VliwPlan *p)
+/* Obtiene estadísticas estáticas del plan y exige su validez antes de comparar contadores y cocientes. */ static VliwEstadisticas medir(Fixture *f,VliwPlan *p)
 {
     VliwEstadisticas a; VliwVisualDiagnostico d;
     C(vliw_estadisticas(&f->e,p,&a,&d)==VLIW_VIS_OK); return a;
 }
-static void rechazar(Fixture *f,VliwPlan *p,VliwVisualEstado esperado)
+/* Invoca la API con una entrada adversarial y exige el error previsto, sin aceptar salidas parciales. */ static void rechazar(Fixture *f,VliwPlan *p,VliwVisualEstado esperado)
 {
     for (unsigned formato=0; formato<=VLIW_VIS_JSON; ++formato) {
         char *s=NULL; VliwVisualDiagnostico d;
@@ -52,12 +52,12 @@ static void rechazar(Fixture *f,VliwPlan *p,VliwVisualEstado esperado)
         C(!s && d.estado==esperado && d.mensaje);
     }
 }
-static void bloque(Fixture *f,size_t b,size_t inicio,size_t fin)
+/* Define el bloque y sus límites en los metadatos de prueba para comprobar CFG y layout. */ static void bloque(Fixture *f,size_t b,size_t inicio,size_t fin)
 {
     f->b[b]=(VliwBloque){inicio,fin,f->su[b],0};
     for (size_t j=inicio; j<fin; ++j) f->i[j].bloque=b;
 }
-static void basicos_y_metricas(void)
+/* Comprueba vistas elementales y estadísticas, incluyendo entrada vacía y utilización de los cuatro slots. */ static void basicos_y_metricas(void)
 {
     Fixture f; VliwPlan *p; char *s;
     /* El vacío es un reporte válido, con tablas/listas sin filas y cero
@@ -68,7 +68,7 @@ static void basicos_y_metricas(void)
     s=mostrar(&f,p,VLIW_VIS_JSON); C(strstr(s,"\"bundles\":[]")); vliw_visual_liberar(&s);
     s=mostrar(&f,p,VLIW_VIS_CSV); C(strstr(s,"bundle,pc,bloque,alu,lsu,bru,cripto,operaciones"));
     C(strchr(s,'\n')==s+strlen(s)-1); vliw_visual_liberar(&s); vliw_liberar(&p);
-    ++casos; iniciar(&f,1); p=plan(&f); a=medir(&f,p);
+    /* Una operación ocupa un slot de cuatro: utilización estática del 25%. */ ++casos; iniciar(&f,1); p=plan(&f); a=medir(&f,p);
     C(a.instrucciones_utiles==1 && a.bundles_totales==1 && a.bytes_imem==16 && a.bloques==1);
     C(a.slots_disponibles==4 && a.slots_utilizados==1 && a.slots_vacios==3 && a.utilizacion_porcentual==25.0);
     C(a.operaciones_por_bundle==1.0 && a.operaciones_por_slot[0]==1);
@@ -104,7 +104,7 @@ static void basicos_y_metricas(void)
     s=mostrar(&f,p,VLIW_VIS_JSON); C(strstr(s,"\"efectiva\":3") && strstr(s,"\"estado\":\"SATISFECHA\""));
     vliw_visual_liberar(&s); vliw_liberar(&p);
 }
-static void bloques_y_textos(void)
+/* Comprueba bloques, destinos y textos presentes o ausentes en las vistas exportadas. */ static void bloques_y_textos(void)
 {
     Fixture f; VliwPlan *p; char *s;
     /* Dos guardas en B1 y también B0 por su backedge. El salto conserva
@@ -145,7 +145,7 @@ static void bloques_y_textos(void)
     s=mostrar(&f,p,VLIW_VIS_JSON); C(strstr(s,"\\u000a") && strstr(s,"\\u001b") && strstr(s,"ñ")); vliw_visual_liberar(&s);
     s=mostrar(&f,p,VLIW_VIS_CSV); C(strstr(s,"\"coma,\"\"barra\\\n\r\t\033|ñ\"")); vliw_visual_liberar(&s);
     s=mostrar(&f,p,VLIW_VIS_TABLA); C(strstr(s,"\\x1B") && !strchr(s,'\033')); vliw_visual_liberar(&s);
-    ++casos; char largo[2049]; memset(largo,'X',2048); largo[2048]=0; f.i[0].texto=largo;
+    /* Solo la tabla trunca; JSON debe conservar los 2048 caracteres. */ ++casos; char largo[2049]; memset(largo,'X',2048); largo[2048]=0; f.i[0].texto=largo;
     VliwVisualOpciones o={12,false,false}; VliwVisualDiagnostico d; s=NULL;
     C(vliw_visualizar(&f.e,p,NULL,VLIW_VIS_TABLA,&o,&s,&d)==VLIW_VIS_OK);
     C(strstr(s,"I0: XXXXX...") && !strstr(s,"Dependencias externas") && !strstr(s,"Estadísticas")); vliw_visual_liberar(&s);
@@ -157,7 +157,7 @@ static void bloques_y_textos(void)
     for (size_t j=0; j<sizeof malos/sizeof *malos; ++j) { f.i[0].texto=malos[j]; rechazar(&f,p,VLIW_VIS_TEXTO); }
     C(vliw_estadisticas(&f.e,p,&a,NULL)==VLIW_VIS_OK); vliw_liberar(&p);
 }
-static void errores_y_propiedad(void)
+/* Prueba argumentos inválidos y verifica que las salidas y buffers mantengan su contrato de propiedad. */ /* Probamos contratos inválidos conservando las entradas: un rechazo no puede entregar texto parcial ni apropiarse del plan prestado. */ static void errores_y_propiedad(void)
 {
     ++casos; Fixture f; iniciar(&f,2); VliwPlan *p=plan(&f); char *s=NULL; VliwVisualDiagnostico d;
     C(vliw_visualizar(NULL,p,NULL,VLIW_VIS_TABLA,NULL,&s,&d)==VLIW_VIS_ARGUMENTO && !s);
@@ -169,7 +169,7 @@ static void errores_y_propiedad(void)
     s=mostrar(&f,p,VLIW_VIS_JSON); char *anterior=s;
     C(vliw_visualizar(&f.e,p,NULL,VLIW_VIS_JSON,NULL,&s,NULL)==VLIW_VIS_ARGUMENTO && s==anterior); vliw_visual_liberar(&s);
     C(vliw_estadisticas(&f.e,p,NULL,NULL)==VLIW_VIS_ARGUMENTO);
-    ++casos; VliwEstadisticas a,copia; memset(&a,0xa5,sizeof a); memcpy(&copia,&a,sizeof a);
+    /* Una salida rechazada conserva intacto el resumen marcado con 0xa5. */ ++casos; VliwEstadisticas a,copia; memset(&a,0xa5,sizeof a); memcpy(&copia,&a,sizeof a);
     p->bundle_por_instruccion[0]=100; rechazar(&f,p,VLIW_VIS_PLAN);
     C(vliw_estadisticas(&f.e,p,&a,&d)==VLIW_VIS_PLAN && !memcmp(&a,&copia,sizeof a)); p->bundle_por_instruccion[0]=0;
     p->bundles[0].instrucciones[0]=99; rechazar(&f,p,VLIW_VIS_PLAN); p->bundles[0].instrucciones[0]=0;
@@ -199,7 +199,7 @@ static void errores_y_propiedad(void)
     ++casos; char *literal=malloc(20); C(literal!=NULL); strcpy(literal,"texto propio"); f.i[0].texto=literal;
     s=mostrar(&f,p,VLIW_VIS_JSON); free(literal); vliw_liberar(&p); C(strstr(s,"texto propio")); vliw_visual_liberar(&s);
 }
-static void localizacion(void)
+/* Cambia el locale de prueba y comprueba que el formato exportado conserve su representación numérica estable. */ static void localizacion(void)
 {
     /* El cliente puede usar coma decimal. El JSON del visualizador debe
      * mantener punto sin cambiar el locale global del programa que lo llama. */
@@ -213,7 +213,7 @@ static void localizacion(void)
     C(!strcmp(localeconv()->decimal_point,","));
     vliw_visual_liberar(&s); vliw_liberar(&p); C(setlocale(LC_NUMERIC,"C")!=NULL);
 }
-static void capacidad(void)
+/* Visualiza el máximo de bundles admitido y comprueba tamaños y estadísticas sin desbordamientos. */ static void capacidad(void)
 {
     ++casos; VliwInstruccion *i=calloc(1023,sizeof *i); C(i!=NULL);
     for (size_t j=0; j<1023; ++j) i[j]=(VliwInstruccion){.id=j,.slot=VLIW_SLOT_ALU,.texto="sumai x0,x0,0"};
@@ -226,13 +226,13 @@ static void capacidad(void)
 }
 
 #ifdef VLIW_VIS_FALLOS
-void *__real_malloc(size_t); void *__real_calloc(size_t,size_t); void *__real_realloc(void *,size_t);
-int __real_vsnprintf(char *,size_t,const char *,va_list);
+/* Rutina real malloc: destino de las llamadas no inyectadas. */ void *__real_malloc(size_t); /* Rutina real calloc: destino de las llamadas no inyectadas. */ void *__real_calloc(size_t,size_t); /* Rutina real realloc: destino de las llamadas no inyectadas. */ void *__real_realloc(void *,size_t);
+/* Rutina real vsnprintf: destino de las llamadas no inyectadas. */ int __real_vsnprintf(char *,size_t,const char *,va_list);
 static size_t reservas, fallar, formato_llamadas, formato_fallar; static bool activo;
-void *__wrap_malloc(size_t n) { if (activo && ++reservas==fallar) return NULL; return __real_malloc(n); }
-void *__wrap_calloc(size_t n,size_t s) { if (activo && ++reservas==fallar) return NULL; return __real_calloc(n,s); }
-void *__wrap_realloc(void *p,size_t n) { if (activo && ++reservas==fallar) return NULL; return __real_realloc(p,n); }
-int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a)
+/* Envuelve malloc: inyecta fallos y delega el resto. */ void *__wrap_malloc(size_t n) { if (activo && ++reservas==fallar) return NULL; return __real_malloc(n); }
+/* Envuelve calloc: inyecta fallos y delega el resto. */ void *__wrap_calloc(size_t n,size_t s) { if (activo && ++reservas==fallar) return NULL; return __real_calloc(n,s); }
+/* Envuelve realloc: inyecta fallos y delega el resto. */ void *__wrap_realloc(void *p,size_t n) { if (activo && ++reservas==fallar) return NULL; return __real_realloc(p,n); }
+/* Envuelve vsnprintf: inyecta fallos y delega el resto. */ int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a)
 {
     if (activo && ++formato_llamadas==formato_fallar) return -1;
     return __real_vsnprintf(s,n,f,a);
@@ -241,18 +241,18 @@ int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a)
 /* Ubuntu fortifica vsnprintf como __vsnprintf_chk. Se interceptan ambas
  * entradas sin desactivar FORTIFY ni cambiar la biblioteca de producción. */
 int __real___vsnprintf_chk(char *,size_t,int,size_t,const char *,va_list);
-int __wrap___vsnprintf_chk(char *s,size_t n,int flag,size_t capacidad,const char *f,va_list a)
+/* Envuelve __vsnprintf_chk: inyecta fallos y delega el resto. */ int __wrap___vsnprintf_chk(char *s,size_t n,int flag,size_t capacidad,const char *f,va_list a)
 {
     if (activo && ++formato_llamadas==formato_fallar) return -1;
     return __real___vsnprintf_chk(s,n,flag,capacidad,f,a);
 }
 #endif
-static void fallos(void)
+/* Inyecta errores en reservas, archivos o generación y comprueba que no se publique una salida parcial ni se pierdan recursos. */ static void fallos(void)
 {
     Fixture f; iniciar(&f,4); VliwPlan *p=plan(&f); size_t total=0;
     /* Primero se cuentan las reservas reales de cada formato. Después se
      * falla cada posición, incluidos el verificador S7 y el buffer creciente. */
-    for (unsigned formato=0; formato<3; ++formato) {
+    /* Cada formato debe rechazar reservas fallidas sin entregar texto parcial. */ for (unsigned formato=0; formato<3; ++formato) {
         char *s=NULL; reservas=0; activo=true;
         C(vliw_visualizar(&f.e,p,NULL,(VliwVisualFormato)formato,NULL,&s,NULL)==VLIW_VIS_OK);
         activo=false; size_t cantidad=reservas; vliw_visual_liberar(&s);
@@ -285,9 +285,9 @@ static void fallos(void)
 /* El protocolo de pruebas transporta texto en hexadecimal para incluir
  * saltos de línea/comillas sin crear un parser de ensamblador ni de BAL. */
 static int hex(int c) { if (c>='0' && c<='9') return c-'0'; if (c>='a' && c<='f') return c-'a'+10; return -1; }
-static int fixture(int argc,char **argv)
+/* Lee o escribe el protocolo del fixture para que Python pueda ejecutar la implementación C real. */ static int fixture(int argc,char **argv)
 {
-    C(argc==3 || argc==4); FILE *f=fopen(argv[2],"rb"); C(f!=NULL);
+    /* Leemos el fixture propio; formato y ancho provienen de esta invocación. */ C(argc==3 || argc==4); FILE *f=fopen(argv[2],"rb"); C(f!=NULL);
     size_t n,m,k,nt; C(fscanf(f,"%zu%zu%zu%zu",&n,&m,&k,&nt)==4); C(n<=4092 && m<=10000 && k<=n && nt<=n);
     VliwInstruccion *in=calloc(n+1,sizeof *in); VliwDependencia *ar=calloc(m+1,sizeof *ar);
     VliwBloque *bl=calloc(k+1,sizeof *bl); VliwDestino *ds=calloc(nt+1,sizeof *ds);
@@ -303,7 +303,7 @@ static int fixture(int argc,char **argv)
         size_t *su=calloc(bl[b].cantidad_sucesores+1,sizeof *su); C(su!=NULL); bl[b].sucesores=su;
         for (size_t j=0; j<bl[b].cantidad_sucesores; ++j) C(fscanf(f,"%zu",&su[j])==1);
     }
-    for (size_t j=0; j<nt; ++j) { unsigned tipo; C(fscanf(f,"%zu%u%zu%zu",&ds[j].instruccion,&tipo,&ds[j].tomado,&ds[j].caida)==4); ds[j].tipo=(VliwDestinoTipo)tipo; }
+    /* Las anotaciones se cargan aparte del texto, sin resolver operandos. */ for (size_t j=0; j<nt; ++j) { unsigned tipo; C(fscanf(f,"%zu%u%zu%zu",&ds[j].instruccion,&tipo,&ds[j].tomado,&ds[j].caida)==4); ds[j].tipo=(VliwDestinoTipo)tipo; }
     int c; do { c=fgetc(f); } while (c!=EOF && c!='\n');
     char linea[32770];
     for (size_t j=0; j<n; ++j) {
@@ -347,11 +347,11 @@ static int fixture(int argc,char **argv)
     }
 #endif
     vliw_visual_liberar(&salida); vliw_liberar(&p);
-    for (size_t j=0; j<n; ++j) free((void *)in[j].texto);
+    /* Liberamos textos, sucesores y arreglos después de generar la vista. */ for (size_t j=0; j<n; ++j) free((void *)in[j].texto);
     for (size_t b=0; b<k; ++b) free((void *)bl[b].sucesores);
     free(in); free(ar); free(bl); free(ds); return fflush(stdout)!=0;
 }
-int main(int argc,char **argv)
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */ int main(int argc,char **argv)
 {
 #ifdef VLIW_VIS_FALLOS
     if (argc==2 && !strcmp(argv[1],"--fallos")) { fallos(); return 0; }

@@ -52,12 +52,16 @@ CASOS = [
 
 
 class DecodeTests(unittest.TestCase):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.temporal = tempfile.TemporaryDirectory(prefix="pruebas-decode-")
         cls.addClassCleanup(cls.temporal.cleanup)
         cls.carpeta = Path(cls.temporal.name)
         cls.sonda = cls.carpeta / "test_sim_decode"
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. La preparación no reutiliza binarios antiguos del repositorio.
         cc = shlex.split(os.environ.get("CC", "cc"))
         flags = ["-Iinclude", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-O2"]
         # La compilación aislada no enlaza S1, parser ni codificador. Solo la
@@ -71,6 +75,8 @@ class DecodeTests(unittest.TestCase):
         cls.words = [[(int(line, 16) >> (32 * s)) & 0xffffffff for s in range(4)]
                      for line in cls.fixture.read_text().splitlines()]
 
+    # Invoca el ejecutable del caso con sus argumentos y comprueba su retorno; devuelve la
+    # salida para contrastar datos.
     def ejecutar(self, args):
         # Cada fallo conserva stdout/stderr para distinguir errores de prueba,
         # construcción o decodificación. No se ignoran códigos de salida.
@@ -78,9 +84,13 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         return p.stdout
 
+    # Invoca la sonda C sobre word y slot y devuelve el JSON de la instrucción decodificada para
+    # contrastar sus campos.
     def palabra(self, word, slot):
         return json.loads(self.ejecutar([self.sonda, "palabra", slot, f"{word:08x}"]))
 
+    # Construye el diccionario esperado desde el formato ISA y los campos del caso, incluyendo
+    # marcas de ausencia y extensión de inmediato; no consulta al decodificador.
     def esperar(self, word, slot, nombre, formato, **campos):
         # Las marcas de ausencia forman parte de lo esperado: un load no puede
         # inventar rs2 y un store no puede aparecer como escritura de registro.
@@ -100,6 +110,8 @@ class DecodeTests(unittest.TestCase):
             e["bruto"] = e["inmediato"] & ((1 << e["ancho"]) - 1)
         return e
 
+    # Retira únicamente los dos campos de contexto de bundle del resultado y exige igualdad
+    # exacta con la instrucción esperada.
     def comparar(self, actual, esperado):
         # Estos dos campos pertenecen al protocolo de la sonda, no a la
         # instrucción. Se comprueban aparte cuando se prueba el bundle completo.
@@ -108,6 +120,8 @@ class DecodeTests(unittest.TestCase):
         actual.pop("bundle_estado")
         self.assertEqual(actual, esperado)
 
+    # Selecciona la representación de instrucción que se necesita para contrastar su formato con
+    # el decodificador.
     @staticmethod
     def formato_del_caso(b, s):
         if b < 10: return 1
@@ -116,6 +130,8 @@ class DecodeTests(unittest.TestCase):
         if b < 28: return 4
         return {28: 5, 29: 6, 31: 7, 32: 7, 33: 8, 34: 9, 35: 10, 36: 11}[b]
 
+    # Decodifica las 34 instrucciones y contrasta registros, inmediatos, familia y slot con los
+    # campos esperados.
     def test_las_34_operaciones_y_todos_sus_campos(self):
         self.assertEqual(len(CASOS), 34)
         self.assertEqual(len({c[2] for c in CASOS}), 34)
@@ -125,17 +141,21 @@ class DecodeTests(unittest.TestCase):
                 self.comparar(self.palabra(w, s), self.esperar(
                     w, s, nombre, self.formato_del_caso(b, s), **campos))
 
+    # Barre opcodes y argumentos del banco C para detectar reservas aceptadas por error.
     def test_barrido_de_opcodes_y_argumentos_c(self):
         # El ejecutable C recorre los 8192 cruces tipo/ID/slot, incluyendo los
         # reservados, y prueba salida NULL, slot fuera de rango y reuso de salida.
         self.ejecutar([self.sonda])
 
+    # Comprueba que NOP se reconozca en cada uno de los cuatro slots sin generar operandos
+    # válidos.
     def test_nop_en_cada_slot(self):
         for s in range(4):
             with self.subTest(slot=s):
                 e = self.esperar(0, s, "nop", 0, estado=1, familia=5)
                 self.comparar(self.palabra(0, s), e)
 
+    # Prueba registros e inmediatos ALU, incluidos sus extremos y extensión de signo.
     def test_registros_e_inmediatos_alu(self):
         # REG e IMM tienen destinos en posiciones distintas. x0 debe seguir
         # presente como operando y x31 no debe confundirse con la marca 32.
@@ -153,6 +173,8 @@ class DecodeTests(unittest.TestCase):
                     if op in (2, 3, 4): campos["corrimiento"] = bruto % 32
                     self.comparar(self.palabra(w, 0), self.esperar(w, 0, nombre, 2, **campos))
 
+    # Contrasta operandos LSU y desplazamientos BRU sin confundir direccionamiento por byte con
+    # bundles.
     def test_lsu_y_offsets_de_saltos(self):
         for op, nombre in [(0, "guardap"), (1, "guardab"), (8, "cargai"), (9, "cargabai")]:
             for off in (-1024, -1, 0, 1023):
@@ -178,6 +200,7 @@ class DecodeTests(unittest.TestCase):
             self.comparar(self.palabra(w, 2), self.esperar(w, 2, "syer", 6,
                           rd=0, rs1=31, inmediato=off, salto=3))
 
+    # Verifica límites y formatos CRIPTO según los campos y restricciones reales de la ISA.
     def test_extremos_y_formatos_cripto(self):
         for op, nombre in [(0, "fsl"), (1, "fsli")]:
             for rd, rs, lk, rk in [(2, 30, 0, 3), (30, 2, 3, 0), (30, 30, 3, 3)]:
@@ -188,6 +211,9 @@ class DecodeTests(unittest.TestCase):
             w = (2 << 25) | (2 << 21) | (3 << 19) | (off << 17) | (30 << 7)
             self.comparar(self.palabra(w, 3), self.esperar(w, 3, "ell", 8,
                           rs1=0, rs2=30, lk=3, off_boveda=off, auth=1))
+        # Para VCR y CAMCON variamos la dirección absoluta entre sus extremos de 16 bits y la
+        # rotación entre 0 y 31. Se comprueba que estos campos no se interpreten como registros
+        # u offsets LSU.
         for addr in (0, 65535):
             w = (2 << 25) | (3 << 21) | (addr << 5)
             self.comparar(self.palabra(w, 3), self.esperar(w, 3, "vcr", 9,
@@ -200,6 +226,7 @@ class DecodeTests(unittest.TestCase):
             w = (2 << 25) | (5 << 21) | rs
             self.comparar(self.palabra(w, 3), self.esperar(w, 3, "setpwd", 11, rs1=rs, init=1))
 
+    # Distingue una operación reconocida con operandos inválidos de un identificador reservado.
     def test_restricciones_no_equivalen_a_opcodes_reservados(self):
         invalidas = [(2, (0x41 << 25) | (1 << 21) | 1023),
                      (2, (0x4b << 25) | 32767)]
@@ -215,6 +242,7 @@ class DecodeTests(unittest.TestCase):
         # Tipo NOP con payload no cero no es el NOP canónico de palabra cero.
         self.comparar(self.palabra(1, 0), self.esperar(1, 0, "invalida", 0, estado=2, familia=0))
 
+    # Coloca cada operación fuera de su slot físico y exige el rechazo previsto por S2.
     def test_slot_incorrecto_para_las_34_operaciones(self):
         for b, real, nombre, _ in CASOS:
             for otro in range(4):
@@ -224,6 +252,8 @@ class DecodeTests(unittest.TestCase):
                     self.comparar(self.palabra(w, otro), self.esperar(w, otro, "invalida", 0,
                                   estado=3, familia=0))
 
+    # Cambia bits no utilizados y comprueba que S2 mantenga la semántica que realmente
+    # implementa RTL.
     def test_bits_libres_ignorados_por_rtl(self):
         # Estos bits no definen operandos y RTL los ignora. No deben confundirse
         # con IDs reservados: cambiarlos conserva la operación y sus campos.
@@ -235,29 +265,39 @@ class DecodeTests(unittest.TestCase):
             a["word"] = nuevo
             self.assertEqual(self.palabra(nuevo, s), a)
 
+    # Decodifica bundles mixtos y comprueba que los errores de un slot no se confundan con NOP.
     def test_bundles_completos_mixtos_y_con_error(self):
         palabras = [self.words[1][0], self.words[22][1], self.words[24][2], self.words[31][3]]
         for vector, esperado in [(palabras, 0), ([palabras[0], 0, palabras[2], 0], 0),
                                  ([0, 0, 0, 0], 1), ([1, palabras[1], 0, palabras[0]], 2)]:
             registros = [json.loads(line) for line in self.ejecutar(
                 [self.sonda, "bundle", *[f"{w:08x}" for w in vector]]).splitlines()]
+            # Se conserva una respuesta por slot aun si otro slot del bundle es inválido. El
+            # estado agregado debe propagar el error sin dejar campos antiguos ni cambiar el
+            # orden de las unidades.
             self.assertEqual([r["slot"] for r in registros], list(range(4)))
             self.assertTrue(all(r["bundle_estado"] == esperado for r in registros))
             for s, w in enumerate(vector):
                 self.comparar(registros[s], {k: v for k, v in self.palabra(w, s).items()
                                             if k not in ("bundle", "bundle_estado")})
 
+    # Carga MEM y BALB mediante S1 y exige idéntica decodificación posterior de sus bundles.
     def test_s1_carga_mem_y_balb_y_s2_decodifica(self):
         destino = self.carpeta / "fixture.balb"
         self.ejecutar([ROOT / "balc", "-x", ROOT / "tests/fixtures/isa_todas.asm", "-o", destino])
         mem = [json.loads(l) for l in self.ejecutar([self.sonda, "imagen", "mem", self.fixture]).splitlines()]
         balb = [json.loads(l) for l in self.ejecutar([self.sonda, "imagen", "balb", destino]).splitlines()]
+        # MEM y BALB contienen el mismo código en representaciones distintas. Cargarlos por S1 y
+        # decodificarlos por S2 debe producir los mismos campos; una inversión de bytes o slots
+        # rompería esta correspondencia.
         self.assertEqual(mem, balb)
         self.assertEqual(len(mem), 43 * 4)
         for b, s, nombre, campos in CASOS:
             self.comparar(mem[b * 4 + s], self.esperar(self.words[b][s], s, nombre,
                           self.formato_del_caso(b, s), **campos))
 
+    # Genera el fixture con el ensamblador real de Arquitectura para evitar un codificador
+    # duplicado en la prueba.
     def test_fixture_con_ensamblador_actual_de_arquitectura(self):
         arch = Path(os.environ.get("ARQUITECTURA_ROOT", ROOT.parent / "Proyecto2_Arquitectura1"))
         if not (arch / "tools/assembler.py").is_file():
@@ -271,6 +311,7 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(mem.read_bytes(), self.fixture.read_bytes())
         self.assertEqual(binario.read_bytes(), (ROOT / "tests/fixtures/isa_todas.bin").read_bytes())
 
+    # Compara todos los campos decodificados con los decodificadores RTL reales.
     def test_contraste_con_decodificadores_rtl(self):
         arch = Path(os.environ.get("ARQUITECTURA_ROOT", ROOT.parent / "Proyecto2_Arquitectura1"))
         if not (arch / "rtl/isa_defs.sv").is_file():
@@ -325,12 +366,18 @@ class DecodeTests(unittest.TestCase):
                                       r["lvalid"], r["isbranch"], r["isjump"], r["cvalid"]), (0,) * 8)
                     continue
                 if (s, w) in restringidos:
+                    # S2 rechaza operandos fuera del contrato aunque el opcode sea reconocido
+                    # por el decoder físico. El contraste conserva esa diferencia deliberada y
+                    # no convierte una restricción de campos en un identificador reservado.
                     self.assertEqual(d["estado"], 4)
                     if s == 2:
                         self.assertEqual((r["isbranch"], r["bimm"]), (1, w & 2047))
                     else: self.assertEqual(r["cvalid"], 1)
                     continue
                 if (s, w) in reservados:
+                    # Un identificador reservado sigue siendo inválido para S2 aunque algún
+                    # decoder físico use una operación predeterminada. La prueba no debe
+                    # legitimar esa codificación por observar actividad en el hardware.
                     self.assertEqual(d["estado"], 2)
                     # Se evidencia la diferencia entre reconocimiento ISA y
                     # comportamiento físico; no se implementa fallback en S2.

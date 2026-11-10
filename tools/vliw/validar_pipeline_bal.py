@@ -30,6 +30,8 @@ LIMITACIONES = [
 ]
 
 
+# Lee un archivo regular no enlazado simbólicamente dentro del límite y rechaza crecimiento o
+# datos demasiado grandes.
 def leer(ruta, limite=MAX_BYTES):
     # No se leen dispositivos/FIFO ni se sigue un artefacto que escape mediante
     # symlink. Los límites preceden a la reserva y se comprueban tras la lectura.
@@ -41,6 +43,8 @@ def leer(ruta, limite=MAX_BYTES):
     return datos
 
 
+# Devuelve ruta, longitud y SHA-256 de los bytes leídos; permite comprobar que entradas y
+# herramientas no fueron alteradas.
 def identidad(ruta):
     datos = leer(ruta, b2.MAX_ARCHIVO)
     return dict(ruta=str(ruta), sha256=hashlib.sha256(datos).hexdigest(), bytes=len(datos))
@@ -48,6 +52,8 @@ def identidad(ruta):
 
 def validar_formato(binario, mem):
     """Contrasta estructura y representación; S1 sigue siendo el cargador real."""
+    # Leemos ambos artefactos con límites antes de contrastar cabecera, secciones y
+    # representación física del código.
     raw, texto = leer(binario), leer(mem)
     b2.exigir(len(raw) >= 48, 'BALB truncado antes del encabezado')
     firma, version, cabecera, total, entrada, co, cs, ca, do, ds, da, flags = struct.unpack_from('<4s11I', raw)
@@ -58,6 +64,9 @@ def validar_formato(binario, mem):
               'secciones BALB truncadas o fuera de límites')
     b2.exigir(entrada == ca == 0 and da <= 65536 and ds <= 65536-da and flags in (0, 1),
               'direcciones o flags BALB incompatibles con S1')
+    # Validada la estructura BALB, exigimos bundles MEM completos de 32 dígitos. La comparación
+    # siguiente reconstruye los mismos 16 bytes por línea para detectar diferencias reales de
+    # código entre formatos.
     lineas = [s.strip() for s in texto.decode('ascii').splitlines() if s.strip()]
     b2.exigir(bool(lineas) and len(lineas) <= 1024 and
               all(re.fullmatch('[0-9a-fA-F]{32}', s) for s in lineas), 'MEM inválido')
@@ -72,6 +81,8 @@ def validar_formato(binario, mem):
                 codigo_correspondiente=True, iniciales_compatibles=not any(raw[do:]))
 
 
+# Comprueba esquema M1, presupuesto, GPR y traps y exige coherencia con el estado/código de la
+# sesión M2.
 def validar_metricas(m, codigo, presupuesto):
     b2.exigir(type(m) is dict and type(m.get('version')) is int and m['version'] == 1 and
               m.get('naturaleza') == 'dinamica', 'contrato M1 incompatible')
@@ -90,6 +101,9 @@ def validar_metricas(m, codigo, presupuesto):
         b2.entero(v, 'GPR', (1 << 32)-1)
     b2.exigir(type(a.get('dmem_fnv1a64')) is str and
               re.fullmatch('[0-9a-f]{16}', a['dmem_fnv1a64']), 'huella DMEM inválida')
+    # La cantidad de eventos debe coincidir con traps y sus ciclos no pueden retroceder ni
+    # exceder el horizonte. Esto detecta un historial incompleto aunque los contadores globales
+    # parezcan válidos.
     ts = m.get('excepciones')
     b2.exigir(type(ts) is list and len(ts) == m['traps'], 'historial M1 incompleto')
     anterior = 0
@@ -102,6 +116,8 @@ def validar_metricas(m, codigo, presupuesto):
     return m
 
 
+# Valida los oráculos externos indexados por SHA del fuente; conserva procedencia y alcance sin
+# inventar resultados esperados.
 def cargar_oraculos(ruta):
     if ruta is None:
         return {}
@@ -121,9 +137,13 @@ def cargar_oraculos(ruta):
         for k in ('estado_crypto', 'traps'):
             if k in c:
                 b2.entero(c[k], k, (1 << 32)-1 if k == 'estado_crypto' else b2.LIMITE_U64)
+    # El SHA del fuente selecciona el oráculo; no se reutiliza una expectativa para un programa
+    # distinto ni se deduce del resultado ejecutado.
     return o['fuentes']
 
 
+# Compara únicamente los campos declarados con su oráculo externo; informa ausencia o
+# diferencias sin deducir esperados de la ejecución.
 def comprobar_oraculo(m, contrato):
     # No se deriva ningún esperado del resultado ejecutado. El SHA vincula el
     # contrato externo al fuente exacto; alcance limita lo que se ha demostrado.
@@ -140,6 +160,8 @@ def comprobar_oraculo(m, contrato):
                 contrato=contrato, diferencias=fallos)
 
 
+# Ejecuta la herramienta en un cwd aislado, restaura el cwd anterior y conserva comando, código,
+# bytes y tiempo en la evidencia externa.
 def invocar(args, timeout, directorio, nombre, anfitrion):
     inicio = time.monotonic()
     # El cwd también es propio: una salida auxiliar relativa o un volcado del
@@ -161,6 +183,8 @@ def invocar(args, timeout, directorio, nombre, anfitrion):
     return codigo, out, err, motivo
 
 
+# Copia los módulos BAL hermanos a un directorio propio con límites y huellas; rechaza symlinks
+# y conserva intactos los originales.
 def copiar_fuentes(fuente, destino):
     # bring resuelve módulos hermanos. Copiar todos los .bal de esa carpeta
     # conserva dependencias sin duplicar el parser ni tocar los originales.
@@ -181,6 +205,8 @@ def copiar_fuentes(fuente, destino):
     return inventario
 
 
+# Compila una copia BAL, verifica BALB/MEM, ejecuta M2 y contrasta sus métricas con el oráculo;
+# conserva diagnósticos de cada fase.
 def caso(fuente, raiz, id_, config, oraculos, anfitrion):
     d = raiz/id_; d.mkdir()
     c = dict(id=id_, fuente=identidad(fuente), compilacion=dict(disponible=False),
@@ -201,6 +227,9 @@ def caso(fuente, raiz, id_, config, oraculos, anfitrion):
         if ret != 0:
             c['resultado'] = 'COMPILACION_FALLIDA'
             return c
+        # Tras compilar comprobamos que se generaron ambos artefactos nuevos. No reutilizamos
+        # salidas viejas ni ejecutamos una imagen antes de verificar su identidad y la
+        # correspondencia BALB/MEM.
         for nombre, ruta in (('balb', p), ('mem', mem)):
             if ruta.exists():
                 c['artefactos'][nombre] = dict(identidad(ruta), ruta=id_+'/'+ruta.name)
@@ -216,6 +245,9 @@ def caso(fuente, raiz, id_, config, oraculos, anfitrion):
             c['resultado'] = 'FORMATO_INVALIDO'
             return c
         c['compilacion']['estado'] = 'COMPILACION_EXITOSA'
+        # Ejecutamos los dos formatos mediante la CLI M2 real con búsqueda finita y el mismo
+        # presupuesto. El cargador S1 sigue siendo la autoridad de carga; B3 solo coordina y
+        # valida las respuestas M1.
         for nombre, ruta in (('balb', p), ('mem', mem)):
             ret, out, err, motivo = invocar([config.simulador, nombre, ruta, 'finita',
                                             str(config.presupuesto), 'json'], config.timeout, d, nombre, host)
@@ -240,6 +272,9 @@ def caso(fuente, raiz, id_, config, oraculos, anfitrion):
             c['metricas'][nombre] = m
             estado.update(estado=m['estado'], carga='PASS')
             c['oraculo'][nombre] = comprobar_oraculo(m, oraculos.get(c['fuente']['sha256']))
+        # La clasificación da prioridad a fallos de infraestructura y ejecución, después al
+        # límite y al oráculo fallido. Terminar sin oráculo sigue siendo una validación de
+        # transporte, no una prueba semántica.
         estados = list(c['ejecucion'].values())
         if any(e.get('infraestructura') for e in estados):
             c['resultado'] = 'ERROR_INFRAESTRUCTURA'
@@ -261,6 +296,8 @@ def caso(fuente, raiz, id_, config, oraculos, anfitrion):
     return c
 
 
+# Valida fuentes, herramientas, salidas y oráculos; ejecuta los casos en un árbol temporal y
+# publica su reporte completo sin escribir en los fuentes originales.
 def publicar(config):
     fuentes = [p.resolve(strict=True) for p in config.fuente]
     b2.exigir(1 <= len(fuentes) <= 64 and len(set(fuentes)) == len(fuentes), 'fuentes repetidas o cantidad inválida')
@@ -291,6 +328,9 @@ def publicar(config):
                  for i, p in enumerate(fuentes, 1)]
         for k, original in herramientas.items():
             b2.exigir(identidad(getattr(config, k)) == original, 'herramienta cambió durante la ejecución')
+        # Solo generamos pares de demostración cuando BALB y MEM tienen iniciales compatibles.
+        # Una sección de datos no nula cambia DMEM inicial y no debe ocultarse comparando
+        # únicamente el código.
         pares = []
         for c in casos:
             if c['validacion_formato'].get('iniciales_compatibles') and c['compilacion']['estado'] == 'COMPILACION_EXITOSA':
@@ -317,6 +357,8 @@ def publicar(config):
     return reporte
 
 
+# Valida los argumentos de la CLI, ejecuta el recorrido y transforma diagnósticos o resultados
+# en los códigos públicos de salida; no oculta errores de infraestructura.
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     for nombre in ('balc', 'simulador', 'salida'):
@@ -326,6 +368,9 @@ def main(argv=None):
     p.add_argument('--timeout', type=float, default=30)
     p.add_argument('--oraculos', type=Path)
     try:
+        # Primero validamos argumentos y límites sin ejecutar programas. Los errores de uso
+        # mantienen su código específico; después, el recorrido y la publicación tienen
+        # diagnósticos separados de infraestructura.
         a = p.parse_args(argv)
         if not re.fullmatch('[0-9]{1,20}', a.presupuesto):
             p.error('presupuesto debe ser uint64 decimal')

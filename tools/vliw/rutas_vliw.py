@@ -15,6 +15,9 @@ def fuente_compartida(raiz, relativa):
         raise ValueError('se requiere una fuente compartida directa de src/')
     candidatas = [raiz / relativa]
     candidatas.extend(sorted((raiz / 'src').glob('*/' + relativa.name)))
+    # Buscamos tanto el árbol histórico plano como los módulos reorganizados. Rechazar cero o
+    # varias coincidencias evita enlazar silenciosamente un codificador distinto según el
+    # entorno.
     existentes = [p for p in candidatas if p.is_file()]
     if len(existentes) != 1:
         raise FileNotFoundError(f'fuente compartida ausente o ambigua: {relativa}: {existentes}')
@@ -40,6 +43,9 @@ def argumentos_rtl(raiz):
     dependencias de ese directorio; no se cambia ninguna política ni parámetro.
     """
     raiz = Path(raiz)
+    # El top localizado determina si además de rtl hay dependencias en rtl-p2. Construimos
+    # includes y fuentes reales de ambos directorios, sin copiar ni sustituir módulos de
+    # Arquitectura.
     directorios = [raiz / 'rtl']
     if top_rtl(raiz).parent == raiz / 'rtl-p2':
         directorios.append(raiz / 'rtl-p2')

@@ -25,10 +25,14 @@ NOP = ('nop',)*4
 KEY = (0x0f1e2d3c, 0x4b5a6978, 0x8796a5b4, 0xc3d2e1f0)
 
 
+# Agrupa las cuatro operaciones textuales en orden ALU, LSU, BRU y CRIPTO; los slots omitidos
+# quedan como NOP.
 def bundle(crypto='nop', alu='nop', lsu='nop', bru='nop'):
     return alu, lsu, bru, crypto
 
 
+# Calcula la rotación de referencia con ancho de 32 bits para los vectores Feistel
+# independientes.
 def rol(x, n):
     # Modelo independiente mediante una cadena circular de bits: evita
     # compartir la implementación de shifts de C o la función del RTL.
@@ -37,6 +41,8 @@ def rol(x, n):
     return int(bits[n:]+bits[:n], 2)
 
 
+# Aplica las rondas del modelo de prueba para obtener un oráculo criptográfico independiente del
+# simulador.
 def encrypt(l, r, key):
     for k in key:
         l, r = r, l ^ (((rol(r, 5)+k) & 0xffffffff) ^ rol(r, 13))
@@ -44,6 +50,8 @@ def encrypt(l, r, key):
 
 
 class CryptoTests(unittest.TestCase):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='pruebas-crypto-')
@@ -54,6 +62,9 @@ class CryptoTests(unittest.TestCase):
         cls.arch = Path(os.environ.get('ARQUITECTURA_ROOT', ROOT.parent/'Proyecto2_Arquitectura1')).resolve()
         cls.rtl = top_rtl(cls.arch).is_file() and all(shutil.which(t) for t in ('iverilog', 'vvp'))
         cls.c = cls.dir/'sonda'
+        # Compilamos la sonda C con los módulos reales del simulador en el temporal. Si están
+        # disponibles Icarus y el top de Arquitectura, preparamos también la referencia RTL; su
+        # ausencia no puede acreditarse como contraste exitoso.
         cls.run_cmd(shlex.split(os.environ.get('CC', 'cc')) + ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude',
             'tests/vliw/test_sim_crypto.c'] + [f'src/Simulador_VLIW/sim_{n}.c' for n in ('crypto', 'pipeline', 'alu', 'lsu', 'bru', 'decode', 'cargador')] + ['-o', str(cls.c)])
         cls.run_cmd(['make', 'balc'])
@@ -66,6 +77,8 @@ class CryptoTests(unittest.TestCase):
             cls.run_cmd(['iverilog', '-g2012', '-I'+str(cls.arch), '-I'+str(cls.arch/'rtl'), '-s', 'tb_sim_crypto_ref', '-o', str(cls.sv),
                 str(ROOT/'tests/vliw/rtl/tb_sim_crypto_ref.sv')] + argumentos_rtl(cls.arch))
 
+    # Ejecuta los argumentos sin shell, conserva la salida y comprueba el código esperado; un
+    # fallo inesperado invalida la prueba.
     @classmethod
     def run_cmd(cls, cmd, code=0):
         cmd = list(map(str, cmd))
@@ -75,6 +88,7 @@ class CryptoTests(unittest.TestCase):
             raise AssertionError(f'{cmd}: salida {p.returncode}, esperada {code}\n{p.stdout}\n{p.stderr}')
         return p.stdout
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         print(f'Contraste S6: {cls.vectores} vectores Feistel/ROL, {cls.ciclos} ciclos, {cls.programas} programas top.')
@@ -82,12 +96,19 @@ class CryptoTests(unittest.TestCase):
             Path(os.environ['S6_EVIDENCIA']).write_text(json.dumps(dict(vectores=cls.vectores, ciclos=cls.ciclos,
                 programas=cls.programas, comandos=cls.cmds), indent=2)+'\n')
 
+    # Marca SKIP cuando falta la referencia o las herramientas RTL; evita presentar una omisión
+    # como contraste exitoso.
     def exigir_rtl(self):
         if not self.rtl:
             self.skipTest('se requieren Arquitectura, iverilog y vvp; contraste no ejecutado')
 
+    # Ejecuta la misma imagen en simulador C y referencia y compara las observaciones públicas
+    # del caso.
     def contrastar(self, programa, datos=None, ciclos=None, reset=0, balb=False, tabla=None):
         self.exigir_rtl()
+        # Preparamos la misma DMEM para ambos modelos y codificamos cada slot con el ensamblador
+        # real. Después ejecutamos la sonda C y el banco RTL con el mismo número de flancos y el
+        # mismo instante de reset.
         datos = bytearray(65536) if datos is None else bytearray(datos)
         mem = self.dir/'programa.mem'
         b = [self.asm.Bundle(n, n+1, tuple(self.asm.encode_instruction(t, pc=n*16) for t in fila)) for n, fila in enumerate(programa)]
@@ -119,12 +140,21 @@ class CryptoTests(unittest.TestCase):
         st = [x for x in sv if 'c' in x]
         self.assertEqual(len(ct), ciclos)
         self.assertEqual(len(st), ciclos)
+        # Contrastamos las señales preflanco y el estado publicado en cada paso. La bóveda se
+        # inspecciona únicamente desde estas sondas de prueba; no se incorpora al contrato
+        # público de M1 o M2.
         for paso, (a, b) in enumerate(zip(ct, st)):
             with self.subTest(paso=paso+1, pc=a['pc_pre']):
                 for k in a:
+                    # Se contrastan todas las observaciones de cada flanco, no solo el cifrado
+                    # final. Así se detectan diferencias transitorias de permisos, flush o
+                    # publicación que podrían desaparecer al terminar.
                     self.assertEqual(a[k], b[k], f'campo {k}, paso {paso+1}: C={a[k]}, RTL={b[k]}')
         cm = {x['mem']: x['valor'] for x in c if 'mem' in x}
         sm = {x['mem']: x['valor'] for x in sv if 'mem' in x}
+        # Ambas sondas vuelcan DMEM de forma dispersa: una palabra no listada representa cero.
+        # La igualdad del volcado comprueba efectos de memoria incluso fuera de los destinos
+        # previstos por el programa.
         self.assertEqual(cm, sm, 'DMEM final completa')
         type(self).programas += 1
         type(self).ciclos += ciclos
@@ -133,6 +163,8 @@ class CryptoTests(unittest.TestCase):
             (out/(tabla+'.json')).write_text(json.dumps(ct, indent=2)+'\n')
         return ct, cm
 
+    # Prepara las instrucciones de aprovisionamiento de llaves y privilegios requeridas por el
+    # programa criptográfico.
     def provision(self, pwd=0, direccion=0):
         # x2 se produce por ALU y se consume N+3. setpwd cambia la bóveda
         # en EX; vcr del siguiente bundle ya lee esa contraseña actualizada.
@@ -140,6 +172,8 @@ class CryptoTests(unittest.TestCase):
         return [bundle(alu=f'sumai x2,x0,{pwd}'), NOP, NOP,
                 bundle('setpwd x2'), bundle(f'vcr {direccion}'), NOP, NOP]
 
+    # Prepara las instrucciones de carga utilizadas por el caso, conservando sus operandos y
+    # distancias declaradas.
     def cargar(self, key=KEY, l=0x414c4f48, r=0x36323032, lk=0):
         datos = bytearray(65536)
         for i, x in enumerate((*key, l, r)):
@@ -150,9 +184,11 @@ class CryptoTests(unittest.TestCase):
         p += [NOP, NOP, bundle(f'ell {lk},0,x8,x10'), bundle(f'ell {lk},2,x12,x14')]
         return p, datos
 
+    # Ejecuta las comprobaciones C de criptografía y privilegios.
     def test_01_unitarias(self):
         self.assertIn('comprobaciones unitarias PASS', self.run_cmd([self.c]))
 
+    # Contrasta vectores independientes Feistel con los resultados RTL.
     def test_02_vectores_independientes_y_rtl(self):
         self.exigir_rtl()
         rng = random.Random(110843016)
@@ -170,6 +206,7 @@ class CryptoTests(unittest.TestCase):
             self.assertEqual([int(x, 16) for x in line.split()[1:]], [rol(l, n), f(r), r, l ^ f(r), r ^ f(l), l])
         type(self).vectores = len(filas)
 
+    # Comprueba la bóveda y el estado público según la tabla de efectos autorizados.
     def test_03_boveda_estado_y_tabla_a(self):
         p = self.provision()+[bundle('fsl x4,x2,0,0')]
         t, _ = self.contrastar(p, tabla='A-provisionamiento')
@@ -179,6 +216,7 @@ class CryptoTests(unittest.TestCase):
         self.assertEqual(t[8]['id_crypto_fault'], 0)
         self.assertFalse(any(c['fault'] for c in t))
 
+    # Ejecuta cuatro rondas y comprueba el vector criptográfico conocido.
     def test_04_cuatro_rondas_y_referencia_conocida(self):
         for lk, (l, r) in itertools.product(range(4), [(0, 0), (0xffffffff, 0x80000000), (0x414c4f48, 0x36323032)]):
             with self.subTest(lk=lk, l=l, r=r):
@@ -190,12 +228,16 @@ class CryptoTests(unittest.TestCase):
                     p += [bundle(f'fsli x4,x4,{lk},{k}'), NOP, NOP]
                 t, _ = self.contrastar(p, datos)
                 cifrado = t[inicio+12]['regs'][4:6]
+                # El cifrado se contrasta con la implementación de referencia independiente.
+                # Verificar únicamente cifrar y luego descifrar podría dejar pasar dos errores
+                # que se compensen entre sí.
                 self.assertEqual(cifrado, list(encrypt(l, r, KEY)))
                 if (l, r) == (0x414c4f48, 0x36323032):
                     self.assertEqual(cifrado, [0x03d44466, 0xd685afaf])
                 self.assertEqual(t[-1]['regs'][4:6], [l, r])
                 self.assertFalse(any(c['fault'] for c in t))
 
+    # Prueba ELL inmediata y sobrescrituras para verificar qué llave consulta cada operación.
     def test_05_ell_inmediata_y_sobrescritura(self):
         for lk, op in itertools.product(range(4), ('fsl', 'fsli')):
             p, datos = self.cargar(lk=lk)
@@ -204,6 +246,7 @@ class CryptoTests(unittest.TestCase):
             self.assertNotEqual(t[-1]['regs'][28:30], t[-1]['regs'][30:32])
             self.assertEqual(t[-1]['sonda_boveda'][2+lk*4+2:2+lk*4+4], [0, 0])
 
+    # Comprueba las distancias de AUTH/INIT y las operaciones consecutivas sin bypass de estado.
     def test_06_auth_init_distancias_y_consecutivas(self):
         # La autorización queda capturada ID antes de publicar WB. N+1/N+2
         # ven AUTH viejo; N+3 ve el nuevo. setpwd consecutivos son legales si
@@ -219,6 +262,7 @@ class CryptoTests(unittest.TestCase):
         t, _ = self.contrastar([bundle('setpwd x0')]*3)
         self.assertFalse(any(c['fault'] for c in t))
 
+    # Verifica direcciones VCR, actualización de contraseña y revocación de privilegios.
     def test_07_vcr_direcciones_pwd_set_y_revocacion(self):
         for pwd, addr in itertools.product((0, 7, -1, -1024), (0, 1, 65532, 65535)):
             datos = bytearray(65536)
@@ -227,13 +271,20 @@ class CryptoTests(unittest.TestCase):
             t, _ = self.contrastar(p, datos)
             self.assertEqual(t[-1]['estado'], 1)
         t, _ = self.contrastar([bundle('vcr 0'), NOP, NOP])
+        # Una coincidencia con el valor inicial de DMEM no basta para autenticar: VCR exige que
+        # la contraseña haya sido establecida. La consulta no debe conceder AUTH por comparar
+        # dos ceros iniciales.
         self.assertEqual(t[-1]['estado'], 2)
         datos = bytearray(65536); datos[4] = 1
         p = self.provision()+[bundle('vcr 4'), NOP, NOP, bundle('vcr 0'), NOP, NOP]
         t, _ = self.contrastar(p, datos)
+        # Una validación fallida debe revocar AUTH, aunque antes hubiera autorización. La
+        # validación correcta posterior comprueba que el permiso pueda recuperarse y no quede
+        # fijado por el primer resultado.
         self.assertIn(0, [c['estado'] for c in t[10:]])
         self.assertEqual(t[-1]['estado'], 1)
 
+    # Provoca accesos simultáneos y comprueba la prioridad de memoria de CAMCON.
     def test_08_camcon_y_prioridad_memoria_tabla_c(self):
         # Ambos puertos deben leer preflanco. B reemplaza la palabra completa
         # incluso si A escribió un byte. Se prueba alias LSU alto y extremos.
@@ -255,6 +306,7 @@ class CryptoTests(unittest.TestCase):
         datos = bytearray(65536); datos[65532:]=bytes([1, 2, 3, 4])
         self.contrastar(self.provision()+[bundle('camcon 65535,7', lsu='guardap x0,x0,-1')], datos)
 
+    # Comprueba que CAMCON/VCR utilicen la contraseña actualizada según su temporización.
     def test_09_camcon_vcr_pwd_actualizada(self):
         for shift in (0, 1, 7, 31):
             datos = bytearray(65536); datos[0] = 7
@@ -262,6 +314,8 @@ class CryptoTests(unittest.TestCase):
             t, m = self.contrastar(p, datos)
             self.assertEqual((t[-1]['estado'], m[0]), (1, rol(7, shift)))
 
+    # Provoca una excepción criptográfica y verifica anulación del bundle y ejecución del
+    # manejador.
     def test_10_excepcion_bundle_completo_y_manejador_tabla_b(self):
         for op in ('fsl x4,x2,0,0', 'fsli x4,x2,0,0', 'ell 0,0,x0,x0', 'camcon 0,7'):
             p = [bundle(alu='sumai x10,x0,42'), bundle(op, alu='sumai x5,x0,99', lsu='guardap x0,x0,0', bru='sye x31,48'),
@@ -280,6 +334,8 @@ class CryptoTests(unittest.TestCase):
         self.assertGreater(t[-1]['traps'], 1)
         self.assertEqual(t[-1]['trap_pc'], 0x3ff0)
 
+    # Anula CRIPTO por flush y comprueba que no se apliquen efectos ni permisos del camino
+    # incorrecto.
     def test_11_flush_descarta_crypto_y_privilegios(self):
         for joven in ('ell 0,0,x0,x0', 'camcon 0,1', 'fsl x4,x2,0,0', 'setpwd x0'):
             p = [bundle(bru='sye x31,48'), bundle(joven), bundle(joven), NOP]
@@ -287,6 +343,7 @@ class CryptoTests(unittest.TestCase):
             self.assertFalse(any(c['fault'] for c in t))
             self.assertEqual(t[-1]['sonda_boveda'], [0]*18)
 
+    # Provoca escrituras simultáneas y verifica las prioridades de los cinco puertos.
     def test_12_cinco_puertos_y_prioridad(self):
         for a, l, b, rd in ((4, 4, 4, 4), (5, 5, 5, 4), (0, 0, 0, 30), (6, 8, 10, 28)):
             p = self.provision()
@@ -300,9 +357,12 @@ class CryptoTests(unittest.TestCase):
             for dest, v in ((a, 7), (l, 99), (b, 16*n+16), (rd, 0), (rd+1, 0)):
                 if dest:
                     esperado[dest] = v
+            # Los puertos CRIPTO se publican después de ALU, LSU y BRU. Si comparten destino,
+            # sus valores deben prevalecer sin omitir las solicitudes de los otros puertos.
             self.assertEqual(t[-1]['regs'], esperado)
             self.assertEqual(wb['conflicto'], int(a in (4, 5)))
 
+    # Consume registros CRIPTO en N+1, N+2 y N+3 y contrasta la regla de disponibilidad.
     def test_13_dependencias_registros_n_1_2_3(self):
         # Todos los consumidores leen ID anterior a WB, sin forwarding. El
         # productor cripto da (7,5 XOR F(7,0)); se verifica cada unidad destino.
@@ -327,6 +387,7 @@ class CryptoTests(unittest.TestCase):
         t, _ = self.contrastar(self.provision()+[bundle('fsl x6,x4,0,0', alu='sumai x4,x0,7')])
         self.assertEqual(t[-1]['regs'][6:8], [0, 0])
 
+    # Aplica reset en distintas fases y verifica estado, efectos y memoria frente a RTL.
     def test_14_reset_fases_efectos_y_memoria(self):
         p, datos = self.cargar()
         p += [bundle('camcon 16,7', lsu='guardab x0,x0,17', bru='sye x31,0'), bundle('vcr 0'), bundle('fsl x4,x4,0,0')]
@@ -335,6 +396,9 @@ class CryptoTests(unittest.TestCase):
         # también el primer ciclo posterior al reset, sin observar solo finales.
         for instante in range(1, len(p)+3):
             t, _ = self.contrastar(p, datos, ciclos=instante+4, reset=instante)
+            # Cada instante de reset debe iniciar otra época de estado: bóveda borrada, INIT
+            # activo y traps reiniciados. Los efectos de memoria se contrastan aparte porque
+            # reset no equivale a recargar DMEM.
             self.assertEqual(t[instante]['estado_pre'], 2)
             self.assertEqual(t[instante]['sonda_boveda'], [0]*18)
             self.assertEqual(t[instante]['traps'], 0)
@@ -343,6 +407,7 @@ class CryptoTests(unittest.TestCase):
             for instante in (2, 3, len(q)+2):
                 self.contrastar(q, ciclos=instante+3, reset=instante)
 
+    # Ejecuta MEM/BALB y el programa archivo real sin sustituir Feistel4 por un modelo distinto.
     def test_15_mem_balb_y_programa_archivo_real(self):
         # Se usa el programa de cifrado/descifrado real del Proyecto I, con sus
         # bucles y LSU. El mismo MEM se ejecuta con la memoria de archivo y la
@@ -381,7 +446,11 @@ class CryptoTests(unittest.TestCase):
         p = [bundle('fsl x4,x2,0,0')]+[NOP]*1022+[bundle(alu='sumai x9,x0,9')]
         self.contrastar(p, ciclos=8, balb=True)
 
+    # Contrasta programas aleatorios de cuatro slots con el procesador de referencia.
     def test_16_aleatorio_cuatro_slots(self):
+        # Fijamos la semilla y construimos programas de este escenario para repetir el mismo
+        # estímulo. El ayudante contrastar ejecuta después C y RTL y comprueba sus
+        # observaciones; aquí se preparan los datos, sin reemplazar ese oráculo.
         rng = random.Random(430111086)
         p, datos = self.cargar()
         for _ in range(120):
@@ -395,6 +464,7 @@ class CryptoTests(unittest.TestCase):
                 bru=f'igualno x{rng.randrange(32)},x{rng.randrange(32)},48'))
         self.contrastar(p, datos, ciclos=250)
 
+    # Comprueba que LSU y VCR lean los valores anteriores al flanco según la memoria RTL.
     def test_17_lecturas_preflanco_lsu_vcr(self):
         # Store A y lectura B de la misma palabra: vcr autentica con el valor
         # anterior, aunque A publique otro valor en ese flanco. La siguiente

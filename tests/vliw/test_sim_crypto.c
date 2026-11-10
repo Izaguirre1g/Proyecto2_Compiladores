@@ -6,14 +6,14 @@
 
 static unsigned checks;
 #define C(x) do { ++checks; if (!(x)) { fprintf(stderr,"FAIL S6 %d: %s\n",__LINE__,#x); exit(1); } } while (0)
-static SimInstruccion dec(uint32_t w) {
+/* Decodifica el fixture CRIPTO con S2 antes de preparar sus efectos; un rechazo inesperado invalida el caso. */ static SimInstruccion dec(uint32_t w) {
     SimInstruccion i; C(sim_decode_palabra(w,3,&i)==SIM_DECODE_OK); return i;
 }
-static SimEfectoCrypto preparar(SimBoveda *b,SimMemoria *m,uint32_t w,uint32_t a,uint32_t v,uint32_t estado) {
+/* Prepara los operandos o recursos del fixture y comprueba que la API acepte el contrato utilizado por el escenario. */ static SimEfectoCrypto preparar(SimBoveda *b,SimMemoria *m,uint32_t w,uint32_t a,uint32_t v,uint32_t estado) {
     SimInstruccion i=dec(w); SimCryptoId id; SimEfectoCrypto e;
     C(sim_crypto_capturar(&i,a,v,estado,&id)); C(sim_crypto_preparar(b,m,&id,&e)); return e;
 }
-static void unitarias(void) {
+/* Ejecuta los escenarios unitarios normales y adversariales del módulo; cada aserción conserva su oráculo explícito. */ static void unitarias(void) {
     /* Expectativas literales para extremos y rotaciones cero/31: detectan
      * shifts indefinidos y confundir desplazamiento con rotación circular. */
     C(sim_crypto_rol32(0x80000001u,0)==0x80000001u);
@@ -47,7 +47,7 @@ static void unitarias(void) {
     const uint32_t key[]={0x0f1e2d3cu,0x4b5a6978u,0x8796a5b4u,0xc3d2e1f0u};
     memcpy(b.keys[0],key,sizeof key);
     uint32_t l=0x414c4f48u,v=0x36323032u;
-    for(unsigned k=0;k<4;++k) {e=preparar(&b,&m,0x04004200u|(k<<17),l,v,1);l=e.wb.l;v=e.wb.r;}
+    /* Aplicamos las cuatro rondas y luego sus inversas en orden contrario. */ for(unsigned k=0;k<4;++k) {e=preparar(&b,&m,0x04004200u|(k<<17),l,v,1);l=e.wb.l;v=e.wb.r;}
     C(l==0x03d44466u && v==0xd685afafu);
     for(unsigned k=4;k-->0;) {e=preparar(&b,&m,0x04204200u|(k<<17),l,v,1);l=e.wb.l;v=e.wb.r;}
     C(l==0x414c4f48u && v==0x36323032u);
@@ -87,11 +87,11 @@ static void unitarias(void) {
      * una excepción de hardware en error administrativo del simulador. */
     imagen=(SimImagen){.cantidad_bundles=1}; imagen.imem[0][3]=0x04004200u;
     C(sim_pipeline_iniciar(&s,&imagen)==SIM_PIPE_ACTIVO);
-    C(sim_pipeline_ejecutar(&s,2)==SIM_PIPE_LIMITE);s.trap_count=UINT32_MAX;
+    /* El contador físico de traps envuelve a 32 bits, igual que RTL. */ C(sim_pipeline_ejecutar(&s,2)==SIM_PIPE_LIMITE);s.trap_count=UINT32_MAX;
     C(sim_avanzar_ciclo(&s)==SIM_PIPE_ACTIVO && s.trap_count==0 && s.pc==SIM_TRAP_VECTOR);
     printf("S6: %u comprobaciones unitarias PASS\n",checks);
 }
-
+/* Procesa un vector criptográfico de prueba para contrastar su resultado con el modelo independiente y el RTL. */
 static void vector(const char *ruta) {
     FILE *f=fopen(ruta,"r"); C(f!=NULL);
     unsigned l,v,k,n; int leidos;
@@ -99,12 +99,12 @@ static void vector(const char *ruta) {
         printf("F %08x %08x %08x %08x %08x %08x\n",sim_crypto_rol32(l,n),sim_crypto_f(v,k),v,l^sim_crypto_f(v,k),v^sim_crypto_f(l,k),l);
     C(leidos==EOF);C(fclose(f)==0);
 }
-
+/* Obtiene el valor del protocolo de entrada para construir el estímulo criptográfico de la sonda. */
 static void valor(const char *nombre,uint64_t v,bool *primero) {
     printf("%s\"%s\":%llu",*primero?"":",",nombre,(unsigned long long)v);*primero=false;
 }
-static void traza(const SimPipeline *s, const SimIdEx *ex, uint32_t pre) {
-    const SimCiclo *c=&s->ultimo_ciclo; bool primero=true; uint32_t ma=0,mb=0;
+/* Emite las observaciones del flanco y el estado público para compararlos con RTL; no modifica las etapas. */ static void traza(const SimPipeline *s, const SimIdEx *ex, uint32_t pre) {
+    /* La traza registra entradas previas y estado público posterior al flanco. */ const SimCiclo *c=&s->ultimo_ciclo; bool primero=true; uint32_t ma=0,mb=0;
     sim_memoria_leer_palabra(&s->memoria,c->ex_lsu.direccion,&ma);
     sim_memoria_leer_palabra(&s->memoria,c->ex_crypto.memoria.direccion,&mb);
     (void)ex; (void)pre; (void)ma; (void)mb;
@@ -185,14 +185,14 @@ static void traza(const SimPipeline *s, const SimIdEx *ex, uint32_t pre) {
     valor("ex_bru_a",(ex->valido&&ex->bru.valido)?ex->bru.a:0,&primero);
     valor("ex_bru_b",(ex->valido&&ex->bru.valido)?ex->bru.b:0,&primero);
     valor("ex_alu_resultado",c->ex.valido&&!c->excepcion?c->ex_resultado:0,&primero);
-    printf(",\"regs\":[");for(unsigned i=0;i<32;++i) printf("%s%u",i?",":"",s->registros[i]);
+    /* El banco completo detecta destinos indebidos y prioridades de puertos. */ printf(",\"regs\":[");for(unsigned i=0;i<32;++i) printf("%s%u",i?",":"",s->registros[i]);
     /* Inspección deliberadamente limitada al ejecutable de pruebas. Nunca se
      * incorpora a las trazas públicas de SimCiclo ni a una instrucción ISA. */
     printf("],\"sonda_boveda\":[%u,%u",s->boveda.password,s->boveda.pwd_set);
     for(unsigned k=0;k<4;++k)for(unsigned w=0;w<4;++w)printf(",%u",s->boveda.keys[k][w]);
     puts("]}");
 }
-int main(int argc,char **argv) {
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */ int main(int argc,char **argv) {
     if(argc==1) {unitarias();return 0;}
     if(argc==3 && !strcmp(argv[1],"vectores")) {vector(argv[2]);return 0;}
     C(argc==7);
@@ -204,7 +204,7 @@ int main(int argc,char **argv) {
     C(sim_pipeline_configurar_busqueda(s,SIM_BUSQUEDA_FISICA)==SIM_PIPE_ACTIVO);
     unsigned ciclos=(unsigned)strtoul(argv[4],NULL,10),reinicio=(unsigned)strtoul(argv[5],NULL,10);
     C(!strcmp(argv[6],"sonda"));
-    for(unsigned paso=0;paso<ciclos;++paso) {
+    /* Capturamos EX anterior y mostramos efectos después de cada flanco. */ for(unsigned paso=0;paso<ciclos;++paso) {
         if(reinicio && paso==reinicio) {C(sim_pipeline_reiniciar(s)==SIM_PIPE_ACTIVO);}
         SimIdEx ex=s->id_ex; uint32_t pre=s->pc;
         C(sim_avanzar_ciclo(s)==SIM_PIPE_ACTIVO);traza(s,&ex,pre);

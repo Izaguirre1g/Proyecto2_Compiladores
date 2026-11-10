@@ -12,8 +12,8 @@ static size_t checks, comparaciones_flancos;
  * demás llegan al asignador real. No se cambia el código de producción. */
 #ifdef SIM_EJECUCION_FALLOS
 static size_t fallar_calloc, fallar_realloc, llamadas_calloc, llamadas_realloc;
-void *__real_calloc(size_t, size_t);
-void *__real_realloc(void *, size_t);
+/* Rutina real calloc: destino de las llamadas no inyectadas. */ void *__real_calloc(size_t, size_t);
+/* Rutina real realloc: destino de las llamadas no inyectadas. */ void *__real_realloc(void *, size_t);
 /* Permite fallar por separado la sesión y la imagen para ejercitar la
  * limpieza parcial. Las comprobaciones exigen que no se publique una sesión. */
 void *__wrap_calloc(size_t n, size_t z)
@@ -64,7 +64,7 @@ static void iguales(SimEjecucion *s, const SimPipeline *ref)
     C(r.pendientes_por_etapa[1]==(unsigned)ref->id_ex.valido);
     C(r.pendientes_por_etapa[2]==(unsigned)ref->ex_wb.valido);
 }
-
+/* Crea la sesión M2 requerida por el fixture y exige una inicialización válida antes de observarla. */
 static SimEjecucion *crear(const char *ruta, bool balb, bool fisica)
 {
     SimEjecucion *s=NULL;
@@ -77,7 +77,7 @@ static SimEjecucion *crear(const char *ruta, bool balb, bool fisica)
  * reanudación, terminación estable, snapshots propios y sesiones aisladas. */
 static void unitarias(const char *nop, const char *store, const char *trap)
 {
-    SimEjecucion *s=NULL; SimMetricasResumen r; SimEjecucionEstado e;
+    /* Las consultas M2 se comparan con S6/M1, sin acceder a sesiones privadas. */ SimEjecucion *s=NULL; SimMetricasResumen r; SimEjecucionEstado e;
     C(sim_ejecucion_crear(NULL,0,0,&s,NULL)==SIM_EJECUCION_ARGUMENTO && !s);
     C(sim_ejecucion_crear("",0,0,&s,NULL)==SIM_EJECUCION_ARGUMENTO);
     C(sim_ejecucion_crear(nop,9,0,&s,NULL)==SIM_EJECUCION_ARGUMENTO);
@@ -111,7 +111,7 @@ static void unitarias(const char *nop, const char *store, const char *trap)
     C(r.ciclos==2 && r.completados==0 && r.estado==SIM_PIPE_LIMITE);
     SimEjecucion *b=crear(nop,false,false); SimMetricasResumen guardado=resultado(b);
     C(sim_ejecucion_ejecutar(s,UINT64_MAX)==0); r=resultado(s);
-    C(r.ciclos==4 && r.estado==SIM_PIPE_TERMINADO && r.bundles_nop==1 && r.instrucciones_utiles==0);
+    /* Un único NOP finito drena en cuatro ciclos sin instrucciones útiles. */ C(r.ciclos==4 && r.estado==SIM_PIPE_TERMINADO && r.bundles_nop==1 && r.instrucciones_utiles==0);
     C(resultado(b).ciclos==guardado.ciclos && resultado(b).epoca==guardado.epoca);
     /* Una vez drenado, avanzar o reintentar no debe inventar otro ciclo ni
      * retirar de nuevo el NOP. B debe seguir en su estado inicial independiente. */
@@ -239,7 +239,7 @@ static int archivo(int argc,char **argv)
     SimEjecucionCodigo codigo=SIM_EJECUCION_OK;
     if (!strcmp(argv[1],"run")) {
         iguales(s,&ref);
-        for (uint64_t n=0;n<presupuesto;++n) {
+        /* El avance unitario M2 se contrasta con S6 al mismo horizonte. */ for (uint64_t n=0;n<presupuesto;++n) {
             /* El reloj previo decide si M1 vio un flanco o solo un intento
              * rechazado. Se compara antes de que cualquiera avance otra vez. */
             uint64_t antes=ref.ciclos; SimPipelineEstado estado=sim_avanzar_ciclo(&ref);
@@ -282,12 +282,12 @@ static int archivo(int argc,char **argv)
     }
     C(fputs(out,stdout)>=0); sim_metricas_liberar_reporte(&out);
     uint8_t mem[65536]; C(sim_ejecucion_memoria(s,mem,sizeof mem)==0);
-    FILE *fmem=fopen(argv[8],"wb"); C(fmem && fwrite(mem,1,sizeof mem,fmem)==sizeof mem && fclose(fmem)==0);
+    /* Conservamos DMEM completa para comparar bytes, además del JSON M1. */ FILE *fmem=fopen(argv[8],"wb"); C(fmem && fwrite(mem,1,sizeof mem,fmem)==sizeof mem && fclose(fmem)==0);
     sim_metricas_liberar(&m); sim_liberar_imagen(&i); sim_ejecucion_liberar(&s);
     fprintf(stderr,"M2 diferencial: %zu flancos PASS\n",comparaciones_flancos);
     return fflush(stdout)!=0;
 }
-int main(int argc,char **argv)
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */ int main(int argc,char **argv)
 {
     if (argc==5 && !strcmp(argv[1],"unit")) { unitarias(argv[2],argv[3],argv[4]); return 0; }
     return archivo(argc,argv);

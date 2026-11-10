@@ -23,6 +23,8 @@ module tb_sim_crypto_ref;
  string ruta,previo;
  integer fd,n,rot;
  logic [31:0] l,r,k;
+ // Los vectores prueban la función Feistel combinacional; el modo de programa contrasta
+ // permisos, excepciones y efectos de los cuatro slots.
  initial begin
   if($value$plusargs("VECTORES=%s",ruta)) begin
    fd=$fopen(ruta,"r");if(!fd)$fatal(1,"vectores inaccesibles");
@@ -65,6 +67,8 @@ module tb_sim_crypto_ref;
     // Los selectores guardados siguen señalando las palabras del EX anterior
     // cuando, después de NBA, los buses ya pertenecen al siguiente bundle.
     #1;clk=1;#1;
+    // El retardo posterior al posedge deja terminar las NBA: ahora los registros y efectos
+    // publicados pertenecen al flanco que acabamos de capturar.
     $write("%s",previo);
     $write(",\"pc\":%0d",DUT.pc);
 $write(",\"estado\":%0d",DUT.crypto_estado);
@@ -84,6 +88,8 @@ $write(",\"completados\":%0d",completados);
 $write(",\"anulados\":%0d",anulados);
     $write(",\"regs\":[");for(integer j=0;j<32;j=j+1)$write("%s%0d",j?",":"",DUT.REGFILE.regs[j]);
     $write("],\"sonda_boveda\":[%0d,%0d",DUT.CRYPTO.VAULT.password,DUT.CRYPTO.VAULT.pwd_set);
+    // Solo la sonda de prueba recorre llaves privadas para el contraste RTL/C. Esta inspección
+    // no agrega getters públicos ni permite que los reportes M1/M2 exporten la bóveda.
     for(integer j=0;j<4;j=j+1)for(integer w=0;w<4;w=w+1)$write(",%0d",DUT.CRYPTO.VAULT.keys[j][w]);
     $write("]}\n");clk=0;#2;
    end

@@ -25,6 +25,8 @@ class CargadorTests(unittest.TestCase):
         cls.prueba = cls.carpeta / "test_sim_cargador"
         # Compilar únicamente lector y prueba demuestra que el módulo no
         # necesita enlazar parser, semántica, codificador ni futuro scheduler.
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. La preparación no reutiliza binarios antiguos del repositorio.
         cmd = shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-O2",
             "-Iinclude", "tests/vliw/test_sim_cargador.c", "src/Simulador_VLIW/sim_cargador.c",
@@ -44,11 +46,15 @@ class CargadorTests(unittest.TestCase):
                          resultado.stdout + resultado.stderr)
         return resultado
 
+    # Ejecuta el banco C del cargador y exige sus rechazos de formatos, límites y argumentos
+    # inválidos.
     def test_validaciones_unitarias(self):
         # Sin rutas, el ejecutable C construye sus entradas temporales y verifica
         # contenido, errores de formato y recursos. Se espera que termine con 0.
         self.ejecutar([self.prueba])
 
+    # Limita los descriptores disponibles y comprueba que el cargador cierre archivos en todos
+    # sus caminos.
     def test_recursos_con_limite_de_archivos(self):
         # Si un rechazo pierde descriptores, las 128 repeticiones fallan bajo
         # este límite. Solo se cambia el límite del proceso de prueba hijo.
@@ -65,6 +71,8 @@ class CargadorTests(unittest.TestCase):
         self.assertEqual(resultado.returncode, 0,
                          resultado.stdout + resultado.stderr)
 
+    # Carga los seis programas históricos y compara las imágenes MEM/BALB producidas por las
+    # herramientas reales.
     def test_seis_programas_del_proyecto_i(self):
         # Cada fuente existente se compila al directorio temporal. subTest
         # identifica cuál programa falla; se esperan imágenes MEM/BALB iguales
@@ -79,6 +87,7 @@ class CargadorTests(unittest.TestCase):
                 # paralelo inventado por las pruebas del cargador.
                 self.ejecutar([self.prueba, destino.with_suffix(".mem"), destino])
 
+    # Carga el fixture de toda la ISA y comprueba orden físico de slots y palabras.
     def test_fixture_de_las_34_instrucciones(self):
         # -x empaqueta el fixture del ensamblador en BALB. La prueba C compara
         # su código con el MEM de referencia, que contiene las 34 instrucciones.
@@ -94,6 +103,7 @@ class CargadorTests(unittest.TestCase):
         self.assertEqual(raw[48:], fixture.with_suffix(".bin").read_bytes())
         self.assertEqual(struct.unpack_from("<I", raw, 44)[0], 0)
 
+    # Compila globales y verifica los bytes iniciales de DMEM cargados desde BALB.
     def test_constantes_globales_en_dmem(self):
         # Caso del mismo lenguaje usado por test_formato_binario: confirma
         # signos, datos no vacíos y flag de inicialización del arranque.
@@ -108,6 +118,9 @@ create_funk #declare_infinite_void# main() { valor * declare_int : A; }
         # Desde el byte 32 se leen cuatro campos little-endian de 32 bits:
         # offset de datos, longitud, base en DMEM y flags. No son instrucciones.
         offset, cantidad, base, flags = struct.unpack_from("<4I", raw, 32)
+        # La sección global del BALB tiene dirección y contenido propios, distintos del
+        # encabezado y del código. Estas comprobaciones detectan que S1 la ubique en DMEM usando
+        # el offset del archivo como dirección.
         self.assertEqual((cantidad, base, flags), (8, 0x4000, 1))
         # <2i representa dos enteros con signo en little-endian. Se exige el
         # payload exacto de 5 y -7 antes de comprobar que el cargador lo copia

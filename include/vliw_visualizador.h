@@ -57,5 +57,8 @@ VliwVisualEstado vliw_visualizar(const VliwEntrada *entrada, const VliwPlan *pla
     const VliwDestinos *destinos, VliwVisualFormato formato,
     const VliwVisualOpciones *opciones, char **salida,
     VliwVisualDiagnostico *diagnostico);
+/*
+ * Libera el texto propio del visualizador y anula el puntero del cliente; admite NULL.
+ */
 void vliw_visual_liberar(char **salida);
 #endif

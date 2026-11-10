@@ -4,6 +4,10 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+/*
+ * Valida la CLI, crea una sesión M2 y ejecuta el presupuesto solicitado; exporta M1 cuando es
+ * válido y conserva los estados de límite o error antes de liberar la sesión.
+ */
 int main(int argc, char **argv)
 {
     /* Los cinco argumentos fijan formato MEM/BALB, ruta, búsqueda, presupuesto

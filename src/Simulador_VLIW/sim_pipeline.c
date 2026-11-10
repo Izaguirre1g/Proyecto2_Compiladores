@@ -11,6 +11,9 @@ static SimPipelineEstado detener(SimPipeline *sim, SimPipelineEstado estado,
                                  SimDecodeEstado dec, const char *causa)
 {
     sim->estado = estado;
+    // El diagnóstico identifica el intento siguiente, con su PC y slot si existe instrucción. No
+    // publica un nuevo SimCiclo ni cambia GPR, DMEM o etapas: es una detención administrativa
+    // anterior al flanco.
     sim->error = (SimErrorPipeline){.ciclo = sim->ciclos + 1, .pc = pc,
         .palabra = palabra, .slot = slot, .tiene_instruccion = slot < 4,
         .indice_bundle = slot < 4 ? pc / SIM_CARGADOR_BYTES_BUNDLE : SIZE_MAX,
@@ -357,6 +360,9 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
                 .ciclo = ciclo.ciclo, .pc = wb->pc, .valor = wb->bru.valor,
                 .destino = wb->bru.destino};
         }
+        // La escritura de AUTH y el borrado de INIT pertenecen al WB anterior. ID ya capturó el
+        // estado previo en este flanco: publicar estas marcas ahora no concede autorización
+        // retroactiva a otra instrucción.
         ciclo.wb_crypto = wb->crypto;
         if (wb->crypto.auth_we)
             siguiente.estado_crypto = (siguiente.estado_crypto & ~UINT32_C(1)) | wb->crypto.auth;
@@ -390,6 +396,9 @@ SimPipelineEstado sim_avanzar_ciclo(SimPipeline *sim)
     siguiente.ultimo_ciclo = ciclo;
     /* Solo el modo finito vacía por extensión. Si EX volvió al programa,
      * limpió fin_busqueda antes de esta decisión y no puede terminar aquí. */
+    // El modo finito termina solo cuando ya no habrá búsquedas y las tres etapas quedaron
+    // inválidas. Una etapa NOP válida aún debe retirarse: quitarla aquí alteraría el número de
+    // bundles completados y ciclos.
     siguiente.estado = siguiente.fin_busqueda && !siguiente.if_id.valido &&
         !siguiente.id_ex.valido && !siguiente.ex_wb.valido ? SIM_PIPE_TERMINADO : SIM_PIPE_ACTIVO;
     /* Todas las validaciones ya pasaron. Publicar memoria ahora reproduce

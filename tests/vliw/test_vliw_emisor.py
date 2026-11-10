@@ -51,6 +51,8 @@ class EmisorTests(unittest.TestCase):
     compilar = s7.SchedulerTests.__dict__['compilar']
     verificar_independiente = s7.SchedulerTests.verificar_independiente
 
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='pruebas-s8a-')
@@ -58,6 +60,9 @@ class EmisorTests(unittest.TestCase):
         cls.dir = Path(cls.tmp.name)
         cls.comandos, cls.ejemplos = [], []
         cls.planes = cls.ejecuciones = cls.ciclos = cls.rtl_programas = cls.rtl_ciclos = 0
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. Las variantes de inyección se enlazan aparte: permiten provocar fallos
+        # sin cambiar las bibliotecas bajo prueba.
         cls.cc = shlex.split(os.environ.get('CC', 'cc'))
         cls.flags = ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude']
         fuentes = ['src/Calendarizacion_VLIW/vliw_emisor.c', 'src/Calendarizacion_VLIW/vliw_scheduler.c', fuente_compartida(ROOT, 'src/codificacion_binaria.c'),
@@ -81,6 +86,7 @@ class EmisorTests(unittest.TestCase):
                       '-s', 'tb_sim_crypto_ref', '-o', cls.sv, ROOT/'tests/vliw/rtl/tb_sim_crypto_ref.sv']+
                      argumentos_rtl(cls.arch))
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         evidencia = dict(planes=cls.planes, ejecuciones=cls.ejecuciones, ciclos=cls.ciclos,
@@ -91,6 +97,7 @@ class EmisorTests(unittest.TestCase):
         if os.environ.get('S8_EVIDENCIA'):
             Path(os.environ['S8_EVIDENCIA']).write_text(json.dumps(evidencia, indent=2)+'\n')
 
+    # Ejecuta las comprobaciones C de texto, CFG, codificador y fallos del emisor.
     def test_01_unitarias(self):
         salida = self.ejecutar([self.bin])
         self.assertRegex(salida, r'S8-A: \d+ escenarios, \d+ comprobaciones PASS')
@@ -98,6 +105,8 @@ class EmisorTests(unittest.TestCase):
         type(self).fallos_resultado = self.ejecutar([self.fallos, 'fallos']).strip()
         self.assertIn('4 fallos IO PASS', self.fallos_resultado)
 
+    # Entrega los metadatos al scheduler real y recoge el plan o rechazo del caso; no deduce
+    # dependencias ausentes.
     def planificar(self, instrucciones, aristas=(), bloques=None):
         bloques = bloques or [(0, len(instrucciones), [])]
         self.ins, self.aristas, self.bloques = instrucciones, aristas, bloques
@@ -116,6 +125,8 @@ class EmisorTests(unittest.TestCase):
         self.emitido = salida.read_text()
         # Oráculo estructural distinto del emisor: cada etiqueta ocupa cero
         # bytes y cada línea de cuatro slots conserva el índice del plan.
+        # Leemos el ASM real emitido y verificamos etiquetas y líneas de bundle contra el mapa.
+        # Las etiquetas no consumen IMEM y deben preceder las guardas NOP del bloque de destino.
         filas = self.emitido.splitlines()
         q = 0
         for fila in filas:
@@ -140,9 +151,13 @@ class EmisorTests(unittest.TestCase):
         type(self).planes += 1
         return p
 
+    # Convierte el plan de prueba a su representación ejecutable manteniendo slots, destinos y
+    # NOP.
     def renderizar(self, ins, bloques, p=None):
         return self.emitido if p else s7.SchedulerTests.renderizar(self, ins, bloques)
 
+    # Compila y ejecuta la representación de referencia del caso para contrastarla con la salida
+    # calendarizada.
     def ejecutar_fuente(self, texto, datos, ciclos):
         fuente, mem, binario = self.dir/'programa.asm', self.dir/'programa.mem', self.dir/'programa.bin'
         fuente.write_text(texto)
@@ -167,6 +182,9 @@ class EmisorTests(unittest.TestCase):
             self.assertEqual(len(st), ciclos)
             for a, b in zip(trazas, st):
                 for campo, valor in a.items():
+                    # El contraste con RTL recorre cada campo de la traza en su mismo flanco.
+                    # Igualar únicamente el estado final no detectaría una lectura de ID
+                    # adelantada o un resultado publicado antes de tiempo.
                     self.assertEqual(valor, b[campo], (a['c'], campo))
             self.assertEqual(memoria, {x['mem']: x['valor'] for x in sv if 'mem' in x})
             type(self).rtl_programas += 1
@@ -184,6 +202,8 @@ class EmisorTests(unittest.TestCase):
         type(self).ciclos += ciclos
         return trazas[-1], memoria
 
+    # Ejecuta la misma imagen en simulador C y referencia y compara las observaciones públicas
+    # del caso.
     def contrastar(self, ins, aristas, bloques=None, datos=None, ciclos=180, nombre='ejemplo'):
         # Destinos explícitos por fixture. Nunca se deducen del offset viejo
         # ni del orden de los sucesores; los textos anteriores solo son entrada.
@@ -194,6 +214,9 @@ class EmisorTests(unittest.TestCase):
         a, m = s7.SchedulerTests.contrastar(self, ins, aristas, bloques, datos, ciclos, nombre)
         # Comprueba las operaciones que llegaron realmente a WB, incluso si
         # el resultado final coincide por casualidad o el consumidor escribe0.
+        # Contamos las instrucciones realmente observadas en las rutas de ambos layouts. Igualar
+        # solo el estado final podría esconder operaciones omitidas; por eso también comprobamos
+        # rutas y multiplicidades.
         observados = []
         for traza, mapa in ((self.traza_opt, self.plan['mapa']), (self.traza_base, [3*i for i in range(len(ins))])):
             por_pc = collections.defaultdict(list)
@@ -210,6 +233,9 @@ class EmisorTests(unittest.TestCase):
             esperado.update({1: 3, 2: 3})
         elif nombre == 'bucle-inicial':
             esperado.update({0: 3, 1: 3, 2: 3})
+        # Contar las operaciones realmente observadas impide aceptar dos layouts que terminan
+        # igual por casualidad pero omiten rutas o repiten consumidores. El esperado depende del
+        # camino tomado y de las iteraciones del fixture.
         self.assertEqual(dict(observados[0]), esperado, 'deben ejecutarse las rutas y consumidores previstos')
         ejemplo = type(self).ejemplos[-1]
         n = len(self.plan['bundles'])
@@ -225,6 +251,7 @@ class EmisorTests(unittest.TestCase):
     test_06_bucle_inicial = s7.SchedulerTests.test_10_ejecucion_bucle_hacia_bloque_inicial
     test_07_cripto = s7.SchedulerTests.test_11_ejecucion_cripto_estado_y_par
 
+    # Emite y ejecuta las operaciones criptográficas conservando slots y metadatos físicos.
     def test_08_seis_operaciones_cripto(self):
         # Contraseña7 y llaves cero: Feistel+inversa recuperan (7,0).
         # camcon rota tanto contraseña como candidata a896; vcr mantiene AUTH.
@@ -244,11 +271,13 @@ class EmisorTests(unittest.TestCase):
         a, m = self.contrastar(ins, aristas, nombre='seis-cripto')
         self.assertEqual((a['regs'][12], a['estado'], m[0]), (7, 1, 896))
 
+    # Empaqueta ALU independientes y contrasta la ejecución emitida con la referencia.
     def test_09_alu_independientes(self):
         ins = [s7.op(escribe=[r], texto=f'sumai x{r},x0,{r}') for r in (5, 6, 7)]
         a, _ = self.contrastar(ins, [], nombre='alu-independiente')
         self.assertEqual(a['regs'][5:8], [5, 6, 7])
 
+    # Emite llamada y retorno y comprueba etiquetas, enlaces y continuación.
     def test_10_llamada_y_retorno(self):
         # El enlace vuelve al primer guard NOP de B1. El sye de B1 evita
         # caer de nuevo en la función; se exige una visita a cada operación.
@@ -267,6 +296,7 @@ class EmisorTests(unittest.TestCase):
         # finales entre políticas exige borrar explícitamente el enlace al salir.
         self.assertEqual(a['regs'][6:9], [8, 9, 10])
 
+    # Emite un programa con excepción CRIPTO y verifica que conserve su comportamiento.
     def test_11_excepcion_cripto(self):
         # FSL sin AUTH debe anular ambos destinos y redirigir al vector;
         # el RTL y S6 reciben exactamente la imagen emitida por S8-A.

@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas
+ * son comprobados por la suite Python.
+ */
 int main(int argc, char **argv)
 {
     /* El presupuesto acota incluso el bucle final del arranque de balc. Este
