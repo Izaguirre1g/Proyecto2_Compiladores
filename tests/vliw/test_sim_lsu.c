@@ -8,21 +8,21 @@ static size_t comprobaciones;
 #define C(c) do { ++comprobaciones; if (!(c)) { \
     fprintf(stderr,"FAIL LSU línea %d: %s\n",__LINE__,#c); exit(1); } } while (0)
 static const SimOperacion ops[] = {SIM_OP_GUARDAP,SIM_OP_GUARDAB,SIM_OP_CARGAI,SIM_OP_CARGABAI};
-
+/* Prepara un acceso LSU con operación, dirección y datos controlados para probar sus efectos. */
 static SimAccesoLsu acceso(SimMemoria *m, SimOperacion op, uint32_t base, uint32_t dato, int32_t off)
 {
     SimAccesoLsu t;
     C(sim_lsu_preparar(m,op,base,dato,off,&t));
     return t;
 }
-
+/* Lee una palabra de la memoria de prueba para contrastar el contenido esperado después de los accesos. */
 static uint32_t palabra(const SimMemoria *m, uint32_t dir)
 {
     uint32_t v;
     C(sim_memoria_leer_palabra(m,dir,&v));
     return v;
 }
-
+/* Comprueba palabras y bytes de DMEM, incluidos alineamiento, extensión y extremos de dirección. */
 static void memoria_y_bytes(void)
 {
     /* La palabra no alineada en 3 selecciona [0..3], nunca [3..6]. Los bytes
@@ -37,7 +37,7 @@ static void memoria_y_bytes(void)
     C(acceso(&m,SIM_OP_CARGAI,1,0,0).resultado==0x12345678);
     const uint32_t bytes[] = {0,0x7f,0x80,0xff};
     const uint32_t signos[] = {0,0x7f,0xffffff80u,UINT32_MAX};
-    for (unsigned pos=0;pos<4;++pos) {
+    /* Probamos cada carril del byte; los vecinos deben permanecer intactos. */ for (unsigned pos=0;pos<4;++pos) {
         for (unsigned n=0;n<4;++n) {
             /* Reinicia la palabra conocida y modifica un único carril con un
              * fuente de bits altos no cero: solo su octeto bajo debe sobrevivir. */
@@ -82,11 +82,11 @@ static uint32_t lsu(unsigned id,unsigned base,unsigned reg,int off)
 {
     return (0x49u<<25)|(id<<21)|(base<<16)|(reg<<11)|((uint32_t)off&2047u);
 }
-static uint32_t sumai(unsigned rd,unsigned rs,int off)
+/* Construye la palabra SUMAI del fixture con los campos recibidos; no ejecuta ni resuelve hazards. */ static uint32_t sumai(unsigned rd,unsigned rs,int off)
 {
     return (0x40u<<25)|(rs<<16)|(rd<<11)|((uint32_t)off&2047u);
 }
-
+/* Ejecuta LSU en el pipeline y comprueba publicación, reset y liberación de recursos del fixture. */
 static void pipeline_y_recursos(void)
 {
     /* B0 almacena x0 en EX del ciclo 3; B1 carga ese cero en EX del 4 y lo
@@ -101,7 +101,7 @@ static void pipeline_y_recursos(void)
     C(sim_avanzar_ciclo(&s)==SIM_PIPE_ACTIVO);
     C(s.ultimo_ciclo.ex_lsu.escritura && s.memoria.bytes[0]==0);
     C(otro.memoria.bytes[0]==0x80 && imagen.dmem[0]==0x80);
-    C(sim_avanzar_ciclo(&s)==SIM_PIPE_ACTIVO && s.ex_wb.lsu.valida && s.registros[2]==0);
+    /* La carga ya llegó a EX/WB, pero su GPR no cambia hasta el próximo WB. */ C(sim_avanzar_ciclo(&s)==SIM_PIPE_ACTIVO && s.ex_wb.lsu.valida && s.registros[2]==0);
     C(sim_avanzar_ciclo(&s)==SIM_PIPE_TERMINADO && s.ultimo_ciclo.lsu_wb_escribe);
     C(s.bundles_completados==2 && !s.ultimo_ciclo.wb_escribe);
     C(sim_pipeline_reiniciar(&s)==SIM_PIPE_ACTIVO && s.memoria.bytes[0]==0);
@@ -153,7 +153,7 @@ static void pipeline_y_recursos(void)
     C(sim_pipeline_iniciar(&s,NULL)==SIM_PIPE_ARGUMENTO);
     C(sim_avanzar_ciclo(&s)==SIM_PIPE_ARGUMENTO);
 }
-
+/* Escribe el estado de los 32 registros en el protocolo que consumirá Python para el contraste diferencial. */
 static void registros(const SimPipeline *s)
 {
     printf("\"regs\":[");
@@ -161,12 +161,12 @@ static void registros(const SimPipeline *s)
     printf("]}");
     putchar('\n');
 }
-
+/* Emite las observaciones del flanco y el estado público para compararlos con RTL; no modifica las etapas. */
 static void traza(const SimPipeline *s)
 {
     const SimCiclo *c=&s->ultimo_ciclo;
     const SimAccesoLsu *t=&c->ex_lsu;
-    uint32_t post=0; sim_memoria_leer_palabra(&s->memoria,t->direccion,&post);
+    /* Los buses EX son previos; post permite comprobar el store ya publicado. */ uint32_t post=0; sim_memoria_leer_palabra(&s->memoria,t->direccion,&post);
     printf("{\"c\":%llu,\"pc\":%u,\"stages\":[%u,%u,%u,%u],\"pcs\":[%u,%u,%u,%u],",
         (unsigned long long)c->ciclo,s->pc,c->if_.valido,c->id.valido,c->ex.valido,c->wb.valido,
         c->if_.pc,c->id.pc,c->ex.pc,c->wb.pc);
@@ -182,7 +182,7 @@ static void traza(const SimPipeline *s)
     printf("\"w1_valida\":%u,",c->wb_lsu.valida);
     registros(s);
 }
-
+/* Lee los vectores externos y ejecuta cada operación para compararla con la referencia de hardware. */
 static int vectores(const char *ruta)
 {
     FILE *f=fopen(ruta,"r"); C(f!=NULL);
@@ -201,7 +201,7 @@ static int vectores(const char *ruta)
     }
     C(n==EOF && !ferror(f)); C(fclose(f)==0); return 0;
 }
-
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */
 int main(int argc,char **argv)
 {
     if(argc==1) {
@@ -226,7 +226,7 @@ int main(int argc,char **argv)
     /* argv[5] reserva la restauración explícita para pruebas; no es una opción
      * nueva de BALC. La sonda conserva dos memorias iniciales idénticas al RTL. */
     bool restaurar=strcmp(argv[5],"restaurar")==0;
-    for(unsigned n=0;n<limite && s.estado==SIM_PIPE_ACTIVO;++n) {
+    /* Cada avance real genera una traza; un error no repite la traza anterior. */ for(unsigned n=0;n<limite && s.estado==SIM_PIPE_ACTIVO;++n) {
         if(reinicio && n==reinicio) {
             uint32_t dir=s.id_ex.lsu.valido?s.id_ex.lsu.base+(uint32_t)s.id_ex.lsu.offset:0;
             uint32_t antes=palabra(&s.memoria,dir);

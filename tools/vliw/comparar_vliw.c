@@ -4,6 +4,11 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+/*
+ * Valida formatos, modo y presupuesto de ambas imágenes, invoca B1 y exporta su conclusión;
+ * conserva códigos distintos para equivalencia, diferencia, inconclusión y error y libera los
+ * recursos.
+ */
 int main(int argc,char **argv)
 {
     /* Cada archivo declara su formato; un presupuesto común limita por
@@ -21,6 +26,9 @@ int main(int argc,char **argv)
         .candidato={argv[4],!strcmp(argv[3],"mem")?SIM_EJECUCION_MEM:SIM_EJECUCION_BALB},
         .modo=!strcmp(argv[5],"finita")?SIM_BUSQUEDA_FINITA:SIM_BUSQUEDA_FISICA,
         .presupuesto=(uint64_t)n,.reintentos=2};
+    // B1 adquiere ambas sesiones M2, comprueba iniciales y ejecuta la comparación estricta. La
+    // CLI solo traduce sus opciones y entrega su reporte; no implementa otro comparador de
+    // registros ni memoria.
     SimComparador *c=NULL;SimComparadorCodigo e=sim_comparador_ejecutar(&o,&c,stderr);
     if (e!=SIM_COMPARADOR_OK) { fprintf(stderr,"comparador: error de construcción %u\n",(unsigned)e);return 1; }
     SimComparadorResumen r;(void)sim_comparador_resumen(c,&r);

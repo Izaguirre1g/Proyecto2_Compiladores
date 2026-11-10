@@ -21,6 +21,8 @@ NOP=('nop','nop','nop')
 
 
 class BruTests(unittest.TestCase):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.temporal=tempfile.TemporaryDirectory(prefix='pruebas-bru-')
@@ -29,6 +31,8 @@ class BruTests(unittest.TestCase):
         cls.sonda=cls.carpeta/'bru'
         cls.vectores=cls.ciclos=cls.programas=0
         cls.comandos=[]
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. La preparación no reutiliza binarios antiguos del repositorio.
         cc=shlex.split(os.environ.get('CC','cc'))
         cmd=cc+['-std=c11','-Wall','-Wextra','-Wpedantic','-Werror','-O2','-Iinclude',
             'tests/vliw/test_sim_bru.c','src/Simulador_VLIW/sim_bru.c','src/Simulador_VLIW/sim_pipeline.c', 'src/Simulador_VLIW/sim_crypto.c','src/Simulador_VLIW/sim_lsu.c',
@@ -51,6 +55,7 @@ class BruTests(unittest.TestCase):
             if p.returncode: raise RuntimeError(p.stdout+p.stderr)
             cls.comandos.append(dict(comando=cmd,codigo=p.returncode))
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         print(f'Contraste S5: {cls.vectores} vectores BRU/PC, {cls.ciclos} ciclos, {cls.programas} ejecuciones top.')
@@ -58,6 +63,8 @@ class BruTests(unittest.TestCase):
             Path(os.environ['S5_EVIDENCIA']).write_text(json.dumps(dict(vectores=cls.vectores,
                 ciclos=cls.ciclos,programas=cls.programas,comandos=cls.comandos),indent=2)+'\n')
 
+    # Invoca el ejecutable del caso con sus argumentos y comprueba su retorno; devuelve la
+    # salida para contrastar datos.
     def ejecutar(self,cmd,esperado=0):
         p=subprocess.run(list(map(str,cmd)),cwd=ROOT,capture_output=True,text=True)
         self.comandos.append(dict(comando=list(map(str,cmd)),codigo=p.returncode))
@@ -65,10 +72,17 @@ class BruTests(unittest.TestCase):
         self.ultimo_stderr=p.stderr
         return p.stdout
 
+    # Marca SKIP cuando falta la referencia o las herramientas RTL; evita presentar una omisión
+    # como contraste exitoso.
     def exigir_rtl(self):
         if not self.rtl_disponible: self.skipTest('se requieren Arquitectura, iverilog y vvp para contraste real')
 
+    # Ensambla los bundles de la prueba con la herramienta real y guarda una imagen MEM temporal
+    # sin reparar hazards deliberados.
     def crear_mem(self,programa,raw=None):
+        # Fijamos la semilla y construimos programas de este escenario para repetir el mismo
+        # estímulo. El ayudante contrastar ejecuta después C y RTL y comprueba sus
+        # observaciones; aquí se preparan los datos, sin reemplazar ese oráculo.
         self.exigir_rtl()
         bundles=[]
         for n,fila in enumerate(programa):
@@ -86,6 +100,8 @@ class BruTests(unittest.TestCase):
         ruta.write_text('\n'.join(texto)+'\n')
         return ruta
 
+    # Ejecuta la misma imagen en simulador C y referencia y compara las observaciones públicas
+    # del caso.
     def contrastar(self,programa,datos=None,presupuesto=200,fisica=False,reset=0,raw=None,balb=None):
         self.exigir_rtl()
         ruta=self.crear_mem(programa,raw)
@@ -106,6 +122,9 @@ class BruTests(unittest.TestCase):
         rtl=[json.loads(l) for l in self.ejecutar(args).splitlines() if l.startswith('{')]
         cm={v['mem']:v['valor'] for v in salida if 'mem' in v}
         rm={v['mem']:v['valor'] for v in rtl if 'mem' in v}
+        # Los mapas reconstruyen la DMEM final de C y RTL; las palabras omitidas representan
+        # ceros. Compararlos detecta también escrituras fuera de las direcciones esperadas del
+        # programa.
         self.assertEqual(cm,rm,'DMEM final completa')
         rtl=[v for v in rtl if 'mem' not in v]
         self.assertEqual(len(c),len(rtl))
@@ -123,6 +142,10 @@ class BruTests(unittest.TestCase):
                         self.assertEqual(r,1)
                         self.assertEqual(sim['pcs'][n],hw['pcs'][n])
                     elif r:
+                        # Solo el modo finito deja de admitir búsquedas al terminar el código
+                        # cargado; el RTL puede seguir buscando NOP fuera de esa extensión.
+                        # Dentro del código, o en modo físico, esa diferencia de validez sería
+                        # un error.
                         self.assertFalse(fisica,'diferencia de validez en modo físico')
                         self.assertGreaterEqual(hw['pcs'][n],fin,'diferencia dentro del código')
                 # En flush no se acepta ni decodifica ID. Su contenido raw no
@@ -137,6 +160,9 @@ class BruTests(unittest.TestCase):
                     self.assertEqual(sim['target'],hw['target'])
                     self.assertEqual(sim['x'][0],hw['x'][0])
                     if sim['x'][0]:
+                        # La transacción LSU describe los buses anteriores al flanco; la palabra
+                        # posterior muestra el efecto ya publicado. Ambas fases deben coincidir
+                        # con RTL para detectar un store adelantado o tardío.
                         self.assertEqual(sim['x'],hw['x'])
                         self.assertEqual(sim['postmem'],hw['postmem'])
                 for n in range(2):
@@ -161,6 +187,9 @@ class BruTests(unittest.TestCase):
                         self.assertFalse(fisica)
                         self.assertGreaterEqual(hw['next_pc'][n],fin)
                 if sim['flush']:
+                    # El redirect debe limpiar las etapas jóvenes y seleccionar el destino de
+                    # EX. Conservar una de esas etapas permitiría ejecutar instrucciones del
+                    # camino descartado.
                     self.assertEqual(sim['next'][:2],[0,0])
                     self.assertEqual(sim['pc'],sim['target'])
                 # Los contadores incluyen solo IF efectivamente capturado.
@@ -172,9 +201,11 @@ class BruTests(unittest.TestCase):
         type(self).programas+=1
         return c,cm,resumen
 
+    # Ejecuta pruebas C de BRU y control de flujo y exige sus resultados esperados.
     def test_01_unitarias_bru_y_control(self):
         self.assertIn('181 comprobaciones',self.ejecutar([self.sonda]))
 
+    # Contrasta vectores de BRU y PC con el RTL real.
     def test_02_vectores_bru_pc_reales(self):
         self.exigir_rtl()
         rng=random.Random(430111085)
@@ -195,6 +226,7 @@ class BruTests(unittest.TestCase):
         for n,(a,b) in enumerate(zip(c,rtl)): self.assertEqual(a,b,f'vector {n}: {filas[n]}')
         type(self).vectores=len(filas)
 
+    # Reproduce el salto tomado y comprueba redirect, flush y enlace.
     def test_03_tabla_salto_tomado(self):
         # B0 calcula ALU, almacena y salta. B1/B2 producirían cambios visibles,
         # pero el flush de EX/ciclo3 debe impedir todos sus efectos posteriores.
@@ -213,6 +245,7 @@ class BruTests(unittest.TestCase):
         if os.environ.get('S5_TABLA_TOMADO'):
             Path(os.environ['S5_TABLA_TOMADO']).write_text(json.dumps(t,indent=2)+'\n')
 
+    # Reproduce el salto no tomado y comprueba avance secuencial sin flush.
     def test_04_tabla_salto_no_tomado(self):
         p=[('sumai x5,x0,7','nop','igualno x0,x0,48'),
            ('sumai x6,x0,8','nop','nop'),('sumai x7,x0,9','nop','nop'),NOP]
@@ -224,6 +257,7 @@ class BruTests(unittest.TestCase):
         if os.environ.get('S5_TABLA_NO_TOMADO'):
             Path(os.environ['S5_TABLA_NO_TOMADO']).write_text(json.dumps(t,indent=2)+'\n')
 
+    # Comprueba las cuatro condiciones, tanto tomadas como no tomadas.
     def test_05_cuatro_condiciones_tomadas_y_no_tomadas(self):
         # x1=-1 y x2=1 disponibles tras N+3. Invertir fuentes y comparar un
         # registro consigo mismo cubre ambos resultados de cada condición.
@@ -240,6 +274,7 @@ class BruTests(unittest.TestCase):
                 self.assertEqual(bool(ex['flush']),tomado)
                 self.assertEqual(t[-1]['regs'][5],0 if tomado else 99)
 
+    # Coloca código inválido o CRIPTO en la ruta anulada y exige que el flush evite sus efectos.
     def test_06_camino_incorrecto_invalido_o_crypto(self):
         # Las palabras inválidas causarían rechazo sin redirect; VCR ahora es
         # válida en S6. Con salto tomado se descartan antes de aceptar S2,
@@ -254,6 +289,7 @@ class BruTests(unittest.TestCase):
                 self.assertEqual(m,{0:17,4:19})
                 self.assertEqual(t[-1]['regs'][5:7],[0,0])
 
+    # Provoca conflictos entre los tres puertos y contrasta su prioridad de publicación.
     def test_07_conflictos_tres_puertos(self):
         datos=bytearray(65536);datos[0]=99
         # Se ejecutan ambos saltos de enlace. Los casos indirectos inicializan
@@ -273,10 +309,14 @@ class BruTests(unittest.TestCase):
                     if indirecto: esperado[2]=0x83
                     for rd,v in ((a,7),(l,99),(b,pc+16)):
                         if rd: esperado[rd]=v
+                    # Ante destinos coincidentes, el enlace BRU se publica después de ALU y LSU
+                    # y gana la escritura. El banco completo permite detectar que se aplicó una
+                    # prioridad distinta.
                     self.assertEqual(t[-1]['regs'],esperado)
                     self.assertEqual(bool(wb['conflicto']),len({d for d in destinos if d})<sum(bool(d) for d in destinos))
                     self.assertEqual(wb['w2'][0],int(b!=0))
 
+    # Produce operandos con ALU/load y los usa en BRU en N+1, N+2 y N+3.
     def test_08_alu_y_load_a_bru_n_mas_1_2_3(self):
         datos=bytearray(65536);datos[0]=1
         for productor,d in itertools.product(('alu','lsu'),(1,2,3)):
@@ -286,6 +326,9 @@ class BruTests(unittest.TestCase):
                 p += [NOP]*(8-len(p))
                 t,_,_=self.contrastar(p,datos)
                 lectura=t[d+1]
+                # La BRU lee operandos en ID sin forwarding. Solo la separación N+3 permite usar
+                # el resultado del productor; adelantar la lectura cambiaría la decisión del
+                # salto.
                 self.assertEqual((lectura['c'],lectura['idbru'][1]),(d+2,1 if d==3 else 0))
                 ex=t[d+2]
                 self.assertEqual(bool(ex['flush']),d<3)
@@ -293,6 +336,7 @@ class BruTests(unittest.TestCase):
                 # de escribir x2 en el flanco de su lectura ID.
                 self.assertEqual(t[3]['regs'][2],1)
 
+    # Lee el enlace dentro del mismo bundle y comprueba que no exista forwarding.
     def test_09_enlace_no_forwarding_mismo_bundle(self):
         p=[('suma x5,x31,x0','nop','sye x31,48'),NOP,NOP,('suma x6,x31,x0','nop','nop')]
         t,_,_=self.contrastar(p)
@@ -300,6 +344,7 @@ class BruTests(unittest.TestCase):
         self.assertEqual(t[4]['idalu'][0],16)
         self.assertEqual([t[-1]['regs'][n] for n in (5,6,31)],[0,16,16])
 
+    # Ejecuta llamada y retorno con el enlace ya disponible y verifica la ruta observada.
     def test_10_llamada_y_ret_con_enlace_ya_disponible(self):
         # El destino comienza a leerse DESPUÉS de WB gracias al flush de dos
         # ciclos. ret inmediato en la subrutina es válido en el RTL real.
@@ -329,6 +374,7 @@ class BruTests(unittest.TestCase):
         u,_,_=self.contrastar(q,balb=binario)
         self.assertEqual(a,u)
 
+    # Ejecuta un bucle finito y comprueba su estado final.
     def test_11_bucle_finito(self):
         # B3 decrementa el 3 inicial y B6 lee x2 con distancia N+3. Se esperan
         # dos retornos a PC48 y luego continuación por B7 al alcanzar cero.
@@ -340,6 +386,7 @@ class BruTests(unittest.TestCase):
         self.assertEqual((r['estado'],t[-1]['regs'][2],t[-1]['regs'][5]),(1,0,9))
         self.assertGreater(t[-1]['cuentas'][0],len(p))
 
+    # Acota un bucle infinito y distingue límite de presupuesto de fin de búsqueda.
     def test_12_bucle_infinito_acotado_y_fin_busqueda(self):
         p=[('sumai x2,x2,1','guardap x0,x2,0','sye x31,0')]
         for fisica in (False,True):
@@ -348,6 +395,8 @@ class BruTests(unittest.TestCase):
             self.assertEqual((t[-1]['regs'][2],t[-1]['regs'][31],m[0]),(13,16,12))
             self.assertGreater(sum(c['flush'] for c in t),1)
 
+    # Prueba saltos consecutivos y control en el último bundle sin introducir una terminación
+    # artificial.
     def test_13_saltos_consecutivos_y_ultimo_bundle(self):
         p=[('nop','nop','sye x31,48'),NOP,NOP,('nop','nop','sye x30,48'),NOP,NOP,
            ('sumai x5,x0,9','nop','nop')]
@@ -358,6 +407,7 @@ class BruTests(unittest.TestCase):
         # Debe volver a B0 y continuar con presupuesto, sin terminar por drenado.
         self.contrastar([NOP,('nop','nop','sye x31,-16')],presupuesto=35)
 
+    # Comprueba búsqueda física, regiones no cargadas y aliasing de PC.
     def test_14_politica_fisica_fuera_del_archivo_y_wrap(self):
         # IMEM usa PC[13:4]. El salto relativo desde 0 a -16 llega a FFFFFFF0,
         # observa NOP físico en índice1023 y la suma secuencial vuelve a PC=0.
@@ -365,11 +415,15 @@ class BruTests(unittest.TestCase):
             with self.subTest(destino=destino):
                 p=[('nop','nop',f'sye x31,{destino}')]
                 t,_,r=self.contrastar(p,presupuesto=20,fisica=True)
+                # La búsqueda física conserva el aliasing y el wrap del PC, en lugar de terminar
+                # al salir del archivo. El límite debe pausar esa ejecución sin convertirla en
+                # terminación.
                 self.assertEqual(r['estado'],2)
                 self.assertEqual(t[2]['pc'],destino&0xffffffff)
         t,_,r=self.contrastar([('nop','nop','sye x31,16')])
         self.assertEqual((r['estado'],len(t),t[-1]['regs'][31]),(1,4,16))
 
+    # Reinicia durante control y memoria y verifica prioridad del reset y efectos publicados.
     def test_15_reset_redirect_enlace_bucle_y_store(self):
         # Reset tras 1 paso precede EX; tras 2 coincide con store/redirect;
         # tras 3 descarta enlace pendiente y tras 4 limpia uno ya retirado.
@@ -380,10 +434,14 @@ class BruTests(unittest.TestCase):
             with self.subTest(reset=instante):
                 t,m,r=self.contrastar(p,datos,presupuesto=30,reset=instante)
                 evento=next(c for c in t if 'reset' in c)
+                # Reset borra registros y enlaces pendientes, pero DMEM todavía puede publicar
+                # un store ya activo en EX. Comparar ambos efectos evita tratar reset como una
+                # restauración completa de memoria.
                 self.assertEqual(evento['regs'],[0]*32)
                 self.assertEqual(evento['despues'],0 if instante>=2 else 0x80)
         self.contrastar([('sumai x2,x2,1','guardap x0,x2,0','sye x31,0')],presupuesto=40,fisica=True,reset=10)
 
+    # Comprueba que syer use la base capturada y el alineamiento real del destino.
     def test_16_syer_base_capturada_y_alineacion(self):
         # ALU del mismo bundle produce 0x43, pero syer captura la base anterior
         # (0) y vuelve a B0. En la siguiente iteración ya usa 0x43 -> destino40.
@@ -399,6 +457,7 @@ class BruTests(unittest.TestCase):
             primera=next(c for c in t if c['flush'])
             self.assertEqual(primera['target'],target)
 
+    # Contrasta un programa aleatorio con ramas y entradas reproducibles.
     def test_17_programa_aleatorio_con_ramas(self):
         self.exigir_rtl()
         rng=random.Random(110843015)

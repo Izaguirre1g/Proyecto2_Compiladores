@@ -9,26 +9,46 @@
 static const char *const unidades[] = {"ALU", "LSU", "BRU", "CRIPTO"};
 static const char *const estados[] = {"ACTIVO", "TERMINADO", "LIMITE", "ARGUMENTO", "PC",
     "DECODIFICACION", "NO_SOPORTADA", "ALU", "LSU", "BRU", "CRYPTO"};
+/*
+ * Comprueba el límite uint64_t antes de acumular b en a; devuelve false sin modificar a si
+ * habría desbordamiento.
+ */
 static bool sumar(uint64_t *a, uint64_t b)
 {
     if (b > UINT64_MAX - *a) return false;
     *a += b; return true;
 }
+/*
+ * Comprueba inicialización, imagen, dimensiones, estado y modo antes de observar el simulador
+ * prestado.
+ */
 static bool simulador_valido(const SimPipeline *s)
 {
     return s && s->inicializado && s->imagen && s->imagen->cantidad_bundles &&
         s->imagen->cantidad_bundles <= SIM_CARGADOR_IMEM_BUNDLES && !s->imagen->entrada &&
         (unsigned)s->estado <= SIM_PIPE_CRYPTO && (unsigned)s->modo_busqueda <= SIM_BUSQUEDA_FISICA;
 }
+/*
+ * Cuenta bundles válidos en IF/ID, ID/EX y EX/WB; mide trabajo pendiente, no instrucciones ni
+ * escrituras.
+ */
 static uint64_t ocupacion(const SimPipeline *s)
 {
     return (unsigned)s->if_id.valido + (unsigned)s->id_ex.valido + (unsigned)s->ex_wb.valido;
 }
+/*
+ * Verifica admitidos = completados + anulados + pendientes, rechazando también desbordamientos
+ * de la suma.
+ */
 static bool invariante(const SimPipeline *s)
 {
     uint64_t total = s->bundles_completados;
     return sumar(&total,s->bundles_anulados) && sumar(&total,ocupacion(s)) && total == s->bundles_admitidos;
 }
+/*
+ * Copia GPR, estado criptográfico público, PC y ocupaciones al resumen; no copia secretos ni
+ * modifica el simulador.
+ */
 static void capturar(SimMetricasResumen *r, const SimPipeline *s)
 {
     r->estado = s->estado; r->pc = s->pc; r->estado_crypto = s->estado_crypto;
@@ -51,6 +71,10 @@ static bool coincide(const SimMetricasResumen *r, const SimPipeline *s)
         r->pendientes_por_etapa[2] == (unsigned)s->ex_wb.valido &&
         !memcmp(r->registros,s->registros,sizeof r->registros);
 }
+/*
+ * Valida que M1 siga asociado al mismo simulador, imagen, modo y época; distingue argumentos,
+ * reset e inconsistencia.
+ */
 static SimMetricasEstado enlace(const SimMetricas *m, const SimPipeline *s)
 {
     if (!m || !m->iniciado || !simulador_valido(s)) return SIM_METRICAS_ARGUMENTO;
@@ -69,6 +93,9 @@ SimMetricasEstado sim_metricas_iniciar(SimMetricas *m, const SimPipeline *s)
         ocupacion(s) || s->trap_count || (s->estado != SIM_PIPE_ACTIVO && s->estado != SIM_PIPE_LIMITE))
         return SIM_METRICAS_EPOCA;
     if (m->acumulado.epoca == UINT64_MAX) return SIM_METRICAS_DESBORDAMIENTO;
+    // El inicio válido reemplaza la época anterior: liberamos su historial, vinculamos la misma
+    // instancia e imagen y capturamos el estado inicial. No se reinicia ni se avanza el
+    // procesador desde M1.
     uint64_t epoca = m->acumulado.epoca + 1;
     free(m->historial);
     *m = (SimMetricas){.simulador=s,.imagen=s->imagen,.modo=s->modo_busqueda,.iniciado=true};
@@ -85,6 +112,9 @@ static SimMetricasEstado retiradas(SimMetricasResumen *r, const SimPipeline *s)
         (c->wb.pc >> 4) & (SIM_CARGADOR_IMEM_BUNDLES-1u) : c->wb.pc / 16u;
     if (s->modo_busqueda == SIM_BUSQUEDA_FINITA && ((c->wb.pc & 15u) || b >= s->imagen->cantidad_bundles))
         return SIM_METRICAS_INCONSISTENCIA;
+    // Recorremos los cuatro slots del bundle retirado y pedimos a S2 su operación real. NOP no
+    // suma instrucciones; loads, stores, saltos y destinos x0 sí cuentan si la codificación es
+    // válida, aunque no habiliten una escritura GPR.
     unsigned utiles = 0;
     for (unsigned slot=0; slot<4; ++slot) {
         uint32_t palabra = b < s->imagen->cantidad_bundles ? s->imagen->imem[b][slot] : 0;
@@ -95,6 +125,8 @@ static SimMetricasEstado retiradas(SimMetricasResumen *r, const SimPipeline *s)
             return SIM_METRICAS_DESBORDAMIENTO;
         ++utiles;
     }
+    // Separamos bundles NOP de bundles con operaciones útiles. Ambos ya retiraron en WB; el
+    // número de escrituras del banco no sustituye este conteo.
     if (!sumar(&r->instrucciones_utiles,utiles) ||
         !sumar(utiles ? &r->bundles_utiles : &r->bundles_nop,1)) return SIM_METRICAS_DESBORDAMIENTO;
     return SIM_METRICAS_OK;
@@ -109,14 +141,24 @@ SimMetricasEstado sim_metricas_observar(SimMetricas *m, const SimPipeline *s)
     SimMetricasEstado e = enlace(m,s);
     if (e != SIM_METRICAS_OK) return e;
     const SimMetricasResumen *previo = &m->acumulado;
+    // Si no hubo otro flanco, solo aceptamos la misma observación sin acumularla. Un estado
+    // diferente al mismo ciclo indica cambio de época o manipulación; saltarse ciclos impediría
+    // reconstruir eventos perdidos.
     if (s->ciclos == previo->ciclos)
         return coincide(previo,s) ? SIM_METRICAS_SIN_CICLO : SIM_METRICAS_EPOCA;
     if (previo->ciclos == UINT64_MAX || s->ciclos - previo->ciclos != 1) return SIM_METRICAS_SECUENCIA;
     const SimCiclo *c = &s->ultimo_ciclo;
+    // Contrastamos la coherencia de la traza antes de contar: flush puede venir de BRU o
+    // excepción. La excepción debe inhibir los efectos de su bundle EX y redirigir al vector,
+    // sin contarse como salto.
     bool salto = c->bru_ex_valido && c->ex_bru.tomado;
     if (c->ciclo != s->ciclos || c->flush != (c->excepcion || salto) ||
         (c->excepcion && (!c->ex.valido || c->bru_ex_valido || c->ex_lsu.valido || c->ex_crypto.memoria.valido || c->redirect_pc != SIM_TRAP_VECTOR)))
         return SIM_METRICAS_INCONSISTENCIA;
+    /*
+     * Acumulamos primero sobre una copia; un error previo a la publicación deja intactos los
+     * contadores para poder reintentar el flanco.
+     */
     SimMetricasResumen r = *previo;
     /* Contrastar cada delta con la traza impide confundir IF descartado con
      * admisión o el culpable EX con el WB anterior que sí pudo completarse. */
@@ -138,6 +180,10 @@ SimMetricasEstado sim_metricas_observar(SimMetricas *m, const SimPipeline *s)
     A(puerto_b_lecturas_ex,c->ex_crypto.memoria.valido);
     A(puerto_b_escrituras_ex,c->ex_crypto.memoria.valido && c->ex_crypto.memoria.escritura);
     A(conflictos_memoria,c->conflicto_memoria); A(conflictos_registro,c->conflicto_wb);
+    /*
+     * Las habilitaciones de puertos se cuentan por separado del retiro de instrucciones:
+     * escribir un registro no es un oráculo de finalización.
+     */
     const bool we[] = {c->wb_escribe,c->lsu_wb_escribe,c->bru_wb_escribe,c->crypto_wb_escribe[0],c->crypto_wb_escribe[1]};
     for (unsigned p=0; p<5; ++p) A(escrituras_por_puerto[p],we[p]);
     A(descartes_x0_por_slot[0],c->wb_descarta_x0);
@@ -145,6 +191,9 @@ SimMetricasEstado sim_metricas_observar(SimMetricas *m, const SimPipeline *s)
     A(descartes_x0_por_slot[2],c->bru_wb_descarta_x0);
     A(descartes_x0_por_slot[3],c->wb_crypto.par ? (unsigned)(c->wb_crypto.rd==0)+(unsigned)(c->wb_crypto.rd2==0) : 0u);
 #undef A
+    // Terminados los deltas, capturamos estado y ocupaciones sobre la copia local. El historial
+    // de excepciones es la última reserva que puede fallar; el acumulado público se confirma
+    // después de ella.
     r.ciclos = s->ciclos; capturar(&r,s);
     if (c->excepcion) {
         /* Última operación falible: si falta memoria, reintentar este mismo
@@ -163,6 +212,10 @@ SimMetricasEstado sim_metricas_observar(SimMetricas *m, const SimPipeline *s)
         r.ultimo_trap = (SimMetricaTrap){s->ciclos,c->ex.pc,c->redirect_pc};
         m->historial[m->cantidad_traps++] = r.ultimo_trap;
     }
+    /*
+     * El snapshot se confirma solo después de todas las operaciones falibles; así el reintento
+     * no duplica métricas ni traps.
+     */
     m->acumulado = r; return SIM_METRICAS_OK;
 }
 /* Snapshot propio, sin secretos: exige que no falten ciclos por observar.
@@ -182,6 +235,9 @@ SimMetricasEstado sim_metricas_resultados(const SimMetricas *m, SimMetricasResum
     r.dmem_fnv1a64 = UINT64_C(14695981039346656037);
     for (size_t j=0; j<SIM_CARGADOR_DMEM_BYTES; ++j)
         r.dmem_fnv1a64 = (r.dmem_fnv1a64 ^ s->memoria.bytes[j]) * UINT64_C(1099511628211);
+    // El IPC usa instrucciones útiles retiradas dividido entre todos los ciclos observados. Una
+    // ventana vacía produce cero explícito; bundles/ciclo tiene el mismo denominador, pero
+    // cuenta también bundles NOP.
     r.ipc = r.ciclos ? (double)r.instrucciones_utiles/(double)r.ciclos : 0;
     r.bundles_por_ciclo = r.ciclos ? (double)r.completados/(double)r.ciclos : 0;
     *salida = r; return SIM_METRICAS_OK;
@@ -202,6 +258,10 @@ void sim_metricas_liberar(SimMetricas *m)
 /* Libera el texto generado por M1 y deja *s en NULL. La cadena es propia
  * del llamador y puede liberarse sin conservar el recolector. */
 void sim_metricas_liberar_reporte(char **s) { if (s) { free(*s); *s=NULL; } }
+/*
+ * Representa b menos a mediante signo y magnitud para evitar que una resta unsigned pierda el
+ * signo.
+ */
 static SimMetricasDiferencia diferencia(uint64_t a,uint64_t b)
 {
     return (SimMetricasDiferencia){b<a,b<a ? a-b : b-a};
@@ -212,6 +272,9 @@ static SimMetricasDiferencia diferencia(uint64_t a,uint64_t b)
 SimMetricasEstado sim_metricas_comparar(const SimMetricasResumen *a, const SimMetricasResumen *b, SimMetricasComparacion *salida)
 {
     if (!a || !b || !salida || !a->valido || !b->valido) return SIM_METRICAS_ARGUMENTO;
+    // Guardamos signo y magnitud por separado para representar reducciones sin underflow
+    // unsigned. Los IPC se calculan desde cada resumen y el porcentaje solo está definido cuando
+    // la base tiene ciclos.
     SimMetricasComparacion r = {.ciclos=diferencia(a->ciclos,b->ciclos),
         .bundles=diferencia(a->completados,b->completados),.instrucciones=diferencia(a->instrucciones_utiles,b->instrucciones_utiles),
         .porcentaje_definido=a->ciclos!=0};
@@ -225,10 +288,16 @@ SimMetricasEstado sim_metricas_comparar(const SimMetricasResumen *a, const SimMe
 /* Buffer privado y lista blanca de campos públicos. Nunca se serializa
  * SimPipeline ni SimCiclo completos: podrían contener operandos sensibles. */
 typedef struct { char *datos; size_t longitud,capacidad; SimMetricasEstado estado; } Buffer;
+/*
+ * Asegura espacio para el texto y su terminador mediante crecimiento geométrico; conserva un
+ * error previo y no pierde el bloque ante realloc fallido.
+ */
 static bool reservar(Buffer *b,size_t n)
 {
     if (b->estado) return false;
     if (n>SIZE_MAX-b->longitud-1) { b->estado=SIM_METRICAS_DESBORDAMIENTO; return false; }
+    // Calculamos la reserva incluyendo el cero final. El crecimiento geométrico reduce realloc y
+    // conserva el buffer anterior ante error; el estado de fallo permanece hasta la limpieza.
     size_t minimo=b->longitud+n+1;
     if (minimo>b->capacidad) {
         size_t cap=b->capacidad?b->capacidad:256;
@@ -239,14 +308,24 @@ static bool reservar(Buffer *b,size_t n)
     }
     return true;
 }
+/*
+ * Agrega la cadena al buffer de M1, incluido su terminador, y actualiza longitud solo si la
+ * reserva tiene éxito.
+ */
 static void texto(Buffer *b,const char *s)
 {
     size_t n=strlen(s); if (!reservar(b,n)) return;
     memcpy(b->datos+b->longitud,s,n+1); b->longitud+=n;
 }
+/*
+ * Calcula la longitud con una copia de los argumentos variádicos, reserva y escribe; registra
+ * cualquier fallo de generación.
+ */
 static void formato(Buffer *b,const char *f,...)
 {
     if (b->estado) return;
+    // La primera copia de argumentos obtiene la longitud sin escribir. La segunda genera el
+    // fragmento solo tras reservar; si su longitud cambia o falla, el reporte queda invalidado.
     va_list a,c; va_start(a,f); va_copy(c,a); int n=vsnprintf(NULL,0,f,a); va_end(a);
     if (n<0) b->estado=SIM_METRICAS_GENERACION;
     else if (reservar(b,(size_t)n)) {
@@ -261,6 +340,9 @@ static void cociente(Buffer *b,uint64_t n,uint64_t d)
 {
     if (!d) { texto(b,"0.000000000"); return; }
     formato(b,"%" PRIu64 ".",n/d); uint64_t resto=n%d;
+    // Cada vuelta obtiene una cifra decimal mediante diez sumas con reducción modular. Así
+    // evitamos multiplicar resto por diez cuando los contadores se acercan a UINT64_MAX; las
+    // nueve cifras se truncan, no se redondean.
     for (unsigned j=0;j<9;++j) {
         uint64_t nuevo=0; unsigned digito=0;
         for (unsigned k=0;k<10;++k) {
@@ -269,6 +351,10 @@ static void cociente(Buffer *b,uint64_t n,uint64_t d)
         formato(b,"%u",digito); resto=nuevo;
     }
 }
+/*
+ * Escapa comillas, barras y controles de una cadena en el buffer JSON sin cambiar el texto
+ * prestado.
+ */
 static void cadena(Buffer *b,const char *s)
 {
     texto(b,"\"");
@@ -293,10 +379,16 @@ SimMetricasEstado sim_metricas_exportar(const SimMetricas *m,SimMetricasFormato 
 {
     if (!salida || *salida || (unsigned)f>SIM_METRICAS_JSON) return SIM_METRICAS_ARGUMENTO;
     SimMetricasResumen r; SimMetricasEstado e=sim_metricas_resultados(m,&r); if (e) return e;
+    // Construimos texto o JSON en un buffer privado con error persistente. Las funciones de
+    // escritura dejan de añadir datos si falla una reserva, y al final se libera todo el reporte
+    // parcial.
     Buffer b={0};
     if (f==SIM_METRICAS_JSON) texto(&b,"{\"version\":1,\"naturaleza\":\"dinamica\",\"estado\":");
     else texto(&b,"Métricas dinámicas VLIW\nEstado: ");
     if (f==SIM_METRICAS_JSON) cadena(&b,estados[r.estado]); else texto(&b,estados[r.estado]);
+    // La tabla enumera solo contadores públicos y sus offsets; no volcamos SimPipeline completo.
+    // Luego serializamos por separado cocientes, slots y operaciones para conservar el contrato
+    // del reporte.
     for (size_t j=0;j<sizeof campos/sizeof *campos;++j) {
         uint64_t valor; memcpy(&valor,(const char *)&r+campos[j].offset,sizeof valor);
         formato(&b,f==SIM_METRICAS_JSON ? ",\"%s\":%" PRIu64 : "\n%s: %" PRIu64,campos[j].nombre,valor);
@@ -318,6 +410,8 @@ SimMetricasEstado sim_metricas_exportar(const SimMetricas *m,SimMetricasFormato 
     if (f==SIM_METRICAS_JSON) texto(&b,"],\"pendientes_por_etapa\":["); else texto(&b,"\nPendientes IFID/IDEX/EXWB: ");
     for (unsigned j=0;j<3;++j) formato(&b,"%s%u",j?",":"",r.pendientes_por_etapa[j]);
     if (f==SIM_METRICAS_JSON) texto(&b,"],\"excepciones\":["); else texto(&b,"\nExcepciones EX (ciclo,PC,vector):\n");
+    // El historial exporta ciclo, PC y vector de cada excepción observada. Después se añaden los
+    // 32 GPR y el estado público; ni operandos privados ni contenido de la bóveda se serializan.
     for (size_t j=0;j<m->cantidad_traps;++j) {
         const SimMetricaTrap *t=&m->historial[j];
         if (f==SIM_METRICAS_JSON) formato(&b,"%s{\"ciclo\":%" PRIu64 ",\"pc\":%" PRIu32 ",\"vector\":%" PRIu32 "}",j?",":"",t->ciclo,t->pc,t->vector);

@@ -13,19 +13,19 @@ typedef struct {
     VliwInstruccion i[64]; VliwDependencia a[512];
     VliwBloque b[8]; size_t sucesores[8][8]; VliwEntrada e;
 } Fixture;
-static void iniciar(Fixture *f, size_t n)
+/* Inicializa arreglos y estado del fixture. */ static void iniciar(Fixture *f, size_t n)
 {
     memset(f,0,sizeof(*f)); C(n<=64);
     f->e=(VliwEntrada){f->i,n,f->a,0,f->b,n?1:0,true};
     f->b[0]=(VliwBloque){0,n,NULL,0};
     for(size_t i=0;i<n;++i)f->i[i]=(VliwInstruccion){.id=100+i,.slot=VLIW_SLOT_ALU};
 }
-static void arista(Fixture *f,size_t a,size_t b,VliwTipoDependencia tipo,size_t distancia)
+/* Agrega al fixture una dependencia con origen, destino, tipo y distancia explícitos. */ static void arista(Fixture *f,size_t a,size_t b,VliwTipoDependencia tipo,size_t distancia)
 {
     C(f->e.cantidad_dependencias<512);
     f->a[f->e.cantidad_dependencias++]=(VliwDependencia){a,b,tipo,distancia};
 }
-static VliwPlan *plan(Fixture *f)
+/* Invoca S7 sobre los metadatos del fixture y exige un plan completo antes de usar sus índices. */ static VliwPlan *plan(Fixture *f)
 {
     VliwPlan *p=NULL; VliwDiagnostico d;
     VliwEstado s=vliw_planificar(&f->e,&p,&d);
@@ -33,31 +33,31 @@ static VliwPlan *plan(Fixture *f)
     C(s==VLIW_OK && p!=NULL); C(vliw_verificar(&f->e,p,&d)==VLIW_OK);
     return p;
 }
-static void rechazar(Fixture *f,VliwEstado esperado)
+/* Invoca la API con una entrada adversarial y exige el error previsto, sin aceptar salidas parciales. */ static void rechazar(Fixture *f,VliwEstado esperado)
 {
     VliwPlan *p=NULL;VliwDiagnostico d;
     C(vliw_planificar(&f->e,&p,&d)==esperado);C(p==NULL && d.estado==esperado && d.mensaje);
 }
-static void bloques(Fixture *f,size_t b,size_t inicio,size_t fin)
+/* Define los rangos y sucesores del CFG sintético utilizado por el banco. */ static void bloques(Fixture *f,size_t b,size_t inicio,size_t fin)
 {
     f->b[b]=(VliwBloque){inicio,fin,f->sucesores[b],0};
     for(size_t i=inicio;i<fin;++i)f->i[i].bloque=b;
 }
-static void control(Fixture *f,size_t i,VliwControl c)
+/* Prepara o verifica el control de flujo del fixture para contrastar saltos, bloques y sus restricciones. */ static void control(Fixture *f,size_t i,VliwControl c)
 {
     f->i[i].slot=VLIW_SLOT_BRU;f->i[i].control=c;
     if(c==VLIW_CONTROL_LLAMADA)f->i[i].efectos=VLIW_EF_DESCONOCIDOS;
 }
-static void unidad(Fixture *f,size_t i,VliwSlot s)
+/* Asigna los metadatos físicos de una instrucción del fixture, sin deducirlos del texto. */ static void unidad(Fixture *f,size_t i,VliwSlot s)
 {
     f->i[i].slot=s;
     if(s==VLIW_SLOT_LSU)f->i[i].efectos=VLIW_EF_LEE_MEMORIA;
     if(s==VLIW_SLOT_CRIPTO)f->i[i].efectos=VLIW_EF_EXCEPCION;
 }
-
+/* Prueba entradas vacías, slots y empaquetado elemental con planes esperados conocidos. */
 static void casos_basicos(void)
 {
-    Fixture f;VliwPlan *p;
+    /* Preparamos metadatos explícitos y contrastamos el plan sin inferir aristas. */ Fixture f;VliwPlan *p;
     ++pruebas;iniciar(&f,0);f.e.metadatos_completos=false;p=plan(&f);
     C(!p->cantidad_bundles && !p->cantidad_instrucciones);vliw_liberar(&p);vliw_liberar(&p);vliw_liberar(NULL);
     ++pruebas;iniciar(&f,1);p=plan(&f);
@@ -74,10 +74,10 @@ static void casos_basicos(void)
     ++pruebas;iniciar(&f,2);p=plan(&f);
     C(p->bundle_por_instruccion[0]==0 && p->bundle_por_instruccion[1]==1);vliw_liberar(&p);
 }
-
-static void riesgos_y_disponibilidad(void)
+/* Comprueba RAW, WAR, WAW y disponibilidad de slots para impedir emisiones inseguras. */
+/* Los casos preparan máscaras de registros y distancias externas para detectar emisiones que violen RAW, WAR, WAW o el slot disponible. */ static void riesgos_y_disponibilidad(void)
 {
-    Fixture f;VliwPlan *p;
+    /* Las máscaras y aristas del fixture fuerzan RAW, WAR y WAW observables. */ Fixture f;VliwPlan *p;
     /* RAW se mide en bundles, no en número de instrucciones. La cadena debe
      * emitir en 0,3,6; el consumidor nunca puede observar el WB simultáneo a ID. */
     ++pruebas;iniciar(&f,2);f.i[0].escribe=R(5);f.i[1].lee=R(5);
@@ -90,7 +90,7 @@ static void riesgos_y_disponibilidad(void)
     arista(&f,0,1,VLIW_DEP_WAR,1);p=plan(&f);C(p->bundle_por_instruccion[1]==1);vliw_liberar(&p);
     ++pruebas;iniciar(&f,4);unidad(&f,1,VLIW_SLOT_LSU);unidad(&f,3,VLIW_SLOT_LSU);
     f.i[0].escribe=R(5);f.i[1].escribe=R(6);f.i[2].lee=f.i[3].lee=R(5)|R(6);
-    for(size_t a=0;a<2;++a)for(size_t b=2;b<4;++b)arista(&f,a,b,VLIW_DEP_RAW,3);
+    /* Varios productores obligan a esperar todas las RAW, aun con slot libre. */ for(size_t a=0;a<2;++a)for(size_t b=2;b<4;++b)arista(&f,a,b,VLIW_DEP_RAW,3);
     p=plan(&f);C(p->cantidad_bundles==4 && p->bundles[3].operaciones==2);vliw_liberar(&p);
     ++pruebas;iniciar(&f,3);unidad(&f,0,VLIW_SLOT_CRIPTO);unidad(&f,2,VLIW_SLOT_LSU);
     f.i[0].escribe=R(4)|R(5);f.i[1].lee=R(4);f.i[2].lee=R(5);
@@ -105,7 +105,7 @@ static void riesgos_y_disponibilidad(void)
     f.i[0].lee=R(6);f.i[0].escribe=0;
     arista(&f,0,1,VLIW_DEP_CONTROL,7);p=plan(&f);C(p->bundle_por_instruccion[1]==7);vliw_liberar(&p);
 }
-
+/* Prueba memoria, barreras y transferencias entre bloques conservando las restricciones arquitectónicas. */
 static void efectos_y_cfg(void)
 {
     Fixture f;VliwPlan *p;
@@ -135,11 +135,11 @@ static void efectos_y_cfg(void)
     ++pruebas;iniciar(&f,3);unidad(&f,1,VLIW_SLOT_CRIPTO);f.i[1].efectos=VLIW_EF_ESTADO;
     p=plan(&f);C(p->bundle_por_instruccion[1]==3 && p->bundle_por_instruccion[2]==6);vliw_liberar(&p);
 }
-
+/* Construye metadatos inconsistentes y exige que S7 los rechace sin repararlos. */
 static void entradas_invalidas(void)
 {
     Fixture f;VliwPlan *p=NULL;VliwDiagnostico d;
-    ++pruebas;iniciar(&f,2);arista(&f,0,1,VLIW_DEP_CONTROL,1);arista(&f,1,0,VLIW_DEP_CONTROL,1);rechazar(&f,VLIW_CICLO);
+    /* Un ciclo del DAG se rechaza; una arista hacia atrás tampoco se repara. */ ++pruebas;iniciar(&f,2);arista(&f,0,1,VLIW_DEP_CONTROL,1);arista(&f,1,0,VLIW_DEP_CONTROL,1);rechazar(&f,VLIW_CICLO);
     iniciar(&f,2);arista(&f,1,0,VLIW_DEP_CONTROL,1);rechazar(&f,VLIW_DEPENDENCIA);
     iniciar(&f,1);arista(&f,0,0,VLIW_DEP_CONTROL,1);rechazar(&f,VLIW_CICLO);
     ++pruebas;iniciar(&f,1);f.i[0].slot=(VliwSlot)4;rechazar(&f,VLIW_METADATOS);
@@ -149,7 +149,7 @@ static void entradas_invalidas(void)
     iniciar(&f,2);arista(&f,0,1,VLIW_DEP_RAW,3);rechazar(&f,VLIW_DEPENDENCIA);
     iniciar(&f,2);arista(&f,0,1,VLIW_DEP_CONTROL,0);rechazar(&f,VLIW_DEPENDENCIA);
     iniciar(&f,2);arista(&f,0,1,VLIW_DEP_CONTROL,SIZE_MAX);rechazar(&f,VLIW_CAPACIDAD);
-    iniciar(&f,1);f.e.metadatos_completos=false;rechazar(&f,VLIW_METADATOS);
+    /* Máscaras imposibles y efectos ausentes invalidan el contrato externo. */ iniciar(&f,1);f.e.metadatos_completos=false;rechazar(&f,VLIW_METADATOS);
     iniciar(&f,1);f.i[0].lee=R(32);rechazar(&f,VLIW_METADATOS);
     iniciar(&f,1);f.i[0].escribe=R(2)|R(3);rechazar(&f,VLIW_METADATOS);
     iniciar(&f,1);f.i[0].lee=R(2)|R(3)|R(4);rechazar(&f,VLIW_METADATOS);
@@ -157,7 +157,7 @@ static void entradas_invalidas(void)
     iniciar(&f,1);f.i[0].slot=VLIW_SLOT_LSU;rechazar(&f,VLIW_METADATOS);
     iniciar(&f,1);f.i[0].slot=VLIW_SLOT_CRIPTO;rechazar(&f,VLIW_METADATOS);
     iniciar(&f,2);f.i[1].id=f.i[0].id;rechazar(&f,VLIW_METADATOS);
-    iniciar(&f,1);f.i[0].bloque=1;rechazar(&f,VLIW_BLOQUES);
+    /* Los intervalos y sucesores deben describir bloques completos y válidos. */ iniciar(&f,1);f.i[0].bloque=1;rechazar(&f,VLIW_BLOQUES);
     iniciar(&f,2);f.e.cantidad_bloques=2;bloques(&f,0,0,2);bloques(&f,1,1,2);rechazar(&f,VLIW_BLOQUES);
     iniciar(&f,2);f.b[0].fin=1;rechazar(&f,VLIW_BLOQUES);
     iniciar(&f,1);f.b[0].fin=0;rechazar(&f,VLIW_BLOQUES);
@@ -170,8 +170,8 @@ static void entradas_invalidas(void)
     iniciar(&f,1);f.e.instrucciones=NULL;rechazar(&f,VLIW_ARGUMENTO);
     iniciar(&f,1);f.e.cantidad_dependencias=SIZE_MAX;rechazar(&f,VLIW_ARGUMENTO);
 }
-
-static void salida_corrupta(void)
+/* Modifica planes de prueba y comprueba que el verificador independiente detecte índices o distancias inválidos. */
+/* Mutamos únicamente planes del fixture; el verificador debe rechazar índices duplicados, mapeos o separaciones incorrectas sin repararlos. */ static void salida_corrupta(void)
 {
     /* No basta con validar nuestros propios planes: cada mutación ataca una
      * invariante diferente del verificador público y luego se restaura. */
@@ -190,13 +190,13 @@ static void salida_corrupta(void)
     f.i[0].escribe=f.i[1].lee=0;f.i[0].efectos=VLIW_EF_BARRERA;C(vliw_verificar(&f.e,p,&d)==VLIW_PLAN_INVALIDO);
     vliw_liberar(&p);
 }
-
+/* Prueba el límite de IMEM y repite entradas para exigir una selección determinista. */
 static void capacidad_y_determinismo(void)
 {
     ++pruebas;Fixture f;iniciar(&f,8);
     for(size_t i=1;i<8;i+=2)unidad(&f,i,VLIW_SLOT_LSU);
     VliwPlan *p=plan(&f);
-    for(unsigned rep=0;rep<20;++rep){VliwPlan *q=plan(&f);
+    /* Repetir el mismo grafo debe conservar cada slot e índice del plan. */ for(unsigned rep=0;rep<20;++rep){VliwPlan *q=plan(&f);
         C(p->cantidad_bundles==q->cantidad_bundles);
         for(size_t b=0;b<p->cantidad_bundles;++b)for(unsigned s=0;s<4;++s)C(p->bundles[b].instrucciones[s]==q->bundles[b].instrucciones[s]);
         C(!memcmp(p->bundle_por_instruccion,q->bundle_por_instruccion,8*sizeof(size_t)));vliw_liberar(&q);}
@@ -226,11 +226,11 @@ static void capacidad_y_determinismo(void)
 /* Interposición exclusiva del ejecutable de prueba: fuerza cada fallo de
  * malloc/calloc y comprueba que la biblioteca no publique ni pierda el plan. */
 void *__real_malloc(size_t n);
-void *__real_calloc(size_t n,size_t s);
+/* Rutina real calloc: destino de las llamadas no inyectadas. */ void *__real_calloc(size_t n,size_t s);
 static size_t reserva,fallar;
-void *__wrap_malloc(size_t n){if(++reserva==fallar)return NULL;return __real_malloc(n);}
-void *__wrap_calloc(size_t n,size_t s){if(++reserva==fallar)return NULL;return __real_calloc(n,s);}
-static void fallos_reserva(void)
+/* Envuelve malloc: inyecta fallos y delega el resto. */ void *__wrap_malloc(size_t n){if(++reserva==fallar)return NULL;return __real_malloc(n);}
+/* Envuelve calloc: inyecta fallos y delega el resto. */ void *__wrap_calloc(size_t n,size_t s){if(++reserva==fallar)return NULL;return __real_calloc(n,s);}
+/* Recorre puntos de fallo de malloc/calloc y comprueba limpieza y publicación atómica del plan. */ static void fallos_reserva(void)
 {
     Fixture f;iniciar(&f,3);VliwDiagnostico d;
     size_t efectivos=0;
@@ -241,7 +241,7 @@ static void fallos_reserva(void)
     printf("Reservas: 32 posiciones de inyección; %zu fallos efectivos comprobados\n",efectivos);
 }
 #endif
-
+/* Lee metadatos desde el archivo temporal para que Python pruebe el scheduler real desde su protocolo. */
 static int fixture_archivo(const char *ruta)
 {
     /* Protocolo numérico de fixtures para Python, no lenguaje ni parser ISA.
@@ -254,7 +254,7 @@ static int fixture_archivo(const char *ruta)
         C(fscanf(f,"%zu %u %llx %llx %u %u %zu",&id,&slot,&l,&w,&ef,&control_,&block)==7);
         ins[i]=(VliwInstruccion){id,(VliwSlot)slot,NULL,l,w,ef,(VliwControl)control_,block};}
     for(size_t a=0;a<m;++a){unsigned tipo;C(fscanf(f,"%zu %zu %u %zu",&ar[a].antes,&ar[a].despues,&tipo,&ar[a].distancia)==4);ar[a].tipo=(VliwTipoDependencia)tipo;}
-    for(size_t b=0;b<k;++b){size_t ns;C(fscanf(f,"%zu %zu %zu",&bb[b].inicio,&bb[b].fin,&ns)==3 && ns<=k);
+    /* Cada bloque adquiere su lista de sucesores; se libera al terminar. */ for(size_t b=0;b<k;++b){size_t ns;C(fscanf(f,"%zu %zu %zu",&bb[b].inicio,&bb[b].fin,&ns)==3 && ns<=k);
         size_t *su=calloc(ns?ns:1,sizeof(size_t));C(su!=NULL);for(size_t j=0;j<ns;++j)C(fscanf(f,"%zu",&su[j])==1);bb[b].sucesores=su;bb[b].cantidad_sucesores=ns;}
     C(fclose(f)==0);VliwEntrada e={ins,n,ar,m,bb,k,true};VliwPlan *p=NULL;VliwDiagnostico d;
     VliwEstado estado=vliw_planificar(&e,&p,&d);printf("{\"estado\":%d,\"mensaje\":\"%s\"",estado,d.mensaje);
@@ -264,7 +264,7 @@ static int fixture_archivo(const char *ruta)
         printf("],\"bundles\":[");for(size_t b=0;b<p->cantidad_bundles;++b){printf("%s[",b?",":"");for(unsigned s=0;s<4;++s){if(s)putchar(',');if(p->bundles[b].instrucciones[s]==VLIW_VACIO)printf("null");else printf("%zu",p->bundles[b].instrucciones[s]);}putchar(']');}putchar(']');}
     puts("}");vliw_liberar(&p);for(size_t b=0;b<k;++b)free((void *)bb[b].sucesores);free(bb);free(ar);free(ins);return 0;
 }
-int main(int argc,char **argv)
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */ int main(int argc,char **argv)
 {
     if(argc==3 && !strcmp(argv[1],"fixture"))return fixture_archivo(argv[2]);
 #ifdef VLIW_PRUEBA_RESERVAS

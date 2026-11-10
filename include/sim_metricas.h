@@ -67,11 +67,22 @@ SimMetricasEstado sim_metricas_observar(SimMetricas *, const SimPipeline *);
  * Calcula FNV-1a sobre los 65536 bytes DMEM actuales; no copia esa memoria.
  * Puede reflejar un estado LIMITE/error administrativo sin sumar un flanco. */
 SimMetricasEstado sim_metricas_resultados(const SimMetricas *, SimMetricasResumen *);
+/*
+ * Copia el evento indicado del historial M1; devuelve error ante índice o punteros inválidos y
+ * conserva la propiedad del historial.
+ */
 SimMetricasEstado sim_metricas_trap(const SimMetricas *, size_t indice, SimMetricaTrap *);
 /* Salida propia, inicialmente NULL; publicación atómica. Liberar con la función
  * específica. El reporte incluye historial de traps, nunca bóveda/contraseña. */
 SimMetricasEstado sim_metricas_exportar(const SimMetricas *, SimMetricasFormato, char **);
+/*
+ * Libera el reporte de M1 y anula el puntero recibido; el reporte es propiedad del cliente.
+ */
 void sim_metricas_liberar_reporte(char **);
+/*
+ * Libera el historial reservado de M1 y reinicia el recolector; no destruye el simulador
+ * prestado.
+ */
 void sim_metricas_liberar(SimMetricas *);
 /* Solo compara métricas: NO certifica equivalencia funcional ni una optimización.
  * Comparar GPR y los 65536 bytes DMEM por separado. Base cero -> porcentaje no

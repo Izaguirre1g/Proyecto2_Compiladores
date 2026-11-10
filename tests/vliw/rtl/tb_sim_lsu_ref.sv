@@ -33,12 +33,19 @@ module tb_sim_lsu_ref;
     string ruta,precarga,previo;
     bit restaurar=0;
 
+    // Publica los 32 GPR del DUT en el protocolo de la sonda; el llamador decide si observa
+    // antes o después del flanco.
     task automatic imprimir_registros;
+        // Publicamos el banco completo después de la fase elegida por el llamador. Comprobar los
+        // 32 GPR detecta también efectos de cargas descartadas y prioridades de puertos, sin
+        // realimentar el DUT.
         $write("\"regs\":[");
         for(integer r=0;r<32;r=r+1) $write("%s%0d",r?",":"",DUT.REGFILE.regs[r]);
         $write("]}\n");
     endtask
 
+    // Leemos los estímulos y preparamos el mismo estado inicial que el modelo C; las
+    // observaciones de LSU/DMEM se comparan por fase del flanco.
     initial begin
         if($value$plusargs("VECTORES=%s",ruta)) begin
             archivo=$fopen(ruta,"r");

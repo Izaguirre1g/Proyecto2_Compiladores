@@ -9,18 +9,18 @@
 
 static size_t casos,checks;
 #define C(x) do { ++checks; if (!(x)) { fprintf(stderr,"FAIL M1 %d: %s\n",__LINE__,#x); exit(1); } } while (0)
-static SimImagen *imagen(const char *asm_)
+/* Prepara la imagen del escenario. */ static SimImagen *imagen(const char *asm_)
 {
     CbPrograma p={0}; C(cb_ensamblar(asm_,&p,stderr)==0);
     SimImagen *i=calloc(1,sizeof *i); C(i!=NULL); i->cantidad_bundles=p.cantidad;
     for (size_t b=0;b<p.cantidad;++b) memcpy(i->imem[b],p.bundles[b].slots,sizeof i->imem[b]);
     cb_liberar(&p); return i;
 }
-static void iniciar(SimPipeline *s,SimMetricas *m,const SimImagen *i)
+/* Inicializa arreglos y estado del fixture. */ static void iniciar(SimPipeline *s,SimMetricas *m,const SimImagen *i)
 {
     C(sim_pipeline_iniciar(s,i)==SIM_PIPE_ACTIVO); C(sim_metricas_iniciar(m,s)==SIM_METRICAS_OK);
 }
-static void iguales(const SimPipeline *a,const SimPipeline *b)
+/* Exige igualdad de los campos públicos comprobados. */ static void iguales(const SimPipeline *a,const SimPipeline *b)
 {
     C(a->pc==b->pc && a->ciclos==b->ciclos && a->estado==b->estado);
     C(a->bundles_admitidos==b->bundles_admitidos && a->bundles_completados==b->bundles_completados && a->bundles_anulados==b->bundles_anulados);
@@ -31,36 +31,36 @@ static void iguales(const SimPipeline *a,const SimPipeline *b)
     C(a->boveda.password==b->boveda.password && a->boveda.pwd_set==b->boveda.pwd_set);
     C(!memcmp(a->boveda.keys,b->boveda.keys,sizeof a->boveda.keys));
 }
-static void paso(SimPipeline *s,SimMetricas *m,SimPipeline *sin)
+/* Avanza un flanco del simulador y observa M1 en ese mismo horizonte para no perder ni duplicar eventos. */ static void paso(SimPipeline *s,SimMetricas *m,SimPipeline *sin)
 {
     uint64_t previo=s->ciclos; SimPipelineEstado e=sim_avanzar_ciclo(s);
     if (sin) { C(sim_avanzar_ciclo(sin)==e); iguales(s,sin); }
     C(sim_metricas_observar(m,s)==(s->ciclos==previo ? SIM_METRICAS_SIN_CICLO : SIM_METRICAS_OK));
     if (sin) iguales(s,sin);
 }
-static SimMetricasResumen resultado(SimMetricas *m)
+/* Consulta métricas válidas antes de contrastar sus campos. */ static SimMetricasResumen resultado(SimMetricas *m)
 {
     SimMetricasResumen r; C(sim_metricas_resultados(m,&r)==SIM_METRICAS_OK); return r;
 }
-static void drenar(SimPipeline *s,SimMetricas *m,SimPipeline *otro)
+/* Avanza hasta retirar los bundles pendientes de la búsqueda finita; comprueba los límites fijados por el fixture. */ static void drenar(SimPipeline *s,SimMetricas *m,SimPipeline *otro)
 {
     for (unsigned n=0;n<200 && (s->estado==SIM_PIPE_ACTIVO || s->estado==SIM_PIPE_LIMITE);++n) paso(s,m,otro);
     C(s->estado==SIM_PIPE_TERMINADO);
 }
-static void basicos(void)
+/* Comprueba los contadores básicos, NOP y ejecución secuencial frente a los valores explícitos del banco. */ static void basicos(void)
 {
-    ++casos; SimImagen *i=imagen("sumai x5,x0,7 | nop | nop | nop\n");
+/* Preparamos una operación útil aislada: antes de avanzar, ciclos, IPC y ocupación deben ser cero. */     ++casos; SimImagen *i=imagen("sumai x5,x0,7 | nop | nop | nop\n");
     SimPipeline s,t; SimMetricas m={0}; iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==SIM_PIPE_ACTIVO);
     SimMetricasResumen r=resultado(&m); C(r.ciclos==0 && r.ipc==0 && r.bundles_por_ciclo==0);
     C(sim_metricas_observar(&m,&s)==SIM_METRICAS_SIN_CICLO);
     C(sim_pipeline_ejecutar(&s,0)==SIM_PIPE_LIMITE && sim_pipeline_ejecutar(&t,0)==SIM_PIPE_LIMITE);
     C(sim_metricas_observar(&m,&s)==SIM_METRICAS_SIN_CICLO); C(resultado(&m).estado==SIM_PIPE_LIMITE);
-    ++casos; drenar(&s,&m,&t); r=resultado(&m);
+/* Al drenar esta imagen de un bundle esperamos cuatro ciclos, una instrucción útil retirada y ninguna pendiente. */     ++casos; drenar(&s,&m,&t); r=resultado(&m);
     C(r.ciclos==4 && r.admitidos==1 && r.completados==1 && r.anulados==0 && r.pendientes==0);
     C(r.instrucciones_utiles==1 && r.instrucciones_por_slot[0]==1 && r.operaciones_isa[SIM_OP_SUMAI]==1);
     C(r.ipc==0.25 && r.bundles_por_ciclo==0.25 && r.registros[5]==7 && r.escrituras_por_puerto[0]==1);
     paso(&s,&m,&t); C(resultado(&m).ciclos==4);
-    ++casos; char *json=NULL,*texto=NULL;
+    /* Exportar repetidamente debe ser estable y no revelar la bóveda. */ ++casos; char *json=NULL,*texto=NULL;
     C(sim_metricas_exportar(&m,SIM_METRICAS_JSON,&json)==SIM_METRICAS_OK);
     C(strstr(json,"\"naturaleza\":\"dinamica\"") && strstr(json,"\"ipc\":0.250000000"));
     C(!strstr(json,"password") && !strstr(json,"keys") && !strstr(json,"boveda"));
@@ -73,7 +73,7 @@ static void basicos(void)
     }
     sim_metricas_liberar_reporte(&json); sim_metricas_liberar_reporte(&json); sim_metricas_liberar_reporte(NULL);
     sim_metricas_liberar_reporte(&texto); sim_metricas_liberar(&m); free(i);
-    ++casos; i=imagen("nop\n"); iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t); r=resultado(&m);
+    /* Un bundle NOP se retira, pero su IPC e instrucciones son cero. */ ++casos; i=imagen("nop\n"); iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t); r=resultado(&m);
     C(r.ciclos==4 && r.completados==1 && r.bundles_nop==1 && r.bundles_utiles==0 && r.instrucciones_utiles==0 && r.ipc==0);
     sim_metricas_liberar(&m); free(i);
     ++casos; i=imagen("sumai x5,x0,7 | cargai x8,x0,0 | nop | nop\nnop\nnop\nsuma x6,x5,x8 | nop | nop | nop\n");
@@ -83,7 +83,7 @@ static void basicos(void)
     C(r.lsu_lecturas_ex==1 && r.escrituras_por_puerto[1]==1 && r.ipc==3.0/7.0);
     sim_metricas_liberar(&m); free(i);
 }
-static void control(void)
+/* Prepara o verifica el control de flujo del fixture para contrastar saltos, bloques y sus restricciones. */ static void control(void)
 {
     ++casos; SimImagen *i=imagen("nop | nop | sye x0,fin | nop\nsumai x5,x0,1 | nop | nop | nop\nfin: sumai x6,x0,9 | nop | nop | nop\n");
     SimPipeline s,t; SimMetricas m={0}; iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t);
@@ -91,18 +91,18 @@ static void control(void)
     C(r.instrucciones_utiles==2 && r.bru_ex==1 && r.saltos_tomados==1 && r.flush_salto==1 && r.saltos_no_tomados==0);
     C(r.anulados_salto==1 && r.busquedas_descartadas==1 && r.descartes_x0_por_slot[2]==1 && !r.registros[5] && r.registros[6]==9);
     sim_metricas_liberar(&m); free(i);
-    ++casos; i=imagen("nop | nop | igualno x0,x0,fin | nop\nsumai x5,x0,1 | nop | nop | nop\nfin: sumai x6,x0,9 | nop | nop | nop\n");
+    /* La condición falsa no hace flush: se retiran las tres operaciones. */ ++casos; i=imagen("nop | nop | igualno x0,x0,fin | nop\nsumai x5,x0,1 | nop | nop | nop\nfin: sumai x6,x0,9 | nop | nop | nop\n");
     iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t); r=resultado(&m);
     C(r.ciclos==6 && r.completados==3 && r.instrucciones_utiles==3 && r.bru_ex==1 && r.saltos_no_tomados==1 && !r.flush_salto && !r.anulados);
     sim_metricas_liberar(&m); free(i);
-    ++casos; i=imagen("sumai x5,x0,3 | nop | nop | nop\nnop\nnop\nbucle: restai x5,x5,1 | nop | nop | nop\nnop\nnop\nnop | nop | igualno x5,x0,bucle | nop\nsuma x6,x5,x0 | nop | nop | nop\n");
+    /* El bucle repite retiros reales; se esperan 23 ciclos y dos saltos tomados. */ ++casos; i=imagen("sumai x5,x0,3 | nop | nop | nop\nnop\nnop\nbucle: restai x5,x5,1 | nop | nop | nop\nnop\nnop\nnop | nop | igualno x5,x0,bucle | nop\nsuma x6,x5,x0 | nop | nop | nop\n");
     iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t); r=resultado(&m);
     C(r.ciclos==23 && r.completados==16 && r.admitidos==18 && r.anulados==2);
     C(r.instrucciones_utiles==8 && r.instrucciones_por_slot[0]==5 && r.instrucciones_por_slot[2]==3);
     C(r.saltos_tomados==2 && r.saltos_no_tomados==1 && r.flush_salto==2 && r.busquedas_descartadas==0 && !r.registros[5]);
     sim_metricas_liberar(&m); free(i);
 }
-static void epocas_y_errores(void)
+/* Comprueba reset de épocas, duplicados y observaciones fuera de secuencia sin sumar flancos inexistentes. */ static void epocas_y_errores(void)
 {
     ++casos; SimImagen *i=imagen("sumai x5,x0,7 | nop | nop | nop\n"); SimPipeline s,t;
     SimMetricas m={0},n={0}; iniciar(&s,&m,i); iniciar(&t,&n,i);
@@ -112,7 +112,7 @@ static void epocas_y_errores(void)
     C(resultado(&n).ciclos==1); C(sim_metricas_observar(&n,&t)==SIM_METRICAS_SIN_CICLO);
     paso(&s,&m,NULL); paso(&t,&n,NULL); C(resultado(&m).ciclos==2 && resultado(&n).ciclos==2);
     SimMetricasResumen antes=resultado(&m);
-    ++casos; C(sim_pipeline_reiniciar(&s)==0); C(sim_metricas_observar(&m,&s)==SIM_METRICAS_EPOCA);
+    /* Reset exige época nueva; el snapshot previo conserva sus dos ciclos. */ ++casos; C(sim_pipeline_reiniciar(&s)==0); C(sim_metricas_observar(&m,&s)==SIM_METRICAS_EPOCA);
     C(sim_metricas_iniciar(&m,&s)==0 && m.acumulado.epoca==2); C(resultado(&m).ciclos==0 && antes.ciclos==2);
     drenar(&s,&m,NULL); C(resultado(&m).ciclos==4 && resultado(&m).instrucciones_utiles==1);
     sim_metricas_liberar(&m); sim_metricas_liberar(&n); free(i);
@@ -125,7 +125,7 @@ static void epocas_y_errores(void)
     C(sim_metricas_iniciar(&m,&s)==0 && resultado(&m).ciclos==0 && !resultado(&m).lsu_escrituras_ex);
     drenar(&s,&m,NULL); C(resultado(&m).lsu_escrituras_ex==1);
     sim_metricas_liberar(&m); free(i);
-    ++casos; i=imagen("nop\nnop\nnop\n"); iniciar(&s,&m,i);
+    /* Omitir dos flancos impide reconstruir M1: SECUENCIA sin mutar acumulados. */ ++casos; i=imagen("nop\nnop\nnop\n"); iniciar(&s,&m,i);
     C(sim_pipeline_ejecutar(&s,2)==SIM_PIPE_LIMITE); SimMetricas guardado=m;
     C(sim_metricas_observar(&m,&s)==SIM_METRICAS_SECUENCIA && !memcmp(&m,&guardado,sizeof m));
     SimMetricasResumen r; C(sim_metricas_resultados(&m,&r)==SIM_METRICAS_SECUENCIA);
@@ -143,13 +143,13 @@ static void epocas_y_errores(void)
      * legitima esa mutación dentro de la época anterior. */
     C(sim_metricas_observar(&m,&s)==SIM_METRICAS_EPOCA); sim_metricas_liberar(&m); free(i);
 }
-static void memoria_y_traps(void)
+/* Comprueba los eventos de memoria y el historial de excepciones observados por M1. */ static void memoria_y_traps(void)
 {
     ++casos; SimImagen *i=imagen("sumai x5,x0,7 | nop | nop | nop\nnop\nnop\nnop | guardap x0,x5,4 | nop | nop\nnop | cargai x7,x0,4 | nop | nop\n");
     SimPipeline s,t; SimMetricas m={0}; iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t);
     SimMetricasResumen r=resultado(&m); C(r.ciclos==8 && r.instrucciones_utiles==3 && r.lsu_lecturas_ex==1 && r.lsu_escrituras_ex==1 && r.registros[7]==7 && s.memoria.bytes[4]==7);
     sim_metricas_liberar(&m); free(i);
-    ++casos; i=imagen("sumai x0,x0,9 | cargai x0,x0,0 | nop | nop\nnop | nop | sye x0,fin | nop\nfin: nop\n");
+    /* Las operaciones hacia x0 cuentan como instrucciones, sin escribir GPR. */ ++casos; i=imagen("sumai x0,x0,9 | cargai x0,x0,0 | nop | nop\nnop | nop | sye x0,fin | nop\nfin: nop\n");
     iniciar(&s,&m,i); C(sim_pipeline_iniciar(&t,i)==0); drenar(&s,&m,&t); r=resultado(&m);
     C(r.instrucciones_utiles==3 && r.descartes_x0_por_slot[0]==1 && r.descartes_x0_por_slot[1]==1 && r.descartes_x0_por_slot[2]==1);
     C(!r.escrituras_por_puerto[0] && !r.escrituras_por_puerto[1] && !r.escrituras_por_puerto[2]);
@@ -181,7 +181,7 @@ static void memoria_y_traps(void)
     r=resultado(&m); C(r.instrucciones_utiles==1 && r.registros[5]==7 && r.completados==2 && r.bundles_nop==1);
     sim_metricas_liberar(&m); free(i);
 }
-static void argumentos_y_comparacion(void)
+/* Prueba argumentos inválidos y diferencias de métricas, incluidos signo y denominador cero. */ static void argumentos_y_comparacion(void)
 {
     ++casos; SimMetricas m={0}; SimPipeline s={0}; SimMetricasResumen r={0},copia=r;
     C(sim_metricas_iniciar(NULL,&s)==SIM_METRICAS_ARGUMENTO && sim_metricas_iniciar(&m,NULL)==SIM_METRICAS_ARGUMENTO);
@@ -210,22 +210,22 @@ static void argumentos_y_comparacion(void)
     C(delta.diferencia_ipc>0.178571 && delta.diferencia_ipc<0.178572);
     sim_metricas_liberar(&ma); sim_metricas_liberar(&mb); free(base); free(opt);
     C(sim_metricas_comparar(&cero,&b,&delta)==0 && delta.instrucciones.magnitud==3 && !delta.instrucciones.negativa && !delta.porcentaje_definido);
-    r.ciclos=UINT64_MAX; b.ciclos=0; C(sim_metricas_comparar(&r,&b,&delta)==0 && delta.ciclos.magnitud==UINT64_MAX);
+    /* El delta extremo debe conservar toda la magnitud sin underflow. */ r.ciclos=UINT64_MAX; b.ciclos=0; C(sim_metricas_comparar(&r,&b,&delta)==0 && delta.ciclos.magnitud==UINT64_MAX);
     C(sim_metricas_comparar(NULL,&b,&delta)==SIM_METRICAS_ARGUMENTO); b.valido=false; C(sim_metricas_comparar(&r,&b,&delta)==SIM_METRICAS_ARGUMENTO);
     sim_metricas_liberar(&m); sim_metricas_liberar(&m); sim_metricas_liberar(NULL); free(i);
 }
 #ifdef SIM_METRICAS_FALLOS
-void *__real_realloc(void *,size_t); int __real_vsnprintf(char *,size_t,const char *,va_list);
+/* Rutina real realloc: destino de las llamadas no inyectadas. */ void *__real_realloc(void *,size_t); /* Rutina real vsnprintf: destino de las llamadas no inyectadas. */ int __real_vsnprintf(char *,size_t,const char *,va_list);
 static size_t contar,fallar,llamada,fallar_formato; static bool activo;
-void *__wrap_realloc(void *p,size_t n) { if (activo && ++contar==fallar) return NULL; return __real_realloc(p,n); }
-int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a) { if (activo && ++llamada==fallar_formato) return -1; return __real_vsnprintf(s,n,f,a); }
+/* Envuelve realloc: inyecta fallos y delega el resto. */ void *__wrap_realloc(void *p,size_t n) { if (activo && ++contar==fallar) return NULL; return __real_realloc(p,n); }
+/* Envuelve vsnprintf: inyecta fallos y delega el resto. */ int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a) { if (activo && ++llamada==fallar_formato) return -1; return __real_vsnprintf(s,n,f,a); }
 #ifdef __GLIBC__
-int __real___vsnprintf_chk(char *,size_t,int,size_t,const char *,va_list);
-int __wrap___vsnprintf_chk(char *s,size_t n,int flag,size_t cap,const char *f,va_list a) { if (activo && ++llamada==fallar_formato) return -1; return __real___vsnprintf_chk(s,n,flag,cap,f,a); }
+/* Rutina real __vsnprintf_chk: destino de las llamadas no inyectadas. */ int __real___vsnprintf_chk(char *,size_t,int,size_t,const char *,va_list);
+/* Envuelve __vsnprintf_chk: inyecta fallos y delega el resto. */ int __wrap___vsnprintf_chk(char *s,size_t n,int flag,size_t cap,const char *f,va_list a) { if (activo && ++llamada==fallar_formato) return -1; return __real___vsnprintf_chk(s,n,flag,cap,f,a); }
 #endif
-static void fallos(void)
+/* Inyecta errores en reservas, archivos o generación y comprueba que no se publique una salida parcial ni se pierdan recursos. */ static void fallos(void)
 {
-    SimImagen *i=imagen("nop | nop | nop | fsl x4,x2,0,0\n"); SimPipeline s; SimMetricas m={0};
+    /* Inyectamos fallos de M1 tras crear el fixture, sin alterar el núcleo. */ SimImagen *i=imagen("nop | nop | nop | fsl x4,x2,0,0\n"); SimPipeline s; SimMetricas m={0};
     memcpy(i->imem[1023],i->imem[0],sizeof i->imem[0]); i->cantidad_bundles=1024;
     C(sim_pipeline_iniciar(&s,i)==0 && sim_pipeline_configurar_busqueda(&s,SIM_BUSQUEDA_FISICA)==0);
     C(sim_metricas_iniciar(&m,&s)==0); paso(&s,&m,NULL); paso(&s,&m,NULL); C(sim_avanzar_ciclo(&s)==0);
@@ -270,7 +270,7 @@ static int archivo(int argc,char **argv)
     FILE *f=fopen(argv[7],"wb"); C(f && fwrite(s.memoria.bytes,1,65536,f)==65536 && fclose(f)==0);
     sim_metricas_liberar(&m); sim_liberar_imagen(&i); return fflush(stdout)!=0;
 }
-int main(int argc,char **argv)
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */ int main(int argc,char **argv)
 {
 #ifdef SIM_METRICAS_FALLOS
     if (argc==2 && !strcmp(argv[1],"fallos")) { fallos(); return 0; }

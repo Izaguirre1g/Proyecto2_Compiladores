@@ -13,49 +13,49 @@ static size_t checks,casos;
 static bool activo,persistente,fallar_locale;
 static unsigned tipo;
 static size_t llamada,objetivo,total[3],generaciones,fallar_generacion;
-void *__real_malloc(size_t);
-void *__real_calloc(size_t,size_t);
-void *__real_realloc(void *,size_t);
-static bool fallar(unsigned t)
+/* Rutina real malloc: destino de las llamadas no inyectadas. */ void *__real_malloc(size_t);
+/* Rutina real calloc: destino de las llamadas no inyectadas. */ void *__real_calloc(size_t,size_t);
+/* Rutina real realloc: destino de las llamadas no inyectadas. */ void *__real_realloc(void *,size_t);
+/* Cuenta la reserva objetivo y decide si corresponde inyectar el fallo configurado; las otras llamadas conservan la rutina real. */ static bool fallar(unsigned t)
 {
     if (!activo) return false;
     ++total[t];
     return tipo==t && ++llamada>=objetivo && (persistente || llamada==objetivo);
 }
-void *__wrap_malloc(size_t n) { return fallar(0)?NULL:__real_malloc(n); }
-void *__wrap_calloc(size_t n,size_t z) { return fallar(1)?NULL:__real_calloc(n,z); }
-void *__wrap_realloc(void *p,size_t n) { return fallar(2)?NULL:__real_realloc(p,n); }
-int __real_vsnprintf(char *,size_t,const char *,va_list);
-int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a)
+/* Envuelve malloc: inyecta fallos y delega el resto. */ void *__wrap_malloc(size_t n) { return fallar(0)?NULL:__real_malloc(n); }
+/* Envuelve calloc: inyecta fallos y delega el resto. */ void *__wrap_calloc(size_t n,size_t z) { return fallar(1)?NULL:__real_calloc(n,z); }
+/* Envuelve realloc: inyecta fallos y delega el resto. */ void *__wrap_realloc(void *p,size_t n) { return fallar(2)?NULL:__real_realloc(p,n); }
+/* Rutina real vsnprintf: destino de las llamadas no inyectadas. */ int __real_vsnprintf(char *,size_t,const char *,va_list);
+/* Envuelve vsnprintf: inyecta fallos y delega el resto. */ int __wrap_vsnprintf(char *s,size_t n,const char *f,va_list a)
 {
     if (fallar_generacion && ++generaciones==fallar_generacion) return -1;
     return __real_vsnprintf(s,n,f,a);
 }
 #ifdef __GLIBC__
-int __real___vsnprintf_chk(char *,size_t,int,size_t,const char *,va_list);
-int __wrap___vsnprintf_chk(char *s,size_t n,int flag,size_t z,const char *f,va_list a)
+/* Rutina real __vsnprintf_chk: destino de las llamadas no inyectadas. */ int __real___vsnprintf_chk(char *,size_t,int,size_t,const char *,va_list);
+/* Envuelve __vsnprintf_chk: inyecta fallos y delega el resto. */ int __wrap___vsnprintf_chk(char *s,size_t n,int flag,size_t z,const char *f,va_list a)
 {
     if (fallar_generacion && ++generaciones==fallar_generacion) return -1;
     return __real___vsnprintf_chk(s,n,flag,z,f,a);
 }
 #endif
-locale_t __real_newlocale(int,const char *,locale_t);
-locale_t __wrap_newlocale(int m,const char *s,locale_t l)
+/* Rutina real newlocale: destino de las llamadas no inyectadas. */ locale_t __real_newlocale(int,const char *,locale_t);
+/* Envuelve newlocale: inyecta fallos y delega el resto. */ locale_t __wrap_newlocale(int m,const char *s,locale_t l)
 {
     return fallar_locale?(locale_t)0:__real_newlocale(m,s,l);
 }
-static void activar(unsigned t,size_t n,bool siempre)
+/* Activa el punto de fallo inyectado y reinicia sus contadores para que cada caso pruebe una reserva concreta. */ static void activar(unsigned t,size_t n,bool siempre)
 {
     activo=true;tipo=t;objetivo=n;llamada=0;persistente=siempre;
     memset(total,0,sizeof total);
 }
-static void desactivar(void) { activo=false;persistente=false; }
+/* Deshabilita la inyección para que la comprobación y la limpieza usen las rutinas reales. */ static void desactivar(void) { activo=false;persistente=false; }
 #endif
-static SimComparadorResumen resumen(SimComparador *c)
+/* Obtiene el resumen público y exige el estado de comparación esperado mediante las aserciones del banco. */ static SimComparadorResumen resumen(SimComparador *c)
 {
     SimComparadorResumen r;C(sim_comparador_resumen(c,&r)==0);return r;
 }
-static void basicas(const char *nop,const char *trap)
+/* Construye casos básicos de comparación y verifica resultados, argumentos y propiedad de recursos. */ static void basicas(const char *nop,const char *trap)
 {
     ++casos; SimComparadorOpciones o={{nop,0},{nop,0},SIM_BUSQUEDA_FINITA,100,2};
     SimComparador *c=NULL;SimComparadorResumen r;
@@ -70,7 +70,7 @@ static void basicas(const char *nop,const char *trap)
     C(sim_comparador_resumen(NULL,&r)==SIM_COMPARADOR_ARGUMENTO);
     C(sim_comparador_trap(NULL,0,0,NULL)==SIM_COMPARADOR_ARGUMENTO);
     C(sim_comparador_exportar(NULL,0,NULL)==SIM_COMPARADOR_ARGUMENTO);
-    C(sim_comparador_ejecutar(&o,&c,NULL)==0);SimComparador *guardado=c;
+    /* Dos NOP idénticos deben terminar: cuatro ciclos y delta de ciclos cero. */ C(sim_comparador_ejecutar(&o,&c,NULL)==0);SimComparador *guardado=c;
     C(sim_comparador_ejecutar(&o,&c,NULL)==SIM_COMPARADOR_ARGUMENTO && guardado==c);
     C(sim_comparador_resumen(c,NULL)==SIM_COMPARADOR_ARGUMENTO);
     r=resumen(c);C(r.resultado==SIM_COMPARADOR_EQUIVALENTE && r.iniciales_compatibles && r.comparacion_realizada);
@@ -97,19 +97,19 @@ static void basicas(const char *nop,const char *trap)
     memset(ruta,'x',strlen(ruta));free(ruta);o.referencia.ruta=nop;
     C(sim_comparador_exportar(c,1,&j)==0 && strstr(j,nop));
     sim_comparador_liberar_reporte(&j);sim_comparador_liberar(&c);
-    ++casos;o.presupuesto=0;C(sim_comparador_ejecutar(&o,&c,NULL)==0);r=resumen(c);
+    /* Sin flancos no hay comparación final; el resultado debe ser INCONCLUSO. */ ++casos;o.presupuesto=0;C(sim_comparador_ejecutar(&o,&c,NULL)==0);r=resumen(c);
     C(r.resultado==SIM_COMPARADOR_INCONCLUSO && !r.comparacion_realizada && r.metricas_disponibles);
     C(!r.metricas.porcentaje_definido && r.metricas.cambio_porcentual_ciclos==0);
     C(r.resumenes[0].ipc==0 && r.resumenes[0].estado==SIM_PIPE_LIMITE);
     sim_comparador_liberar(&c);
     ++casos;o.presupuesto=UINT64_MAX;C(sim_comparador_ejecutar(&o,&c,NULL)==0 && resumen(c).resultado==SIM_COMPARADOR_EQUIVALENTE);
     sim_comparador_liberar(&c);
-    ++casos;o.referencia.ruta="/no/existe/b1";
+    /* Fallar la carga debe publicar ERROR, nunca equivalencia vacía. */ ++casos;o.referencia.ruta="/no/existe/b1";
     C(sim_comparador_ejecutar(&o,&c,NULL)==0);r=resumen(c);
     C(r.resultado==SIM_COMPARADOR_ERROR && r.lado_error==0 && !r.comparacion_realizada);
     C(sim_comparador_exportar(c,1,&j)==0 && strstr(j,"ERROR"));
     sim_comparador_liberar_reporte(&j);sim_comparador_liberar(&c);
-    ++casos;o.referencia.ruta=trap;o.candidato.ruta=trap;o.modo=SIM_BUSQUEDA_FISICA;o.presupuesto=20;
+    /* El modo físico repite traps y agota 20 ciclos, sin demostrar fin. */ ++casos;o.referencia.ruta=trap;o.candidato.ruta=trap;o.modo=SIM_BUSQUEDA_FISICA;o.presupuesto=20;
     C(sim_comparador_ejecutar(&o,&c,NULL)==0);r=resumen(c);
     C(r.resultado==SIM_COMPARADOR_INCONCLUSO && r.resumenes[0].traps==6 && r.resumenes[1].ciclos==20);
     SimMetricaTrap t;C(sim_comparador_trap(c,0,0,&t)==0 && t.ciclo==3 && t.vector==SIM_TRAP_VECTOR);
@@ -160,7 +160,7 @@ static void basicas(const char *nop,const char *trap)
 #endif
     printf("B1 C: %zu escenarios, %zu comprobaciones PASS\n",casos,checks);
 }
-int main(int argc,char **argv)
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */ int main(int argc,char **argv)
 {
     C(argc==3);basicas(argv[1],argv[2]);return 0;
 }

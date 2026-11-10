@@ -27,6 +27,8 @@ module tb_sim_decode_ref;
 
     string ruta;
     integer archivo, leidos, slot, a, i;
+    // Cada entrada aporta palabra, slot y permisos AUTH/INIT; solo esperamos estabilización
+    // combinacional, sin ejecutar etapas del procesador.
     initial begin
         if (!$value$plusargs("VECTORES=%s", ruta)) $fatal(1, "Falta VECTORES");
         archivo = $fopen(ruta, "r");
@@ -36,6 +38,8 @@ module tb_sim_decode_ref;
              * Esperar una unidad permite estabilizar los always combinacionales. */
             leidos = $fscanf(archivo, "%d %h %d %d\n", slot, word, a, i);
             if (leidos == 4) begin
+                // Aplicamos permisos antes de observar CRIPTO para distinguir decodificación y
+                // falta de privilegios en la misma palabra.
                 auth = a != 0;
                 init = i != 0;
                 #1;
@@ -52,6 +56,9 @@ module tb_sim_decode_ref;
                 $display("");
             end else if (!$feof(archivo)) $fatal(1, "Vector incompleto");
         end
+        // Terminados los vectores cerramos el archivo y detenemos solo el banco de prueba. Los
+        // decodificadores se observaron combinacionalmente; no se añadió ningún flanco al
+        // procesador.
         $fclose(archivo);
         $finish;
     end

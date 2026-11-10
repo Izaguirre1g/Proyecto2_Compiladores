@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def omitir_generados(carpeta, nombres):
     """Excluye Git, cachés y ejecutables anteriores, sin tocar sus originales."""
     omitidos = set(nombres) & {'.git', '__pycache__', 'build', 'balc', 'balc-ide', 'balc-ll1'}
+    # Cada suite se ejecuta sobre la copia con las herramientas reales. El Makefile general solo
+    # se añade a la pasada completa normal; los modos con sanitizadores instrumentan los
+    # ejecutables propios que compilan las suites.
     for nombre in nombres:
         ruta = Path(carpeta) / nombre
         if ruta.suffix == '.o':
@@ -36,6 +39,9 @@ def ejecutar(orden, copia, entorno):
     inicio = time.monotonic()
     proceso = subprocess.run(orden, cwd=copia, env=entorno, capture_output=True, text=True)
     texto = proceso.stdout + proceso.stderr
+    # Interpretamos el resumen unittest real y conservamos stdout y stderr completos como
+    # evidencia. Un código cero con omisiones se informa SKIP, porque no demuestra todas las
+    # dependencias solicitadas.
     metodos = re.findall(r'Ran (\d+) tests? in', texto)
     omitidos = re.findall(r'skipped=(\d+)' , texto)
     resultado = dict(comando=orden, codigo=proceso.returncode,

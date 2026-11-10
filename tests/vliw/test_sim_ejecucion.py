@@ -23,6 +23,8 @@ NOP = m1.NOP
 # las instrucciones útiles se derivan de sus PC de retiro mediante S2, no de
 # un contador RTL nuevo. El candidato que ejecuta esos programas será M2.
 class EjecucionTests(m1.MetricasTests):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         # La preparación M1 construye los oráculos originales. Se reemplazan
@@ -38,6 +40,7 @@ class EjecucionTests(m1.MetricasTests):
         cls.compilar(['tools/vliw/sim_vliw_metricas.c']+sim, cls.cli)
         cls.diferenciales = cls.metamorfismos = 0
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         evidencia = dict(unitarias=getattr(cls, 'unitarias', ''), fallos=getattr(cls, 'reservas', ''),
@@ -49,6 +52,8 @@ class EjecucionTests(m1.MetricasTests):
         if os.environ.get('M2_EVIDENCIA'):
             Path(os.environ['M2_EVIDENCIA']).write_text(json.dumps(evidencia, indent=2)+'\n')
 
+    # Escribe el contenedor BALB temporal del caso con cabecera, código y datos para probar la
+    # sesión M2.
     def balb(self, mem, datos=b''):
         # CB ya produjo el MEM. Se invierte su texto hexadecimal al orden de
         # bytes BALB y se agrega una sección de datos para inicializar DMEM.
@@ -63,6 +68,8 @@ class EjecucionTests(m1.MetricasTests):
                            len(codigo),0,48+len(codigo),len(datos),0,0)+codigo+datos)
         return archivo
 
+    # Ejecuta la sonda de métricas de la prueba y conserva sus resultados para comparar sesiones
+    # y fragmentación.
     def correr(self, nombre, asm=None, mem=None, datos=None, presupuesto=200, fisica=False, balb=False):
         # Se admite un MEM preparado por el caso o se obtiene con CB original.
         # BALB permite datos iniciales distintos de cero; MEM basta sin ellos,
@@ -76,6 +83,9 @@ class EjecucionTests(m1.MetricasTests):
         # run compara M2 con S6 directo después de cada flanco: PC, reloj,
         # estado, bundles, GPR, DMEM completa y señales públicas de crypto/trap.
         # También coteja su reporte con M1 aplicado a la referencia.
+        # La sesión M2 ejecuta el programa y devuelve por separado JSON M1 y DMEM completa.
+        # Comprobamos su coherencia y repetibilidad antes de contrastar con la ejecución directa
+        # heredada de M1.
         salida = self.ejecutar([self.bin,'run',*args,'json',final])
         r = json.loads(salida); memoria=final.read_bytes()
         self.assertEqual(len(memoria),65536)
@@ -87,6 +97,9 @@ class EjecucionTests(m1.MetricasTests):
         self.assertEqual(r['admitidos'],r['completados']+r['anulados']+r['pendientes'])
         self.assertEqual(r['instrucciones_utiles'],sum(r['instrucciones_por_slot'].values()))
         for secreto in ('password','keys','boveda'):
+            # El reporte público no debe revelar contraseña ni llaves aunque la sesión haya
+            # ejecutado CRIPTO. La comprobación recorre los nombres de los campos secretos, sin
+            # inspeccionar su contenido.
             self.assertNotIn(secreto,salida)
         # Repetir desde una sesión nueva exige JSON determinista. La pasada
         # TEXTO ejercita el otro exportador M1 con el mismo programa y estado.
@@ -104,6 +117,7 @@ class EjecucionTests(m1.MetricasTests):
             if asm is not None:(d/(nombre+'.asm')).write_text(asm)
         return r,memoria
 
+    # Ejecuta el banco C de sesiones y sus fallos inyectados de memoria y observación.
     def test_01_c_y_fallos(self):
         nop=self.dir/'nop.mem';nop.write_text('0'*32+'\n')
         mem=self.codificar('nop | guardap x0,x0,4 | nop | nop\n')
@@ -123,6 +137,8 @@ class EjecucionTests(m1.MetricasTests):
         self.assertRegex(self.unitarias,r'M2: \d+ comprobaciones PASS')
         self.assertRegex(self.reservas,r'M2: \d+ comprobaciones PASS')
 
+    # Invoca el ejecutable del caso con sus argumentos y comprueba su retorno; devuelve la
+    # salida para contrastar datos.
     @classmethod
     def ejecutar(cls, cmd, esperado=0):
         # stderr conserva diagnósticos y la cantidad de flancos cotejados;
@@ -135,6 +151,8 @@ class EjecucionTests(m1.MetricasTests):
             raise AssertionError(f'{cmd}: código {p.returncode}, esperado {esperado}\n{p.stdout!r}\n{p.stderr!r}')
         return p.stdout.decode('utf-8')
 
+    # Fragmenta la ejecución en distintos avances y comprueba igualdad con el horizonte
+    # continuo.
     def test_12_fragmentacion(self):
         # Cambiar solo los cortes del presupuesto no debe perder ni repetir
         # observaciones: 100, 10+20+30+40 y 100×1 deben dar el mismo JSON,
@@ -159,11 +177,15 @@ class EjecucionTests(m1.MetricasTests):
                 for fragmento in ('100','10,20,30,40','1'):
                     salida=self.ejecutar([self.bin,'chunk',tipo,archivo,modo,100,fragmento,'json',out])
                     resultados.append((salida,out.read_bytes()))
+                # Dividir el presupuesto en varios avances debe conservar JSON y DMEM. Una
+                # diferencia entre particiones revelaría ciclos perdidos, observaciones
+                # duplicadas o efectos repetidos al reanudar.
                 self.assertEqual(resultados[0],resultados[1]);self.assertEqual(resultados[1],resultados[2])
                 referencia=self.ejecutar([self.bin,'run',tipo,archivo,modo,100,1,'json',out])
                 self.assertEqual(resultados[0],(referencia,out.read_bytes()))
                 type(self).metamorfismos+=1
 
+    # Prueba argumentos adversariales de la CLI y exige sus códigos de rechazo.
     def test_13_cli_adversarial(self):
         mem=self.codificar(NOP)
         for presupuesto,codigo,estado in [('0',2,'LIMITE'),('1',2,'LIMITE'),
@@ -182,6 +204,7 @@ class EjecucionTests(m1.MetricasTests):
         self.assertEqual(r['ciclos'],100)
         self.assertIn('Métricas dinámicas',self.ejecutar([self.cli,'mem',mem,'finita',10,'texto']))
 
+    # Entrega entradas corruptas y verifica que las sesiones no publiquen resultados válidos.
     def test_14_entradas_corruptas(self):
         # Son fallos de carga, no excepciones de la ISA: archivos vacíos,
         # hex inválido o bundles incompletos deben impedir cualquier reporte.
@@ -194,6 +217,7 @@ class EjecucionTests(m1.MetricasTests):
         mem=self.codificar(NOP);archivo=self.balb(mem);archivo.write_bytes(archivo.read_bytes()[:-1])
         self.assertEqual(self.ejecutar([self.cli,'balb',archivo,'finita',10,'json'],1),'')
 
+    # Fuerza errores de CLI y salida y comprueba diagnóstico y liberación.
     def test_15_error_cli_y_salida(self):
         # Recortar el código deja un salto legal hacia fuera de la extensión
         # FINITA. La herramienta debe comunicar el rechazo de PC como error,
@@ -207,6 +231,8 @@ class EjecucionTests(m1.MetricasTests):
         mem=self.codificar(NOP)
         with open('/dev/full','wb') as f:
             p=subprocess.run(list(map(str,[self.cli,'mem',mem,'finita',10,'json'])),stdout=f,stderr=subprocess.PIPE)
+        # Un fallo al escribir el reporte debe producir error aun si la simulación fue correcta.
+        # /dev/full separa la entrega de resultados del éxito de la ejecución.
         self.assertEqual(p.returncode,1);self.assertIn(b'error al escribir',p.stderr)
 
 

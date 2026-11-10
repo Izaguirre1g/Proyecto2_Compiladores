@@ -29,6 +29,8 @@ VACIO = (1 << (ctypes.sizeof(ctypes.c_size_t)*8))-1
 NOP = 'nop | nop | nop | nop\n'
 
 
+# Calcula la huella FNV-1a de referencia de los bytes de memoria, reduciendo cada producto a 64
+# bits.
 def fnv(datos):
     h = 14695981039346656037
     for b in datos:
@@ -37,6 +39,8 @@ def fnv(datos):
 
 
 class MetricasTests(unittest.TestCase):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='pruebas-m1-')
@@ -44,6 +48,9 @@ class MetricasTests(unittest.TestCase):
         cls.dir = Path(cls.tmp.name)
         cls.comandos, cls.ejemplos = [], []
         cls.ejecuciones = cls.rtl_programas = cls.rtl_ciclos = cls.comparaciones = 0
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. Las variantes de inyección se enlazan aparte: permiten provocar fallos
+        # sin cambiar las bibliotecas bajo prueba.
         cls.cc = shlex.split(os.environ.get('CC', 'cc'))
         cls.flags = ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude']
         sim = [f'src/Simulador_VLIW/sim_{s}.c' for s in ('pipeline', 'alu', 'lsu', 'bru', 'crypto', 'decode', 'cargador')]
@@ -64,6 +71,8 @@ class MetricasTests(unittest.TestCase):
                       'tb_sim_crypto_ref', '-o', cls.sv, ROOT/'tests/vliw/rtl/tb_sim_crypto_ref.sv']+
                      argumentos_rtl(cls.arch))
 
+    # Invoca el ejecutable del caso con sus argumentos y comprueba su retorno; devuelve la
+    # salida para contrastar datos.
     @classmethod
     def ejecutar(cls, cmd, esperado=0):
         cmd = list(map(str, cmd))
@@ -73,10 +82,13 @@ class MetricasTests(unittest.TestCase):
             raise AssertionError(f'{cmd}: código {p.returncode}, esperado {esperado}\n{p.stdout!r}\n{p.stderr!r}')
         return p.stdout.decode('utf-8')
 
+    # Reconstruye el componente necesario desde las fuentes de la copia; un error de compilación
+    # no se considera una prueba aprobada.
     @classmethod
     def compilar(cls, fuentes, salida, extra=()):
         cls.ejecutar(cls.cc+cls.flags+list(extra)+list(map(str, fuentes))+['-o', salida])
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         e = dict(ejecuciones=cls.ejecuciones, rtl_programas=cls.rtl_programas, rtl_ciclos=cls.rtl_ciclos,
@@ -86,12 +98,16 @@ class MetricasTests(unittest.TestCase):
         if os.environ.get('M1_EVIDENCIA'):
             Path(os.environ['M1_EVIDENCIA']).write_text(json.dumps(e, indent=2)+'\n')
 
+    # Invoca el codificador existente para obtener la imagen que ejecutarán las pruebas de
+    # métricas.
     def codificar(self, asm):
         fuente, mem, bin_ = self.dir/'programa.asm', self.dir/'programa.mem', self.dir/'programa.bin'
         fuente.write_text(asm)
         self.ejecutar([self.cb, fuente, mem, bin_])
         return mem
 
+    # Ejecuta la sonda de métricas de la prueba y conserva sus resultados para comparar sesiones
+    # y fragmentación.
     def correr(self, nombre, asm=None, mem=None, datos=None, presupuesto=200, fisica=False, balb=False):
         mem = self.codificar(asm) if mem is None else mem
         datos = bytes(65536) if datos is None else bytes(datos)
@@ -110,6 +126,9 @@ class MetricasTests(unittest.TestCase):
         salida = self.ejecutar([self.bin, *args, 'json', final])
         r = json.loads(salida)
         memoria = final.read_bytes()
+        # La captura de memoria y el resumen M1 deben describir el mismo estado. Las identidades
+        # de bundles e instrucciones y los cocientes posteriores detectan pérdidas de eventos,
+        # doble conteo o una ventana desalineada.
         self.assertEqual(len(memoria), 65536)
         self.assertEqual(r['arquitectura']['dmem_fnv1a64'], fnv(memoria))
         self.assertEqual(r['naturaleza'], 'dinamica')
@@ -142,6 +161,8 @@ class MetricasTests(unittest.TestCase):
                 (carpeta/(nombre+'.asm')).write_text(asm)
         return r, memoria
 
+    # Ejecuta la referencia RTL y compara sus eventos por flanco con las métricas observadas por
+    # M1.
     def contraste_rtl(self, nombre, asm=None, mem=None, datos=None, ciclos=20):
         mem = self.codificar(asm) if mem is None else mem
         datos = bytes(65536) if datos is None else bytes(datos)
@@ -162,6 +183,9 @@ class MetricasTests(unittest.TestCase):
             for x in lista:
                 if 'mem' in x:
                     struct.pack_into('<I', completa, x['mem'], x['valor'])
+            # El volcado disperso se reconstruye sobre 65536 bytes inicialmente cero. Compararlo
+            # con la captura M1 comprueba toda DMEM, sin sustituir la igualdad de bytes por su
+            # huella.
             self.assertEqual(memoria, completa)
         # Oráculo desde la traza RTL, con S2 original solo para identificar
         # instrucciones y destinos x0. No se calcula ninguna semántica ISA.
@@ -183,6 +207,9 @@ class MetricasTests(unittest.TestCase):
                 bru += por_pc[(t['pc2'] >> 4) & 1023].get(2, {}).get('estado') == 0
         for clave in ('admitidos', 'completados', 'anulados'):
             self.assertEqual(r[clave], st[-1][clave])
+        # El retiro se obtiene de bundles válidos en WB y de sus operaciones decodificadas, no
+        # de escrituras GPR. Por eso los NOP y los destinos x0 tienen categorías distintas, y
+        # los eventos de EX se contrastan por separado.
         self.assertEqual(r['ciclos'], ciclos)
         self.assertEqual(r['bundles_nop'], nop)
         self.assertEqual(r['instrucciones_por_slot'], {n: por_slot[i] for i, n in enumerate(('ALU', 'LSU', 'BRU', 'CRIPTO'))})
@@ -202,6 +229,8 @@ class MetricasTests(unittest.TestCase):
             conflictos_registro=sum(t['conflicto'] for t in st),
             conflictos_memoria=sum(t['a_we'] and t['b_we'] and (t['a_addr'] & 0xfffc) == (t['b_addr'] & 0xfffc) for t in st)).items():
             self.assertEqual(r[clave], valor, clave)
+        # El historial debe conservar el ciclo, PC de EX y vector de cada excepción. Esto
+        # detecta traps omitidos o duplicados aunque el contador acumulado coincida.
         self.assertEqual(r['excepciones'], [dict(ciclo=t['c'], pc=t['pc2'], vector=t['redirect']) for t in st if t['fault']])
         for clave, trace in (('pc', 'pc'), ('estado_crypto', 'estado'), ('trap_count32', 'traps'), ('trap_pc', 'trap_pc'), ('registros', 'regs')):
             self.assertEqual(r['arquitectura'][clave], st[-1][trace])
@@ -210,12 +239,15 @@ class MetricasTests(unittest.TestCase):
             (Path(os.environ['M1_ARTEFACTOS'])/(nombre+'-rtl.json')).write_text(json.dumps(sv, indent=2)+'\n')
         return r
 
+    # Ejecuta el banco C, incluidos fallos inyectados de reserva y generación de reportes.
     def test_01_c_y_fallos(self):
         type(self).unitarias = self.ejecutar([self.bin]).strip()
         self.assertRegex(self.unitarias, r'M1: \d+ escenarios, \d+ comprobaciones PASS')
         type(self).reservas = self.ejecutar([self.fallos, 'fallos']).strip()
         self.assertRegex(self.reservas, r'\d+ reservas, 4 errores de generación PASS')
 
+    # Comprueba ventana vacía y ejecución secuencial sin dividir por cero ni inventar
+    # instrucciones.
     def test_02_cero_y_secuencial(self):
         r, _ = self.correr('sin-ciclos', NOP, presupuesto=0)
         self.assertEqual((r['ciclos'], r['ipc'], r['admitidos'], r['estado']), (0, 0, 0, 'LIMITE'))
@@ -224,6 +256,7 @@ class MetricasTests(unittest.TestCase):
         r, _ = self.correr('nop', NOP)
         self.assertEqual((r['ciclos'], r['completados'], r['bundles_nop'], r['instrucciones_utiles']), (4, 1, 1, 0))
 
+    # Contrasta instrucciones con RAW y memoria y sus eventos de retiro M1.
     def test_03_raw_y_memoria(self):
         datos = bytearray(65536); datos[0] = 11
         r, _ = self.correr('raw', 'sumai x5,x0,7 | cargai x8,x0,0 | nop | nop\n'+NOP*2+'suma x6,x5,x8 | nop | nop | nop\n', datos=datos)
@@ -231,6 +264,7 @@ class MetricasTests(unittest.TestCase):
         r, mem = self.correr('memoria', 'sumai x5,x0,7 | nop | nop | nop\n'+NOP*2+'nop | guardap x0,x5,4 | nop | nop\nnop | cargai x7,x0,4 | nop | nop\n')
         self.assertEqual((r['lsu_lecturas_ex'], r['lsu_escrituras_ex'], mem[4], r['arquitectura']['registros'][7]), (1, 1, 7, 7))
 
+    # Carga BALB y agota el presupuesto verificando métricas y estado LIMITE.
     def test_04_balb_y_limite(self):
         asm = 'sumai x5,x0,7 | nop | nop | nop\n'
         a, ma = self.correr('balb', asm, balb=True)
@@ -239,11 +273,13 @@ class MetricasTests(unittest.TestCase):
         r, _ = self.correr('limite', asm, presupuesto=3)
         self.assertEqual((r['ciclos'], r['completados'], r['pendientes'], r['estado']), (3, 0, 1, 'LIMITE'))
 
+    # Contrasta las métricas de un programa RAW con señales del RTL.
     def test_05_rtl_raw(self):
         datos = bytearray(65536); datos[0] = 11
         r = self.contraste_rtl('rtl-raw', 'sumai x5,x0,7 | cargai x8,x0,0 | nop | nop\n'+NOP*2+'suma x6,x5,x8 | nop | nop | nop\n', datos=datos, ciclos=12)
         self.assertEqual(r['instrucciones_utiles'], 3)
 
+    # Contrasta saltos y bucles y separa completados, anulados y búsquedas descartadas.
     def test_06_rtl_saltos_y_bucle(self):
         for nombre, condicion, tomado in (('tomado', 'igualsi', 1), ('no-tomado', 'igualno', 0)):
             r = self.contraste_rtl(nombre, f'nop | nop | {condicion} x0,x0,fin | nop\nsumai x5,x0,1 | nop | nop | nop\nfin: sumai x6,x0,9 | nop | nop | nop\n', ciclos=12)
@@ -253,6 +289,7 @@ class MetricasTests(unittest.TestCase):
         self.assertEqual((r['ciclos'], r['completados'], r['instrucciones_utiles'], r['saltos_tomados']), (23, 16, 8, 2))
         self.contraste_rtl('rtl-bucle', asm, ciclos=28)
 
+    # Ejecuta traps y repeticiones del vector para verificar historial y métricas de excepción.
     def test_07_rtl_excepcion_vector_y_repeticion(self):
         mem = self.codificar('sumai x10,x0,42 | nop | nop | nop\nsumai x8,x0,7 | guardap x0,x0,4 | sye x0,0 | fsl x4,x2,0,0\n'+NOP)
         palabras = mem.read_text().splitlines()
@@ -269,6 +306,7 @@ class MetricasTests(unittest.TestCase):
         self.assertEqual(r['excepciones'][0], dict(ciclo=3, pc=0, vector=0x3ff0))
         self.assertTrue(all(x['pc'] == 0x3ff0 for x in r['excepciones'][1:]))
 
+    # Contrasta CRIPTO y conflictos de memoria sin atribuirles eventos inexistentes.
     def test_08_rtl_cripto_y_conflicto_memoria(self):
         operaciones = ['sumai x2,x0,7 | nop | nop | nop', 'nop | guardap x0,x2,0 | nop | nop',
                       'nop | nop | nop | setpwd x2', 'nop | nop | nop | vcr 0',
@@ -287,6 +325,8 @@ class MetricasTests(unittest.TestCase):
         r = self.contraste_rtl('conflicto-memoria', conflicto, ciclos=18)
         self.assertEqual((r['conflictos_memoria'], r['lsu_escrituras_ex'], r['puerto_b_escrituras_ex']), (1, 2, 1))
 
+    # Contrasta habilitaciones de escritura reales sin sustituirlas por instrucciones
+    # completadas.
     def test_10_rtl_escrituras(self):
         # Conflicto provocado combinando palabras legales de CB; su análisis
         # global lo rechazaría, pero el RTL tiene prioridad WB definida.
@@ -301,6 +341,7 @@ class MetricasTests(unittest.TestCase):
         self.assertEqual(r['descartes_x0_por_slot'], [1, 1, 1, 0])
         self.assertEqual(r['instrucciones_utiles'], 3)
 
+    # Provoca un error administrativo sin flanco y comprueba que no aumenten los ciclos.
     def test_11_error_administrativo_sin_flanco(self):
         # CB produce una BRU legal; recortar el archivo de fixture deja un
         # destino fuera de la extensión finita. Se acepta su EX y el intento
@@ -308,9 +349,14 @@ class MetricasTests(unittest.TestCase):
         mem = self.codificar('nop | nop | sye x0,fin | nop\n'+NOP+'fin: nop\n')
         mem.write_text(mem.read_text().splitlines()[0]+'\n')
         r, _ = self.correr('error-pc', mem=mem)
+        # Un error administrativo anterior al flanco no retira el trabajo pendiente ni genera un
+        # trap de hardware. Las métricas deben conservar el último horizonte aceptado y reflejar
+        # la causa de detención.
         self.assertEqual((r['estado'], r['ciclos'], r['bru_ex'], r['completados'], r['instrucciones_utiles'], r['traps'], r['pendientes']),
                          ('PC', 3, 1, 0, 0, 0, 1))
 
+    # Calendariza y emite el plan del caso y compara sus métricas con la ejecución de
+    # referencia.
     def comparar_plan(self, nombre, ins, deps, bloques=None, destinos=(), datos=None):
         bloques = bloques or [(0, len(ins), [])]
         lineas = [f'{len(ins)} {len(deps)} {len(bloques)} {len(destinos)}']
@@ -322,6 +368,9 @@ class MetricasTests(unittest.TestCase):
         entrada.write_text('\n'.join(lineas)+'\n')
         p = json.loads(self.ejecutar([self.s7, 'fixture', entrada, asm_path]))
         self.assertEqual(p['estado'], 0)
+        # El ASM optimizado viene del emisor real S8-A; el conservador procede del fixture
+        # independiente. Ejecutamos ambos y exigimos iguales GPR y 65536 bytes DMEM antes de
+        # interpretar la reducción de ciclos.
         optimizado = asm_path.read_text()
         # Política conservadora aprobada de las pruebas S7: no es un nuevo
         # codificador/backend. CB real resuelve todas las etiquetas.
@@ -342,11 +391,16 @@ class MetricasTests(unittest.TestCase):
         type(self).comparaciones += 1
         return a, b
 
+    # Compara planes S7 emitidos por S8-A y mantiene separadas métricas y equivalencia
+    # funcional.
     def test_09_comparacion_s7_emisor(self):
         op = s8.s7.op
         ins = [op(escribe=[5], texto='sumai x5,x0,7'), op(1, escribe=[8], efectos=1, texto='cargai x8,x0,0'), op(lee=[5, 8], escribe=[6], texto='suma x6,x5,x8')]
         datos = bytearray(65536); datos[0] = 11
         a, b = self.comparar_plan('comparacion-raw', ins, [(0, 2, 0, 3), (1, 2, 0, 3)], datos=datos)
+        # Las dos versiones retiran las mismas operaciones útiles, pero el empaquetado reduce
+        # los ciclos. Esto separa la mejora de IPC de una falsa mejora obtenida omitiendo
+        # trabajo.
         self.assertEqual((a['ciclos'], b['ciclos'], a['instrucciones_utiles'], b['instrucciones_utiles']), (12, 7, 3, 3))
         ins = [op(escribe=[5], texto='sumai x5,x0,7'), op(escribe=[6], texto='sumai x6,x0,8'),
                op(1, lee=[5], efectos=2, texto='guardap x0,x5,4'), op(1, escribe=[7], efectos=1, texto='cargai x7,x0,4'), op(lee=[6, 7], escribe=[8], texto='suma x8,x6,x7')]

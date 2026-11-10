@@ -19,6 +19,8 @@ from rutas_vliw import top_rtl, argumentos_rtl
 
 
 class LsuTests(unittest.TestCase):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.temporal = tempfile.TemporaryDirectory(prefix='pruebas-lsu-')
@@ -26,6 +28,8 @@ class LsuTests(unittest.TestCase):
         cls.carpeta = Path(cls.temporal.name)
         cls.sonda = cls.carpeta / 'lsu'
         cls.vectores = cls.ciclos = cls.programas = 0
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. La preparación no reutiliza binarios antiguos del repositorio.
         cc = shlex.split(os.environ.get('CC', 'cc'))
         flags = ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude']
         # S4 puede probarse sin parser; el caso BALB utiliza después BALC real.
@@ -57,6 +61,7 @@ class LsuTests(unittest.TestCase):
         if cls.rtl_disponible:
             cls.comandos.append(dict(comando=cls.compilar_sv, codigo=0))
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         print(f'Contraste S4: {cls.vectores} vectores LSU, {cls.ciclos} ciclos, {cls.programas} ejecuciones top.')
@@ -65,17 +70,26 @@ class LsuTests(unittest.TestCase):
                 vectores=cls.vectores, ciclos=cls.ciclos, programas=cls.programas,
                 comandos=cls.comandos), indent=2) + '\n')
 
+    # Invoca el ejecutable del caso con sus argumentos y comprueba su retorno; devuelve la
+    # salida para contrastar datos.
     def ejecutar(self, comando, esperado=0):
         p = subprocess.run(list(map(str, comando)), cwd=ROOT, capture_output=True, text=True)
         self.comandos.append(dict(comando=list(map(str, comando)), codigo=p.returncode))
         self.assertEqual(p.returncode, esperado, p.stdout + p.stderr)
         return p.stdout
 
+    # Marca SKIP cuando falta la referencia o las herramientas RTL; evita presentar una omisión
+    # como contraste exitoso.
     def exigir_rtl(self):
         if not self.rtl_disponible:
             self.skipTest('se requieren Arquitectura, iverilog y vvp para contraste RTL real')
 
+    # Ensambla los bundles de la prueba con la herramienta real y guarda una imagen MEM temporal
+    # sin reparar hazards deliberados.
     def crear_mem(self, programa):
+        # Fijamos la semilla y construimos programas de este escenario para repetir el mismo
+        # estímulo. El ayudante contrastar ejecuta después C y RTL y comprueba sus
+        # observaciones; aquí se preparan los datos, sin reemplazar ese oráculo.
         self.exigir_rtl()
         bundles = []
         for n, fila in enumerate(programa):
@@ -87,9 +101,14 @@ class LsuTests(unittest.TestCase):
         ruta.write_text(self.asm.Program(tuple(bundles)).memory_text())
         return ruta
 
+    # Ejecuta la misma imagen en simulador C y referencia y compara las observaciones públicas
+    # del caso.
     def contrastar(self, programa, datos=None, reset_despues=0, restaurar=False, balb=None):
         self.exigir_rtl()
         ruta = self.crear_mem(programa)
+        # Igualamos toda DMEM inicial y conservamos por separado sus representaciones en bytes y
+        # palabras. El modo de reset determina si se conserva la escritura activa en EX o se
+        # restaura la imagen después.
         inicial = bytearray(65536) if datos is None else bytearray(datos)
         self.assertEqual(len(inicial), 65536)
         crudo, palabras = self.carpeta / 'datos.bin', self.carpeta / 'datos.hex'
@@ -108,10 +127,15 @@ class LsuTests(unittest.TestCase):
             args += ['+RESTAURAR']
         rtl = [json.loads(l) for l in self.ejecutar(args).splitlines() if l.startswith('{')]
         cm, rm = [{v['mem']:v['valor'] for v in lista if 'mem' in v} for lista in (c,rtl)]
+        # Se compara la DMEM final completa reconstruida por las sondas, incluidos sus ceros
+        # implícitos. No basta con que coincidan los resultados de las cargas observadas.
         self.assertEqual(cm, rm, 'DMEM completa final')
         c, rtl = [[v for v in lista if 'mem' not in v] for lista in (c,rtl)]
         self.assertEqual(len(c), limite + int(bool(reset_despues)))
         self.assertEqual(len(c), len(rtl))
+        # Recorremos los flancos correspondientes y contrastamos operandos, direcciones, byte
+        # enables y efectos posteriores. Comparar solo el valor final de un load no detectaría
+        # escrituras indebidas o lecturas adelantadas.
         for sim, hw in zip(c, rtl):
             if 'reset' in sim:
                 self.assertEqual(sim, hw, 'flanco de reset y conservación/restauración DMEM')
@@ -128,6 +152,9 @@ class LsuTests(unittest.TestCase):
                         self.assertEqual(sim['pcs'][n], hw['pcs'][n])
                         self.assertLess(hw['pcs'][n], cantidad*16)
                     elif real:
+                        # El modelo finito puede dejar de buscar al superar el código, mientras
+                        # el RTL continúa con NOP. Solo se admite esa discrepancia fuera de la
+                        # extensión cargada; dentro de ella se perdería un bundle real.
                         self.assertGreaterEqual(hw['pcs'][n], cantidad*16)
                 if sim['stages'][1]:
                     self.assertEqual(sim['idalu'], hw['idalu'])
@@ -138,6 +165,9 @@ class LsuTests(unittest.TestCase):
                     self.assertEqual(sim['exalu'], hw['exalu'])
                     self.assertEqual(sim['x'][0], hw['x'][0])
                     if sim['x'][0]:
+                        # Los buses LSU corresponden a la transacción antes del flanco y postmem
+                        # a la palabra después de aplicarla. El contraste conjunto detecta
+                        # errores de carril, dato o momento de escritura.
                         self.assertEqual(sim['x'], hw['x'], 'señales LSU antes del flanco')
                         self.assertEqual(sim['postmem'], hw['postmem'], 'palabra posterior al acceso')
                 if sim['stages'][3]:
@@ -151,14 +181,20 @@ class LsuTests(unittest.TestCase):
                     self.assertEqual(sim['w1'], hw['w1'])
                 self.assertEqual(sim['pending'][0], hw['pending'][0])
                 if sim['pending'][0]:
+                    # Una carga pendiente debe conservar destino y dato hasta WB. Releer memoria
+                    # al retirarla alteraría el valor si otro acceso modificó la palabra después
+                    # de EX.
                     self.assertEqual(sim['pending'], hw['pending'])
         type(self).ciclos += limite
         type(self).programas += 1
         return c, cm
 
+    # Ejecuta pruebas C de memoria, pipeline y recursos y exige sus comprobaciones
+    # autoverificables.
     def test_01_unitarias_memoria_pipeline_y_recursos(self):
         self.assertIn('233 comprobaciones', self.ejecutar([self.sonda]))
 
+    # Contrasta vectores LSU con la unidad y memoria RTL reales.
     def test_02_vectores_lsu_memory_reales(self):
         self.exigir_rtl()
         rng = random.Random(43011108)
@@ -184,18 +220,23 @@ class LsuTests(unittest.TestCase):
         self.assertEqual(len(c),len(rtl))
         type(self).vectores=len(filas)
 
+    # Reproduce la tabla store/load y distingue publicación EX de retiro WB.
     def test_03_tabla_store_load(self):
         # B0 almacena 0 sobre 12345678 en EX/ciclo 3. B1 lee el cero en EX/4
         # y lo publica en WB/5. El NOP ALU no añade una quinta etapa.
         datos=bytearray(65536); datos[:4]=(0x12345678).to_bytes(4,'little')
         p=[('nop','guardap x0,x0,0'),('nop','cargai x2,x0,0')]
         t,m=self.contrastar(p,datos)
+        # El store todavía no modifica DMEM durante su preparación combinacional. La carga
+        # siguiente debe observar la palabra ya publicada, y su destino solo cambia al pasar por
+        # WB.
         self.assertEqual((t[2]['x'][5],t[2]['postmem']),(0x12345678,0))
         self.assertEqual((t[3]['pending'],t[4]['w1']),([1,2,0],[1,2,0]))
         self.assertEqual(m,{})
         if os.environ.get('S4_TABLA'):
             Path(os.environ['S4_TABLA']).write_text(json.dumps(t,indent=2)+'\n')
 
+    # Prueba palabras, bytes y direcciones límite con el direccionamiento del Proyecto I.
     def test_04_palabras_bytes_y_direcciones(self):
         # Fuente -1 queda disponible para LSU tras N+3. Palabra no alineada,
         # byte alto, alias 64 KiB y wrap de dirección usan memoria física real.
@@ -209,6 +250,7 @@ class LsuTests(unittest.TestCase):
         self.assertEqual(m[65532],0x01000000)
         self.assertEqual(t[-1]['regs'][11],0xff01ffff)
 
+    # Ejecuta ALU y LSU simultáneas y comprueba conflictos y prioridades de escritura.
     def test_05_alu_y_lsu_simultaneos_y_conflictos(self):
         datos=bytearray(65536); datos[:4]=(99).to_bytes(4,'little')
         for destino in (0,5,6):
@@ -223,16 +265,21 @@ class LsuTests(unittest.TestCase):
         self.assertEqual(m,{})
         self.assertEqual(t[1]['idlsu'][2],0)
 
+    # Consume una carga en N+1, N+2 y N+3 para comprobar ausencia de forwarding.
     def test_06_load_a_alu_n_mas_1_2_3(self):
         datos=bytearray(65536); datos[0]=7
         for d in (1,2,3):
             p=[('nop','cargai x2,x0,0')]+[('nop','nop')]*(d-1)+[('suma x5,x2,x0','nop')]
             with self.subTest(distancia=d):
                 t,_=self.contrastar(p,datos)
+                # Sin forwarding, una carga solo alimenta correctamente a la ALU cuando su valor
+                # ya estaba publicado antes de ID. El consumidor N+2 todavía lee el banco
+                # anterior al WB del mismo flanco.
                 self.assertEqual(t[d+1]['idalu'][0],7 if d==3 else 0)
                 self.assertEqual(t[3]['w1'],[1,2,7])
                 self.assertEqual(t[-1]['regs'][5],7 if d==3 else 0)
 
+    # Usa resultados ALU como base y dato de store y verifica cuándo los captura ID.
     def test_07_alu_a_base_y_dato_store(self):
         for d,fuente in itertools.product((1,2,3),('base','dato')):
             store='guardap x2,x0,0' if fuente=='base' else 'guardap x0,x2,0'
@@ -242,6 +289,7 @@ class LsuTests(unittest.TestCase):
                 self.assertEqual(t[d+1]['idlsu'][1 if fuente=='base' else 2],4 if d==3 else 0)
                 if fuente=='dato': self.assertEqual(m,{0:4} if d==3 else {})
 
+    # Encadena load y store sin bypass y comprueba el dato realmente observado.
     def test_08_load_a_store_sin_forwarding(self):
         datos=bytearray(65536); datos[0]=23
         for d in (1,2,3):
@@ -250,6 +298,7 @@ class LsuTests(unittest.TestCase):
             self.assertEqual(t[d+1]['idlsu'][2],23 if d==3 else 0)
             self.assertEqual(m.get(4,0),23 if d==3 else 0)
 
+    # Emite accesos consecutivos y contrasta sus efectos de memoria.
     def test_09_accesos_consecutivos(self):
         datos=bytearray(65536); datos[:8]=bytes([0x80,0xff,0x7f,0,9,0,0,0])
         p=[('nop','cargai x1,x0,0'),('nop','cargabai x2,x0,1'),
@@ -259,6 +308,7 @@ class LsuTests(unittest.TestCase):
         self.assertEqual([t[-1]['regs'][n] for n in (1,2,3,4)],[0x007fff80,0xffffffff,0x007f0080,0])
         self.assertEqual(m,{0:0x007f0080})
 
+    # Aplica reset durante store/load y comprueba los efectos que RTL conserva o descarta.
     def test_10_reset_store_y_load(self):
         datos=bytearray(65536); datos[0]=0x80
         for operacion in ('guardap x0,x0,0','cargabai x31,x0,0'):
@@ -276,6 +326,7 @@ class LsuTests(unittest.TestCase):
                             datos,reset_despues=2,restaurar=True)
         self.assertEqual(next(c for c in t if 'reset' in c)['despues'],0x80)
 
+    # Carga una sección de datos BALB y verifica su disposición inicial en DMEM.
     def test_11_balb_datos_iniciales(self):
         self.exigir_rtl()
         p=[('nop','cargai x1,x0,16'),('nop','cargabai x2,x0,19'),
@@ -299,6 +350,7 @@ class LsuTests(unittest.TestCase):
         self.assertEqual(t[-1]['regs'][1:4],[0x80345678,0xffffff80,0])
         self.assertEqual(m,{})
 
+    # Contrasta ALU/LSU aleatorias, incluyendo aliasing de direcciones.
     def test_12_aleatorio_alu_lsu_con_aliasing(self):
         self.exigir_rtl()
         rng=random.Random(11084301)
@@ -311,6 +363,7 @@ class LsuTests(unittest.TestCase):
             p.append((alu,l))
         self.contrastar(p,datos)
 
+    # Compila una constante BAL y verifica que la carga real respete su ubicación en DMEM.
     def test_13_constante_generada_por_compilador(self):
         self.exigir_rtl()
         import struct
@@ -341,9 +394,13 @@ class LsuTests(unittest.TestCase):
         fixture.write_bytes(header+codigo+payload)
         datos=bytearray(65536); datos[base:base+cantidad]=payload
         t,m=self.contrastar(p,datos,balb=fixture)
+        # La dirección global emitida por el compilador debe servir tanto para calcular la base
+        # como para cargar el dato inicial. El resultado firmado verifica además que el byte
+        # negativo se extienda y no se interprete como unsigned.
         self.assertEqual(t[-1]['regs'][2:6],[0x4000,0xffffff80,0xffffff80,0])
         self.assertEqual(m,{})
 
+    # Escribe una palabra y carga inmediatamente un byte para comprobar la semántica de lectura.
     def test_14_store_palabra_load_byte_inmediato(self):
         # Un store palabra y un load byte consecutivos se comunican por DMEM
         # sin esperar N+3. Esa distancia solo corresponde al banco de registros.

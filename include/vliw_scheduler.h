@@ -105,5 +105,9 @@ VliwEstado vliw_planificar(const VliwEntrada *entrada, VliwPlan **salida,
  * No repara dependencias ni modifica el plan. Acepta también planes de prueba. */
 VliwEstado vliw_verificar(const VliwEntrada *entrada, const VliwPlan *plan,
                           VliwDiagnostico *diagnostico);
+/*
+ * Libera los arreglos propios y el plan publicado por S7, dejando NULL; no libera el texto
+ * prestado de las instrucciones.
+ */
 void vliw_liberar(VliwPlan **plan);
 #endif

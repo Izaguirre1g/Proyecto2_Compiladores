@@ -57,12 +57,23 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *,
  * Solo se ofrece contrato estricto: otro renombramiento requiere acuerdos
  * futuros, no se ignoran temporales ni registros de enlace arbitrariamente. */
 SimComparadorCodigo sim_comparador_resumen(const SimComparador *, SimComparadorResumen *);
+/*
+ * Copia el trap solicitado de uno de los programas comparados; valida lado, índice y salida
+ * sin ceder el historial interno.
+ */
 SimComparadorCodigo sim_comparador_trap(const SimComparador *, unsigned lado,
     size_t indice, SimMetricaTrap *);
 /* Reporte B1 nuevo TEXTO/JSON v1; no cambia ni reproduce el JSON completo M1.
  * Salida inicialmente NULL, publicación transaccional. Liberar la cadena con
  * esta API, independientemente de la vida del resultado. */
 SimComparadorCodigo sim_comparador_exportar(const SimComparador *, SimMetricasFormato, char **);
+/*
+ * Libera la cadena propia exportada por B1 y deja su puntero en NULL; admite una salida nula.
+ */
 void sim_comparador_liberar_reporte(char **);
+/*
+ * Libera rutas e historiales propios de ambos lados y el comparador; admite NULL y anula el
+ * puntero del cliente.
+ */
 void sim_comparador_liberar(SimComparador **);
 #endif

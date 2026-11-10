@@ -8,6 +8,10 @@
 
 enum { MAX_ASM = 2097152, MAX_EVENTOS = 128 };
 typedef struct {
+    /*
+     * traza conserva buses y ocupaciones anteriores al flanco; registros y pendientes
+     * describen el estado posterior capturado.
+     */
     SimCiclo traza;
     SimInstruccion bru;
     uint32_t registros[32];
@@ -17,6 +21,10 @@ typedef struct {
     bool metricas_validas;
 } Evento;
 
+/*
+ * Acepta únicamente dígitos decimales dentro del límite; publica el entero solo si la
+ * conversión completa no falla.
+ */
 static bool numero(const char *s, uint64_t maximo, uint64_t *n)
 {
     if (!s || !*s) return false;
@@ -25,6 +33,10 @@ static bool numero(const char *s, uint64_t maximo, uint64_t *n)
     if (errno || *fin || v>maximo) return false;
     *n=(uint64_t)v; return true;
 }
+/*
+ * Lee el ASM acotado para contrastar instrucciones con la imagen; devuelve almacenamiento
+ * propio que el llamador debe liberar.
+ */
 static char *leer(const char *ruta)
 {
     FILE *f=fopen(ruta,"rb"); if (!f) return NULL;
@@ -35,6 +47,10 @@ static char *leer(const char *ruta)
     if (!ok) { free(s); return NULL; }
     s[n]=0; return s;
 }
+/*
+ * Busca en los bundles de CB el primero cuya línea alcanza la anotación; devuelve SIZE_MAX si
+ * no hay correspondencia.
+ */
 static size_t indice(const CbPrograma *p, uint64_t linea)
 {
     if (!linea) return SIZE_MAX;
@@ -43,7 +59,15 @@ static size_t indice(const CbPrograma *p, uint64_t linea)
     for (size_t i=0;i<p->cantidad;++i) if (p->bundles[i].linea>=linea) return i;
     return SIZE_MAX;
 }
+/*
+ * Comprueba que las cuatro palabras del bundle sean cero para reconocer un NOP completo en la
+ * imagen.
+ */
 static bool vacio(const uint32_t *s) { return !(s[0]|s[1]|s[2]|s[3]); }
+/*
+ * Toma una muestra del estado público y de los buses del flanco para registrar efectos
+ * anteriores y posteriores al control.
+ */
 static void capturar(Evento *e, const SimPipeline *s)
 {
     e->traza=s->ultimo_ciclo; e->estado=s->estado; e->metricas_validas=false;
@@ -54,6 +78,10 @@ static void capturar(Evento *e, const SimPipeline *s)
     if (e->traza.ex.valido && e->traza.ex.pc/16<1024)
         (void)sim_decode_palabra(s->imagen->imem[e->traza.ex.pc/16][2],2,&e->bru);
 }
+/*
+ * Serializa un evento de control con su contexto de flanco y efectos públicos; no lo
+ * interpreta como terminación semántica.
+ */
 static void evento(const Evento *e, bool detalle)
 {
     const SimCiclo *t=&e->traza;
@@ -82,6 +110,10 @@ static void evento(const Evento *e, bool detalle)
                e->metricas.ciclos,e->metricas.completados,e->metricas.instrucciones_utiles,e->metricas.ipc);
     putchar('}');
 }
+/*
+ * Conserva una observación destacada separada del prefijo acotado para no perder eventos
+ * relevantes tardíos.
+ */
 static void destacar(Evento *destino, const Evento *origen, const SimMetricas *m)
 {
     *destino=*origen;
@@ -89,10 +121,23 @@ static void destacar(Evento *destino, const Evento *origen, const SimMetricas *m
      * se consulta en puntos destacados, sin mantener contadores alternativos. */
     destino->metricas_validas=sim_metricas_resultados(m,&destino->metricas)==SIM_METRICAS_OK;
 }
+/*
+ * Escribe null para un evento no observado o serializa la observación disponible; la ausencia
+ * no se sustituye por ceros.
+ */
 static void opcional(bool existe, const Evento *e) { if (existe) evento(e,true); else fputs("null",stdout); }
 
+/*
+ * Contrasta las posiciones ASM con el BALB ejecutado, registra control y flancos posteriores y
+ * compara M1/DMEM con M2 al mismo horizonte; produce un diagnóstico, no una terminación
+ * artificial.
+ */
 int main(int argc, char **argv)
 {
+    /*
+     * Las posiciones de línea recibidas se contrastan con CB; no se convierten directamente en
+     * direcciones de instrucciones.
+     */
     uint64_t ls,lm,presupuesto;
     if (argc!=6 || !numero(argv[3],UINT32_MAX,&ls) || !numero(argv[4],UINT32_MAX,&lm) ||
         !numero(argv[5],1000000,&presupuesto)) {
@@ -108,6 +153,9 @@ int main(int argc, char **argv)
     if (codigo.cantidad!=imagen->cantidad_bundles) goto discordancia;
     for (size_t i=0;i<codigo.cantidad;++i)
         if (memcmp(codigo.bundles[i].slots,imagen->imem[i],sizeof imagen->imem[i])) goto discordancia;
+    // CB conserva la línea de origen de cada bundle; con ella localizamos sentinela y main.
+    // Recorremos hacia atrás los NOP para buscar la forma de llamada, sin convertir directamente
+    // una línea ASM en dirección.
     size_t sent=indice(&codigo,ls), main_=indice(&codigo,lm), llamada=SIZE_MAX;
     SimInstruccion b={0}; bool patron=false;
     if (sent!=SIZE_MAX) {
@@ -141,8 +189,14 @@ int main(int argc, char **argv)
                 observacion=sim_metricas_observar(&m,s);
             if (observacion!=SIM_METRICAS_OK) break;
             Evento e; capturar(&e,s);
+            // Las dos muestras posteriores al primer salto final se conservan si hay
+            // presupuesto. No cortamos aquí la ejecución: el salto es un hecho de control, no
+            // una orden de terminar el simulador.
             if (vio_bucle && despues<2) destacar(&posteriores[despues++],&e,&m);
             const SimCiclo *t=&e.traza;
+            // El prefijo conserva hasta 128 eventos y el total sigue aumentando. Llamada,
+            // retorno y sentinela tienen copias destacadas aparte para que un evento tardío no
+            // se pierda por llenar el prefijo.
             if (t->bru_ex_valido || t->excepcion) {
                 ++total;
                 if (cantidad<MAX_EVENTOS) eventos[cantidad++]=e;
@@ -163,10 +217,16 @@ int main(int argc, char **argv)
         }
         if (s->estado!=SIM_PIPE_ACTIVO && s->estado!=SIM_PIPE_LIMITE) break;
     }
+    // La pausa administrativa de presupuesto no agrega un flanco. Solo después de observar M1
+    // consultamos el resumen; un error de observación impide fingir que las métricas están
+    // completas.
     if (observacion==SIM_METRICAS_OK) (void)sim_pipeline_ejecutar(s,0);
     bool dinamico_error=s->estado>SIM_PIPE_LIMITE || observacion!=SIM_METRICAS_OK;
     if (observacion==SIM_METRICAS_OK && sim_metricas_exportar(&m,SIM_METRICAS_JSON,&reporte)!=SIM_METRICAS_OK) goto liberar;
     bool comparado=false,igual_memoria=false,igual_metricas=false,igual_estado=false;
+    // M2 carga una sesión nueva y ejecuta el mismo presupuesto. Sus reintentos registran el
+    // flanco pendiente y descuentan los ciclos ya aceptados antes de continuar; comparamos
+    // estado, JSON M1 y DMEM completa.
     if (!dinamico_error && sim_ejecucion_crear(argv[2],SIM_EJECUCION_BALB,SIM_BUSQUEDA_FINITA,&m2,stderr)==SIM_EJECUCION_OK) {
         SimEjecucionCodigo c=sim_ejecucion_ejecutar(m2,presupuesto);
         for (unsigned k=0;k<2 && c==SIM_EJECUCION_PENDIENTE;++k) {
@@ -210,6 +270,9 @@ int main(int argc, char **argv)
 discordancia:
     fputs("sonda: ASM y BALB no corresponden\n",stderr);
 liberar:
+    // La misma limpieza atiende éxito o error: destruye reportes, sesión M2, historial M1,
+    // núcleo, imagen S1 y ensamblado CB. Ningún objeto prestado queda accesible después de
+    // liberar su propietario.
     if (salida && !ferror(stderr)) fputs("sonda: análisis incompleto; no se certifica finalización\n",stderr);
     sim_metricas_liberar_reporte(&reporte);sim_metricas_liberar_reporte(&r2);
     sim_ejecucion_liberar(&m2);sim_metricas_liberar(&m);free(s);

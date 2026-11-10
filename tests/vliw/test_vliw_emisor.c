@@ -14,58 +14,58 @@ typedef struct {
     VliwInstruccion i[16];VliwDependencia a[32];VliwBloque b[8];size_t su[8][8];
     VliwDestino t[16];VliwEntrada e;VliwDestinos d;
 } Fixture;
-static void iniciar(Fixture *f,size_t n)
+/* Inicializa arreglos y estado del fixture. */ static void iniciar(Fixture *f,size_t n)
 {
     memset(f,0,sizeof(*f));C(n<=16);
     f->e=(VliwEntrada){f->i,n,f->a,0,f->b,n?1:0,true};f->d=(VliwDestinos){f->t,0};f->b[0]=(VliwBloque){0,n,NULL,0};
     for(size_t i=0;i<n;++i)f->i[i]=(VliwInstruccion){.id=100+3*i,.slot=VLIW_SLOT_ALU,.texto="sumai x0,x0,0"};
 }
-static VliwPlan *plan(Fixture *f)
+/* Invoca S7 sobre los metadatos del fixture y exige un plan completo antes de usar sus índices. */ static VliwPlan *plan(Fixture *f)
 {
     VliwPlan *p=NULL;VliwDiagnostico d;VliwEstado s=vliw_planificar(&f->e,&p,&d);
     if(s)fprintf(stderr,"S7: %s\n",d.mensaje);
     C(s==VLIW_OK && p);return p;
 }
-static void bloque(Fixture *f,size_t b,size_t inicio,size_t fin)
+/* Define el bloque y sus límites en los metadatos de prueba para comprobar CFG y layout. */ static void bloque(Fixture *f,size_t b,size_t inicio,size_t fin)
 {
     f->b[b]=(VliwBloque){inicio,fin,f->su[b],0};for(size_t i=inicio;i<fin;++i)f->i[i].bloque=b;
 }
-static void salto(Fixture *f,size_t i,const char *texto,VliwControl control,VliwDestinoTipo tipo,size_t tomado,size_t caida)
+/* Construye la transferencia de control del fixture con el destino y los metadatos que contrastará la prueba. */ static void salto(Fixture *f,size_t i,const char *texto,VliwControl control,VliwDestinoTipo tipo,size_t tomado,size_t caida)
 {
     f->i[i].slot=VLIW_SLOT_BRU;f->i[i].texto=texto;f->i[i].control=control;
     if(control==VLIW_CONTROL_LLAMADA)f->i[i].efectos=VLIW_EF_DESCONOCIDOS;
     f->t[f->d.cantidad++]=(VliwDestino){i,tipo,tomado,caida};
 }
-static char *emitir(Fixture *f,VliwPlan *p)
+/* Invoca S8-A y exige la emisión válida antes de comprobar el ensamblador devuelto. */ static char *emitir(Fixture *f,VliwPlan *p)
 {
     char *s=NULL;VliwEmisorDiagnostico d;VliwEmisorEstado e=vliw_emitir(&f->e,p,&f->d,&s,&d);
     if(e)fprintf(stderr,"emisor: %s\n",d.mensaje);
     C(e==VLIW_EM_OK && s);return s;
 }
-static void rechazar(Fixture *f,VliwPlan *p,VliwEmisorEstado esperado)
+/* Invoca la API con una entrada adversarial y exige el error previsto, sin aceptar salidas parciales. */ static void rechazar(Fixture *f,VliwPlan *p,VliwEmisorEstado esperado)
 {
     char *s=NULL;VliwEmisorDiagnostico d;VliwEmisorEstado e=vliw_emitir(&f->e,p,&f->d,&s,&d);
     if(e!=esperado)fprintf(stderr,"estado %d esperado %d: %s\n",e,esperado,d.mensaje);
     C(e==esperado && !s && d.estado==esperado && *d.mensaje);
 }
-static size_t lineas_bundle(const char *s)
+/* Cuenta las líneas de bundles emitidas para contrastar el layout con el plan, sin contar etiquetas como instrucciones. */ static size_t lineas_bundle(const char *s)
 {
     size_t n=0;for(const char *p=s;*p;){const char *fin=strchr(p,'\n');C(fin!=NULL);
         if(memchr(p,'|',(size_t)(fin-p)))++n;
         p=fin+1;}return n;
 }
-static CbPrograma codificar(const char *s)
+/* Codifica el ASM del fixture mediante CB y exige su aceptación antes de comprobar las palabras. */ static CbPrograma codificar(const char *s)
 {
     CbPrograma p={0};C(cb_ensamblar(s,&p,stderr)==0);return p;
 }
-
+/* Comprueba que el texto emitido conserve slots, bundles vacíos y orden del plan original. */
 static void texto_y_layout(void)
 {
     Fixture f;VliwPlan *p;char *s;
     ++casos;iniciar(&f,1);f.i[0].texto="sumai x5,x0,10";f.i[0].escribe=R(5);p=plan(&f);s=emitir(&f,p);
     C(!strcmp(s,"__vliw_b0:\nsumai x5,x0,10 | nop | nop | nop\n"));C(lineas_bundle(s)==1);
     vliw_emisor_liberar(&s);vliw_emisor_liberar(&s);vliw_emisor_liberar(NULL);vliw_liberar(&p);
-    ++casos;iniciar(&f,2);f.i[0].texto="sumai x5,x0,10";f.i[0].escribe=R(5);
+    /* Dos unidades independientes deben conservar sus slots en un bundle. */ ++casos;iniciar(&f,2);f.i[0].texto="sumai x5,x0,10";f.i[0].escribe=R(5);
     f.i[1]=(VliwInstruccion){.id=307,.slot=VLIW_SLOT_LSU,.texto="cargai x8,x3,0",.lee=R(3),.escribe=R(8),.efectos=VLIW_EF_LEE_MEMORIA};
     p=plan(&f);s=emitir(&f,p);C(!strcmp(s,"__vliw_b0:\nsumai x5,x0,10 | cargai x8,x3,0 | nop | nop\n"));vliw_emisor_liberar(&s);vliw_liberar(&p);
     /* RAW preserva los dos bundles vacíos y el índice3 del consumidor. */
@@ -81,7 +81,7 @@ static void texto_y_layout(void)
     ++casos;iniciar(&f,2);f.i[0].texto="sumai x5,x0,1";f.i[1].texto="sumai x5,x0,2";f.i[0].escribe=f.i[1].escribe=R(5);
     f.a[f.e.cantidad_dependencias++]=(VliwDependencia){0,1,VLIW_DEP_WAW,1};p=plan(&f);s=emitir(&f,p);C(lineas_bundle(s)==2);vliw_emisor_liberar(&s);vliw_liberar(&p);
 }
-static void etiquetas_y_saltos(void)
+/* Verifica nombres de bloque, destinos y desplazamientos de control después de emitir. */ static void etiquetas_y_saltos(void)
 {
     Fixture f;VliwPlan *p;char *s;
     /* El destino no es el primer sucesor. El desplazamiento antiguo999 se
@@ -110,7 +110,7 @@ static void etiquetas_y_saltos(void)
     ++casos;iniciar(&f,1);salto(&f,0,"ret",VLIW_CONTROL_RETORNO,VLIW_DEST_RETORNO,VLIW_VACIO,VLIW_VACIO);f.i[0].lee=R(1);
     p=plan(&f);s=emitir(&f,p);C(strstr(s,"nop | nop | ret | nop"));vliw_emisor_liberar(&s);vliw_liberar(&p);
 }
-static void cripto_y_preservacion(void)
+/* Comprueba que la emisión conserve las operaciones CRIPTO y los operandos no sustituidos. */ static void cripto_y_preservacion(void)
 {
     ++casos;Fixture f;iniciar(&f,6);
     const char *textos[]={"setpwd x0","vcr 0","ell 0,0,x2,x4","fsl x6,x2,0,0","fsli x8,x6,0,0","camcon 0,7"};
@@ -121,14 +121,14 @@ static void cripto_y_preservacion(void)
     VliwPlan *p=plan(&f);VliwPlan plan_copia=*p;size_t inicio=p->inicio_por_bloque[0];
     Fixture copia=f;size_t mapa[6];memcpy(mapa,p->bundle_por_instruccion,sizeof(mapa));
     VliwBundle *bundles=malloc(p->cantidad_bundles*sizeof(*bundles));C(bundles!=NULL);memcpy(bundles,p->bundles,p->cantidad_bundles*sizeof(*bundles));
-    char *s=emitir(&f,p);
+    /* Tras emitir contrastamos textos y copias: el plan prestado no cambia. */ char *s=emitir(&f,p);
     for(size_t j=0;j<6;++j){char linea[200];snprintf(linea,sizeof(linea),"nop | nop | nop | %s\n",textos[j]);C(strstr(s,linea)!=NULL);}
     C(!memcmp(p,&plan_copia,sizeof(*p)) && p->inicio_por_bloque[0]==inicio);
     C(!memcmp(&f,&copia,sizeof(f)));C(!memcmp(mapa,p->bundle_por_instruccion,sizeof(mapa)));C(!memcmp(bundles,p->bundles,p->cantidad_bundles*sizeof(*bundles)));
     ++casos;for(unsigned k=0;k<20;++k){char *otra=emitir(&f,p);C(!strcmp(s,otra));vliw_emisor_liberar(&otra);}
     free(bundles);vliw_emisor_liberar(&s);vliw_liberar(&p);
 }
-static void rechazos(void)
+/* Entrega textos o metadatos inválidos y verifica los diagnósticos del emisor. */ static void rechazos(void)
 {
     Fixture f;iniciar(&f,1);VliwPlan *p=plan(&f);char *s=NULL;VliwEmisorDiagnostico d;
     ++casos;C(vliw_emitir(NULL,p,&f.d,&s,&d)==VLIW_EM_ARGUMENTO && !s);
@@ -142,7 +142,7 @@ static void rechazos(void)
     f.i[0].texto="nop";rechazar(&f,p,VLIW_EM_TEXTO);
     f.i[0].texto="sumai x1,x0,0";rechazar(&f,p,VLIW_EM_METADATOS);
     char largo[161];memset(largo,' ',160);largo[160]=0;f.i[0].texto=largo;rechazar(&f,p,VLIW_EM_TEXTO);f.i[0].texto="sumai x0,x0,0";
-    ++casos;p->bundles[0].instrucciones[0]=99;rechazar(&f,p,VLIW_EM_PLAN);p->bundles[0].instrucciones[0]=0;
+    /* Corrompemos índices y conteos: S7 debe rechazar antes de emitir texto. */ ++casos;p->bundles[0].instrucciones[0]=99;rechazar(&f,p,VLIW_EM_PLAN);p->bundles[0].instrucciones[0]=0;
     p->bundle_por_instruccion[0]=1;rechazar(&f,p,VLIW_EM_PLAN);p->bundle_por_instruccion[0]=0;
     p->bundles[0].operaciones=2;rechazar(&f,p,VLIW_EM_PLAN);p->bundles[0].operaciones=1;
     p->bundles[0].instrucciones[1]=0;rechazar(&f,p,VLIW_EM_PLAN);p->bundles[0].instrucciones[1]=VLIW_VACIO;
@@ -159,7 +159,7 @@ static void rechazos(void)
     p->bundles[p->inicio_por_bloque[1]].instrucciones[0]=1;rechazar(&f,p,VLIW_EM_PLAN);
     p->bundles[p->inicio_por_bloque[1]].instrucciones[0]=VLIW_VACIO;vliw_liberar(&p);
 }
-static void cfg_y_control_oculto(void)
+/* Inyecta discrepancias entre texto, transferencias y CFG y exige rechazo en vez de inferir otro control. */ /* El texto de una BRU no puede ocultar una transferencia que no figure en los metadatos ni contradecir los sucesores del CFG. */ static void cfg_y_control_oculto(void)
 {
     /* Una máscara de registros correcta no basta para ocultar una BRU ni
      * para inventar aristas que el programa emitido no podrá recorrer. */
@@ -170,7 +170,7 @@ static void cfg_y_control_oculto(void)
     f.su[0][0]=1;f.b[0].cantidad_sucesores=1;p=plan(&f);
     f.su[0][0]=0;rechazar(&f,p,VLIW_EM_PLAN);vliw_liberar(&p);
 }
-static void limite_y_rango(void)
+/* Prueba capacidad y desplazamientos límite para detectar salidas imposibles de codificar. */ static void limite_y_rango(void)
 {
     /* No se relajan ramas: un condicional de más de1023 bytes se rechaza por
      * CB, conservando el layout S7. El mismo destino sí cabe en sye16bits. */
@@ -191,17 +191,17 @@ static void limite_y_rango(void)
 }
 
 #ifdef VLIW_EMISOR_FALLOS
-void *__real_malloc(size_t);void *__real_calloc(size_t,size_t);void *__real_realloc(void *,size_t);
-FILE *__real_tmpfile(void);int __real_fflush(FILE *);int __real_fseek(FILE *,long,int);int __real_fclose(FILE *);
+/* Rutina real malloc: destino de las llamadas no inyectadas. */ void *__real_malloc(size_t);/* Rutina real calloc: destino de las llamadas no inyectadas. */ void *__real_calloc(size_t,size_t);/* Rutina real realloc: destino de las llamadas no inyectadas. */ void *__real_realloc(void *,size_t);
+/* Rutina real tmpfile: destino de las llamadas no inyectadas. */ FILE *__real_tmpfile(void);/* Rutina real fflush: destino de las llamadas no inyectadas. */ int __real_fflush(FILE *);/* Rutina real fseek: destino de las llamadas no inyectadas. */ int __real_fseek(FILE *,long,int);/* Rutina real fclose: destino de las llamadas no inyectadas. */ int __real_fclose(FILE *);
 static size_t reserva,fallar;static unsigned io;
-void *__wrap_malloc(size_t n){if(++reserva==fallar)return NULL;return __real_malloc(n);}
-void *__wrap_calloc(size_t n,size_t s){if(++reserva==fallar)return NULL;return __real_calloc(n,s);}
-void *__wrap_realloc(void *p,size_t n){if(++reserva==fallar)return NULL;return __real_realloc(p,n);}
-FILE *__wrap_tmpfile(void){return io==1?NULL:__real_tmpfile();}
-int __wrap_fflush(FILE *f){return io==2?EOF:__real_fflush(f);}
-int __wrap_fseek(FILE *f,long n,int w){return io==3?-1:__real_fseek(f,n,w);}
-int __wrap_fclose(FILE *f){int r=__real_fclose(f);return io==4?EOF:r;}
-static void fallos(void)
+/* Envuelve malloc: inyecta fallos y delega el resto. */ void *__wrap_malloc(size_t n){if(++reserva==fallar)return NULL;return __real_malloc(n);}
+/* Envuelve calloc: inyecta fallos y delega el resto. */ void *__wrap_calloc(size_t n,size_t s){if(++reserva==fallar)return NULL;return __real_calloc(n,s);}
+/* Envuelve realloc: inyecta fallos y delega el resto. */ void *__wrap_realloc(void *p,size_t n){if(++reserva==fallar)return NULL;return __real_realloc(p,n);}
+/* Envuelve tmpfile: inyecta fallos y delega el resto. */ FILE *__wrap_tmpfile(void){return io==1?NULL:__real_tmpfile();}
+/* Envuelve fflush: inyecta fallos y delega el resto. */ int __wrap_fflush(FILE *f){return io==2?EOF:__real_fflush(f);}
+/* Envuelve fseek: inyecta fallos y delega el resto. */ int __wrap_fseek(FILE *f,long n,int w){return io==3?-1:__real_fseek(f,n,w);}
+/* Envuelve fclose: inyecta fallos y delega el resto. */ int __wrap_fclose(FILE *f){int r=__real_fclose(f);return io==4?EOF:r;}
+/* Inyecta errores en reservas, archivos o generación y comprueba que no se publique una salida parcial ni se pierdan recursos. */ static void fallos(void)
 {
     Fixture f;iniciar(&f,3);VliwPlan *p=plan(&f);size_t efectivos=0;VliwEmisorDiagnostico d;
     /* Solo se inyecta durante emitir: el plan original sobrevive a todos los
@@ -226,7 +226,7 @@ static int fixture(const char *ruta,const char *salida)
     VliwDependencia *ar=calloc(m+1,sizeof(*ar));VliwBloque *bl=calloc(k+1,sizeof(*bl));
     VliwDestino *ds=calloc(nt+1,sizeof(*ds));char (*textos)[160]=calloc(n+1,sizeof(*textos));
     C(in && ar && bl && ds && textos);
-    for(size_t i=0;i<n;++i){unsigned slot,ctrl;unsigned long long lee,escribe;
+    /* Leemos metadatos numéricos; el texto literal llega en una fase aparte. */ for(size_t i=0;i<n;++i){unsigned slot,ctrl;unsigned long long lee,escribe;
         C(fscanf(f,"%zu%u%llx%llx%u%u%zu",&in[i].id,&slot,&lee,&escribe,&in[i].efectos,&ctrl,&in[i].bloque)==7);
         in[i].slot=(VliwSlot)slot;in[i].control=(VliwControl)ctrl;in[i].lee=lee;in[i].escribe=escribe;
     }
@@ -237,10 +237,10 @@ static int fixture(const char *ruta,const char *salida)
     }
     for(size_t t=0;t<nt;++t){unsigned tipo;C(fscanf(f,"%zu%u%zu%zu",&ds[t].instruccion,&tipo,&ds[t].tomado,&ds[t].caida)==4);ds[t].tipo=(VliwDestinoTipo)tipo;}
     int c;do{c=fgetc(f);}while(c!=EOF && c!='\n');
-    for(size_t i=0;i<n;++i){C(fgets(textos[i],160,f)!=NULL);size_t l=strlen(textos[i]);C(l && textos[i][l-1]=='\n');textos[i][l-1]=0;in[i].texto=textos[i];}
+    /* Cada instrucción aporta una línea literal; no reinterpretamos su ISA. */ for(size_t i=0;i<n;++i){C(fgets(textos[i],160,f)!=NULL);size_t l=strlen(textos[i]);C(l && textos[i][l-1]=='\n');textos[i][l-1]=0;in[i].texto=textos[i];}
     C(fclose(f)==0);VliwEntrada e={in,n,ar,m,bl,k,true};VliwPlan *p=NULL;VliwDiagnostico sd;
     C(vliw_planificar(&e,&p,&sd)==VLIW_OK);VliwDestinos d={ds,nt};VliwEmisorDiagnostico ed;char *s=NULL;
-    VliwEmisorEstado estado=vliw_emitir(&e,p,&d,&s,&ed);
+    /* El plan real S7 alimenta S8-A; solo éxito permite escribir el ASM. */ VliwEmisorEstado estado=vliw_emitir(&e,p,&d,&s,&ed);
     if(estado)fprintf(stderr,"emisor %d: %s\n",estado,ed.mensaje);
     if(!estado){f=fopen(salida,"wb");C(f!=NULL);C(fwrite(s,1,strlen(s),f)==strlen(s));C(fclose(f)==0);}
     printf("{\"estado\":%d,\"vacios\":%zu,\"bundles\":[",estado,p->cantidad_vacios);
@@ -250,7 +250,7 @@ static int fixture(const char *ruta,const char *salida)
     vliw_emisor_liberar(&s);vliw_liberar(&p);for(size_t b=0;b<k;++b)free((void *)bl[b].sucesores);
     free(in);free(ar);free(bl);free(ds);free(textos);return estado?1:0;
 }
-
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */
 int main(int argc,char **argv)
 {
 #ifdef VLIW_EMISOR_FALLOS

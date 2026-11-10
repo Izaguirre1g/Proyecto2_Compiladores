@@ -13,7 +13,7 @@ static const SimOperacion operaciones[] = {
 
 #define COMPROBAR(c) do { if (!(c)) { \
     fprintf(stderr, "FAIL ALU línea %d: %s\n", __LINE__, #c); exit(1); } } while (0)
-
+/* Recorre vectores ALU con resultados literales y verifica aritmética, desplazamientos y rechazos sin derivar el oráculo de la implementación. */
 static void casos_conocidos(void)
 {
     /* Cada instrucción tiene un oráculo literal. Incluye wraparound de suma
@@ -35,20 +35,20 @@ static void casos_conocidos(void)
         {0, 0x7fffffffu, 1, 0x80000000u}, {1, 0x80000000u, 1, 0x7fffffffu},
         {8, UINT32_MAX, 0, 1}, {9, UINT32_MAX, 0, 0}, {8, 0, 0, 0}, {9, 0, 0, 0}
     };
-    for (size_t n = 0; n < sizeof casos / sizeof *casos; ++n) {
+/* Cada vector conserva un resultado literal independiente; comparamos la operación y su salida para detectar errores de signo o wraparound. */     for (size_t n = 0; n < sizeof casos / sizeof *casos; ++n) {
         uint32_t resultado = 123;
         COMPROBAR(sim_alu_ejecutar(operaciones[casos[n].op], casos[n].a, casos[n].b, &resultado));
         COMPROBAR(resultado == casos[n].esperado);
     }
     uint32_t resultado = 123;
-    COMPROBAR(!sim_alu_ejecutar(SIM_OP_NOP, 0, 0, &resultado));
+/* NOP y operaciones ajenas a ALU deben rechazarse sin sobrescribir el resultado del cliente. */     COMPROBAR(!sim_alu_ejecutar(SIM_OP_NOP, 0, 0, &resultado));
     COMPROBAR(!sim_alu_ejecutar(SIM_OP_CARGAI, 0, 0, &resultado));
     COMPROBAR(!sim_alu_ejecutar(SIM_OP_INVALIDA, 0, 0, &resultado));
     COMPROBAR(resultado == 123);
     COMPROBAR(!sim_alu_ejecutar(SIM_OP_SUMA, 0, 0, NULL));
     printf("OK: 18 operaciones ALU y %zu casos conocidos\n", sizeof casos / sizeof *casos);
 }
-
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */
 int main(int argc, char **argv)
 {
     if (argc == 1) { casos_conocidos(); return 0; }

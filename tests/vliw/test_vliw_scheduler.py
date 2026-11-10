@@ -23,6 +23,8 @@ from rutas_vliw import fuente_compartida
 MEM_R, MEM_W, BOVEDA, ESTADO, EXCEPCION, DESCONOCIDOS, BARRERA = (1 << i for i in range(7))
 
 
+# Construye los metadatos de una operación sintética, incluidas máscaras, slot y efectos, para
+# probar la calendarización.
 def op(slot=0, lee=(), escribe=(), efectos=0, control=0, bloque=0, texto=None):
     return dict(slot=slot, lee=sum(1 << r for r in set(lee)), escribe=sum(1 << r for r in set(escribe)),
                 efectos=efectos, control=control, bloque=bloque, texto=texto)
@@ -59,6 +61,8 @@ int main(int argc, char **argv) {
 
 
 class SchedulerTests(unittest.TestCase):
+    # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
+    # compartidos en directorios de prueba.
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='pruebas-s7-')
@@ -68,6 +72,9 @@ class SchedulerTests(unittest.TestCase):
         cls.planes = cls.ejecuciones = cls.ciclos = 0
         cls.unidades = cls.checks = 0
         cls.ejemplos = []
+        # Los ejecutables de prueba se reconstruyen en el temporal con el compilador y flags
+        # seleccionados. Las variantes de inyección se enlazan aparte: permiten provocar fallos
+        # sin cambiar las bibliotecas bajo prueba.
         cls.cc = shlex.split(os.environ.get('CC', 'cc'))
         cls.flags = ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-O2', '-Iinclude']
         cls.bin = cls.dir/'scheduler'
@@ -83,6 +90,8 @@ class SchedulerTests(unittest.TestCase):
         cls.compilar(['tests/vliw/test_sim_crypto.c']+[f'src/Simulador_VLIW/sim_{n}.c' for n in
                      ('crypto', 'pipeline', 'alu', 'lsu', 'bru', 'decode', 'cargador')], cls.sim)
 
+    # Invoca el ejecutable del caso con sus argumentos y comprueba su retorno; devuelve la
+    # salida para contrastar datos.
     @classmethod
     def ejecutar(cls, args, esperado=0):
         args = list(map(str, args))
@@ -92,10 +101,13 @@ class SchedulerTests(unittest.TestCase):
             raise AssertionError(f'{args}: código {p.returncode}, esperado {esperado}\n{p.stdout}\n{p.stderr}')
         return p.stdout
 
+    # Reconstruye el componente necesario desde las fuentes de la copia; un error de compilación
+    # no se considera una prueba aprobada.
     @classmethod
     def compilar(cls, fuentes, salida, extra=()):
         return cls.ejecutar(cls.cc+cls.flags+list(extra)+list(map(str, fuentes))+['-o', salida])
 
+    # Conserva la evidencia solicitada y libera los recursos temporales comunes de la suite.
     @classmethod
     def tearDownClass(cls):
         print(f'S7 Python: {cls.planes} planes verificados; {cls.ejecuciones} ejecuciones S6, {cls.ciclos} ciclos.')
@@ -105,6 +117,8 @@ class SchedulerTests(unittest.TestCase):
                 ejecuciones_simulador=cls.ejecuciones, ciclos=cls.ciclos,
                 ejemplos=cls.ejemplos, comandos=cls.comandos), indent=2)+'\n')
 
+    # Entrega los metadatos al scheduler real y recoge el plan o rechazo del caso; no deduce
+    # dependencias ausentes.
     def planificar(self, instrucciones, aristas=(), bloques=None, esperado=0):
         bloques = bloques if bloques is not None else [(0, len(instrucciones), [])] if instrucciones else []
         f = self.dir/'entrada.txt'
@@ -123,6 +137,8 @@ class SchedulerTests(unittest.TestCase):
             self.assertNotIn('bundles', p, 'no debe publicarse una salida parcial')
         return p
 
+    # Comprueba el plan sin reutilizar la selección de S7: índices, slots, distancias y orden
+    # deben satisfacer el contrato.
     def verificar_independiente(self, ins, aristas, bloques, p):
         # Este oráculo inspecciona índices reales y restricciones, sin llamar
         # al selector C ni calcular una planificación alternativa con su lógica.
@@ -130,6 +146,9 @@ class SchedulerTests(unittest.TestCase):
         self.assertLessEqual(len(paquetes), 1023)
         self.assertEqual(len(p['mapa']), len(ins))
         self.assertEqual(len(p['bloques']), len(bloques))
+        # El verificador del test recorre el plan sin reutilizar la selección C: registra cada
+        # instrucción, contrasta mapa y slot y exige presencia única. Después comprueba
+        # distancias, conflictos y guardas de entrada por separado.
         vistos = []
         for ciclo, bu in enumerate(paquetes):
             self.assertEqual(len(bu), 4)
@@ -143,11 +162,17 @@ class SchedulerTests(unittest.TestCase):
                 fin = p['bloques'][b+1] if b+1 < len(bloques) else len(paquetes)
                 self.assertTrue(p['bloques'][b] <= ciclo < fin)
                 if ins[i]['control']:
+                    # Una transferencia cierra su bloque y se emite sola. Permitir operaciones
+                    # detrás de ella en el mismo bloque cambiaría qué instrucciones pertenecen a
+                    # cada ruta del CFG.
                     self.assertEqual(ciclo, fin-1)
                     self.assertEqual(sum(x is not None for x in bu), 1)
                 vistos.append(i)
         self.assertEqual(sorted(vistos), list(range(len(ins))))
         self.assertEqual(p['vacios'], sum(all(i is None for i in bu) for bu in paquetes))
+        # Para cada arista restamos las posiciones estáticas de consumidor y productor. Deben
+        # respetar la distancia declarada; una operación ubicada en un slot libre todavía puede
+        # violar RAW N+3.
         for antes, despues, tipo, distancia in aristas:
             self.assertGreaterEqual(p['mapa'][despues]-p['mapa'][antes], distancia)
         for i, a in enumerate(ins):
@@ -156,18 +181,32 @@ class SchedulerTests(unittest.TestCase):
                 ca, cb = p['mapa'][i], p['mapa'][j]
                 ra, wa, rb, wb = (v & ~1 for v in (a['lee'], a['escribe'], b['lee'], b['escribe']))
                 if wa & rb:
+                    # RAW exige esperar a que el resultado ya sea visible para ID; un slot libre
+                    # no elimina la latencia N+3 porque no existe forwarding.
                     self.assertGreaterEqual(cb-ca, 3)
                 if (wa & wb) or (ra & wb):
+                    # WAR y WAW deben conservar el orden original de lectura y escritura.
+                    # Adelantar la segunda operación cambiaría el valor leído o el último valor
+                    # del registro, aunque cada una use un slot válido.
                     self.assertGreater(cb, ca)
                 if a['efectos'] & 3 and b['efectos'] & 3:
+                    # Sin un análisis externo de aliasing no puede suponerse que dos accesos de
+                    # memoria sean independientes. El plan debe conservar su orden original.
                     self.assertGreater(cb, ca)
                 if any(x['slot'] == 3 or x['efectos'] & 124 or x['control'] in (2, 3) for x in (a, b)):
+                    # Las operaciones con efectos globales y las llamadas o retornos actúan como
+                    # barreras conservadoras. Su separación evita adelantar lecturas de estado,
+                    # permisos o resultados todavía pendientes.
                     self.assertGreaterEqual(cb-ca, 3)
         protege_cero = any(0 in b[2] for b in bloques)
         for b, inicio in enumerate(p['bloques']):
             if b or protege_cero:
+                # El destino de cada entrada protegida incluye dos bundles NOP. También se
+                # protege B0 si el CFG vuelve a él, para que un backedge no omita el margen de
+                # latencia.
                 self.assertEqual(paquetes[inicio:inicio+2], [[None]*4]*2)
 
+    # Ejecuta los casos C y el verificador independiente de calendarizaciones.
     def test_01_casos_c_y_verificador(self):
         salida = self.ejecutar([self.bin])
         m = re.search(r'S7: (\d+) escenarios, (\d+) comprobaciones PASS', salida)
@@ -176,9 +215,12 @@ class SchedulerTests(unittest.TestCase):
         self.assertGreaterEqual(self.unidades, 22)
         print(salida, end='')
 
+    # Fuerza fallos de reserva y exige que no se publique un plan parcial.
     def test_02_reservas_y_salida_atomica(self):
         self.assertIn('32', self.ejecutar([self.reservas, 'reservas']))
 
+    # Comprueba selección entre instrucciones listas según dependencias, latencia y
+    # disponibilidad de slot.
     def test_03_escoger_listas_por_disponibilidad(self):
         # I1 espera a I0; I2 es LSU independiente y puede acompañar a I0.
         # I3 ALU usa el hueco ciclo1, antes del consumidor RAW del ciclo3.
@@ -187,6 +229,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(p['bundles'], [[0, 2, None, None], [3, None, None, None], [None]*4, [1, None, None, None]])
         self.assertLess(len(p['bundles']), len(ins)*3)
 
+    # Genera DAG reproducibles y verifica seguridad y determinismo de sus planes.
     def test_04_dags_sinteticos_y_determinismo(self):
         # Cuatro cadenas independientes creadas por el fixture. Cada hilo
         # actualiza su registro propio, de modo que conocemos sus aristas
@@ -209,6 +252,8 @@ class SchedulerTests(unittest.TestCase):
                 b = self.planificar(ins, list(reversed(aristas)))
                 self.assertEqual(a, b, 'el orden del arreglo de aristas no cambia el desempate')
 
+    # Omite metadatos y exige rechazo defensivo, sin reconstruir dependencias desde el
+    # scheduler.
     def test_05_defensa_sin_reconstruir_dependencias(self):
         # Máscaras declaradas y completas, pero RAW omitida: se devuelve
         # METADATOS, no un plan ni una arista inventada por S7.
@@ -217,6 +262,8 @@ class SchedulerTests(unittest.TestCase):
         # La prioridad física de WB nunca legitima coemitir WAW.
         self.planificar([op(escribe=[5]), op(1, escribe=[5], efectos=MEM_R)], [(0, 1, 2, 1)])
 
+    # Convierte el plan de prueba a su representación ejecutable manteniendo slots, destinos y
+    # NOP.
     def renderizar(self, ins, bloques, p=None):
         # Adaptador exclusivamente de pruebas. S8 deberá hacer la integración
         # real: aquí las etiquetas se entregan al codificador ya existente.
@@ -228,6 +275,8 @@ class SchedulerTests(unittest.TestCase):
                        ' | '.join('nop' if i is None else ins[i]['texto'] for i in fila)+'\n'
                        for c, fila in enumerate(paquetes))
 
+    # Compila y ejecuta la representación de referencia del caso para contrastarla con la salida
+    # calendarizada.
     def ejecutar_fuente(self, texto, datos, ciclos):
         fuente, mem, dmem = self.dir/'programa.asm', self.dir/'programa.mem', self.dir/'dmem.bin'
         fuente.write_text(texto)
@@ -241,6 +290,8 @@ class SchedulerTests(unittest.TestCase):
         type(self).ciclos += ciclos
         return trazas[-1], {x['mem']: x['valor'] for x in salida if 'mem' in x}
 
+    # Ejecuta la misma imagen en simulador C y referencia y compara las observaciones públicas
+    # del caso.
     def contrastar(self, ins, aristas, bloques=None, datos=None, ciclos=180, nombre='ejemplo'):
         bloques = bloques or [(0, len(ins), [])]
         p = self.planificar(ins, aristas, bloques)
@@ -260,6 +311,7 @@ class SchedulerTests(unittest.TestCase):
             (carpeta/(nombre+'-conservador.asm')).write_text(conservador)
         return a, ma
 
+    # Ejecuta planes ALU/LSU con RAW y comprueba la separación N+3.
     def test_06_ejecucion_raw_alu_lsu(self):
         ins = [op(escribe=[5], texto='sumai x5,x0,7'), op(1, escribe=[8], efectos=MEM_R, texto='cargai x8,x0,0'),
                op(lee=[5, 8], escribe=[6], texto='suma x6,x5,x8')]
@@ -267,6 +319,7 @@ class SchedulerTests(unittest.TestCase):
         a, _ = self.contrastar(ins, [(0, 2, 0, 3), (1, 2, 0, 3)], datos=datos, nombre='raw')
         self.assertEqual(a['regs'][6], 18)
 
+    # Comprueba que la calendarización conserve el orden requerido de accesos a memoria.
     def test_07_ejecucion_memoria_ordenada(self):
         ins = [op(escribe=[5], texto='sumai x5,x0,7'), op(escribe=[6], texto='sumai x6,x0,8'),
                op(1, lee=[5], efectos=MEM_W, texto='guardap x0,x5,4'),
@@ -275,6 +328,7 @@ class SchedulerTests(unittest.TestCase):
         a, m = self.contrastar(ins, [(0, 2, 0, 3), (2, 3, 3, 1), (1, 4, 0, 3), (3, 4, 0, 3)], nombre='memoria')
         self.assertEqual((a['regs'][8], m[4]), (15, 7))
 
+    # Ejecuta control condicional con varios predecesores y verifica protecciones de entrada.
     def test_08_ejecucion_condicional_y_varios_predecesores(self):
         for tomado in (False, True):
             ins = [op(escribe=[5], texto='sumai x5,x0,7'),
@@ -287,6 +341,7 @@ class SchedulerTests(unittest.TestCase):
             a, _ = self.contrastar(ins, aristas, bloques, nombre='diamante-'+str(tomado))
             self.assertEqual(a['regs'][7], 9 if tomado else 8)
 
+    # Ejecuta un bucle calendarizado y compara su resultado con la referencia.
     def test_09_ejecucion_bucle(self):
         ins = [op(escribe=[5], texto='sumai x5,x0,3'),
                op(lee=[5], escribe=[5], bloque=1, texto='restai x5,x5,1'),
@@ -297,6 +352,7 @@ class SchedulerTests(unittest.TestCase):
         a, _ = self.contrastar(ins, aristas, bloques, nombre='bucle')
         self.assertEqual(a['regs'][5:7], [0, 0])
 
+    # Comprueba un backedge hacia B0 para que la protección inicial no se omita.
     def test_10_ejecucion_bucle_hacia_bloque_inicial(self):
         ins = [op(escribe=[2], texto='sumai x2,x0,3'), op(lee=[5], escribe=[5], texto='sumai x5,x5,1'),
                op(2, lee=[2, 5], control=1, texto='menora x5,x2,block0'),
@@ -304,6 +360,7 @@ class SchedulerTests(unittest.TestCase):
         a, _ = self.contrastar(ins, [(0, 2, 0, 3), (1, 2, 0, 3), (1, 3, 0, 3)], [(0, 3, [0, 1]), (3, 4, [])], nombre='bucle-inicial')
         self.assertEqual(a['regs'][5:7], [3, 3])
 
+    # Ejecuta CRIPTO con estado y destinos pares y verifica las barreras conservadoras.
     def test_11_ejecucion_cripto_estado_y_par(self):
         ins = [op(escribe=[2], texto='sumai x2,x0,7'), op(1, lee=[2], efectos=MEM_W, texto='guardap x0,x2,0'),
                op(3, lee=[2], efectos=BOVEDA | ESTADO | EXCEPCION, texto='setpwd x2'),

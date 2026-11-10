@@ -26,15 +26,15 @@ static char ruta[] = "/tmp/balb-cargador-XXXXXX";
  * cargador. fclose cierra realmente el archivo antes de simular el error. */
 #ifdef SIM_PRUEBA_FALLOS
 static int sin_memoria, error_cierre;
-void *__real_calloc(size_t n, size_t bytes);
-int __real_fclose(FILE *f);
-void *__wrap_calloc(size_t n, size_t bytes)
+/* Rutina real calloc: destino de las llamadas no inyectadas. */ void *__real_calloc(size_t n, size_t bytes);
+/* Rutina real fclose: destino de las llamadas no inyectadas. */ int __real_fclose(FILE *f);
+/* Envuelve calloc: inyecta fallos y delega el resto. */ void *__wrap_calloc(size_t n, size_t bytes)
 {
     /* sin_memoria fuerza NULL solo durante el escenario de reserva fallida;
      * en el resto de pruebas se utiliza la reserva real del sistema. */
     return sin_memoria ? NULL : __real_calloc(n, bytes);
 }
-int __wrap_fclose(FILE *f)
+/* Envuelve fclose: inyecta fallos y delega el resto. */ int __wrap_fclose(FILE *f)
 {
     /* Se libera el descriptor incluso al devolver EOF deliberadamente.
      * Así se prueba la respuesta al error sin introducir una fuga en el test. */

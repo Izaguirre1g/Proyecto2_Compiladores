@@ -10,9 +10,17 @@
 #define EF_TODOS (EF_MEM | EF_BARRERA)
 
 typedef struct {
+    /*
+     * offset delimita las aristas salientes; aristas indexa las dependencias. grados cuenta
+     * predecesores pendientes y minimo fija el primer bundle permitido.
+     */
     size_t *offset, *aristas, *grados, *minimo;
 } Grafo;
 
+/*
+ * Guarda estado, instrucción y arista en el diagnóstico opcional y devuelve el mismo estado;
+ * el mensaje es prestado.
+ */
 static VliwEstado diagnosticar(VliwDiagnostico *d, VliwEstado e,
                                size_t i, size_t a, const char *mensaje)
 {
@@ -20,14 +28,33 @@ static VliwEstado diagnosticar(VliwDiagnostico *d, VliwEstado e,
     return e;
 }
 #define ERROR(e,i,a,m) diagnosticar(d,e,i,a,m)
+/*
+ * Obtiene la máscara de registros leídos sin x0: leer el cero arquitectónico no crea una
+ * dependencia RAW.
+ */
 static uint32_t lee(const VliwInstruccion *i) { return (uint32_t)i->lee & ~UINT32_C(1); }
+/*
+ * Obtiene la máscara de destinos sin x0; sus escrituras se descartan y no deben crear WAR ni
+ * WAW ficticios.
+ */
 static uint32_t escribe(const VliwInstruccion *i) { return (uint32_t)i->escribe & ~UINT32_C(1); }
+/*
+ * Cuenta bits activos de la máscara eliminando el menos significativo en cada vuelta; no
+ * modifica la máscara del llamador.
+ */
 static unsigned bits(uint64_t m)
 {
     unsigned n = 0;
+    // Restar uno cambia el primer 1 desde la derecha y los ceros que lo siguen. La intersección
+    // m & (m-1) elimina solo ese bit: cada vuelta cuenta un registro activo sin recorrer los 64
+    // índices.
     while (m) { m &= m - 1; ++n; }
     return n;
 }
+/*
+ * Identifica CRIPTO, efectos globales, llamadas y retornos que deben aislarse para respetar
+ * estado y latencia.
+ */
 static bool barrera(const VliwInstruccion *i)
 {
     /* Toda CRIPTO se aísla aunque el adaptador tenga información más precisa.
@@ -35,10 +62,21 @@ static bool barrera(const VliwInstruccion *i)
     return i->slot == VLIW_SLOT_CRIPTO || (i->efectos & EF_BARRERA) ||
         i->control == VLIW_CONTROL_LLAMADA || i->control == VLIW_CONTROL_RETORNO;
 }
+/*
+ * Detecta RAW, WAR o WAW entre las máscaras de dos instrucciones; true impide compartir el
+ * bundle.
+ */
 static bool conflicto(const VliwInstruccion *a, const VliwInstruccion *b)
 {
+    // Si a escribe un registro que b lee hay RAW; si ambos lo escriben hay WAW. La segunda
+    // intersección detecta WAR, cuando b sobrescribe una lectura de a. Cualquier bit común
+    // impide compartir bundle, aunque haya slots libres.
     return (escribe(a) & (lee(b) | escribe(b))) || (lee(a) & escribe(b));
 }
+/*
+ * Busca un predecesor de B0 en el CFG; un retorno por bucle exige proteger también la entrada
+ * inicial con NOP.
+ */
 static bool proteger_cero(const VliwEntrada *e)
 {
     for (size_t b = 0; b < e->cantidad_bloques; ++b)
@@ -46,6 +84,10 @@ static bool proteger_cero(const VliwEntrada *e)
             if (e->bloques[b].sucesores[s] == 0) return true;
     return false;
 }
+/*
+ * Libera los cuatro arreglos propios del grafo y borra sus referencias para que la limpieza
+ * parcial sea segura.
+ */
 static void liberar_grafo(Grafo *g)
 {
     free(g->offset); free(g->aristas); free(g->grados); free(g->minimo);
@@ -77,6 +119,9 @@ static VliwEstado validar_entrada(const VliwEntrada *e, VliwDiagnostico *d)
     if (e->cantidad_dependencias > SIZE_MAX / sizeof(size_t) ||
         e->cantidad_dependencias > SIZE_MAX / sizeof(VliwDependencia))
         return ERROR(VLIW_ARGUMENTO,VLIW_VACIO,VLIW_VACIO,"tamaño de grafo desbordado");
+    // Recorremos los bloques en orden y exigimos una partición contigua de instrucciones. Luego
+    // verificamos sucesores e identidad de bloque; así los índices del CFG y los intervalos
+    // usados al calendarizar son seguros.
     size_t siguiente = 0;
     for (size_t b = 0; b < e->cantidad_bloques; ++b) {
         const VliwBloque *bb = &e->bloques[b];
@@ -103,6 +148,9 @@ static VliwEstado validar_entrada(const VliwEntrada *e, VliwDiagnostico *d)
     }
     if (siguiente != n)
         return ERROR(VLIW_BLOQUES,siguiente,VLIW_VACIO,"instrucciones sin bloque");
+    // Validamos cada operación contra los recursos físicos: slot, máscaras de GPR y efectos. BRU
+    // debe cerrar el bloque; un identificador repetido o efectos omitidos harían ambiguo el plan
+    // y provocan rechazo.
     for (size_t i = 0; i < n; ++i) {
         const VliwInstruccion *in = &e->instrucciones[i];
         if ((unsigned)in->slot >= VLIW_SLOTS || (unsigned)in->control > VLIW_CONTROL_RETORNO ||
@@ -122,6 +170,9 @@ static VliwEstado validar_entrada(const VliwEntrada *e, VliwDiagnostico *d)
             if (e->instrucciones[j].id == in->id)
                 return ERROR(VLIW_METADATOS,i,VLIW_VACIO,"identificador original duplicado");
     }
+    // Revisamos referencias y distancias declaradas antes de reservar el grafo. RAW necesita al
+    // menos tres bundles: sin forwarding, el consumidor no puede leer antes de que WB publique
+    // el resultado.
     for (size_t a = 0; a < e->cantidad_dependencias; ++a) {
         const VliwDependencia *ar = &e->dependencias[a];
         if (ar->antes >= n || ar->despues >= n || (unsigned)ar->tipo > VLIW_DEP_BARRERA ||
@@ -140,6 +191,9 @@ static VliwEstado construir_grafo(const VliwEntrada *e, Grafo *g, VliwDiagnostic
     size_t n = e->cantidad_instrucciones, m = e->cantidad_dependencias;
     *g = (Grafo){0};
     if (!n) return VLIW_OK;
+    // Reservamos índices de salida, grados de entrada y mínimos de emisión por instrucción. Cola
+    // y cursor son auxiliares de construcción; si falla una reserva, liberamos también los
+    // arreglos que sí se adquirieron.
     g->offset = calloc(n+1,sizeof(size_t));
     g->grados = calloc(n,sizeof(size_t)); g->minimo = calloc(n,sizeof(size_t));
     g->aristas = m ? malloc(m*sizeof(size_t)) : NULL;
@@ -148,18 +202,32 @@ static VliwEstado construir_grafo(const VliwEntrada *e, Grafo *g, VliwDiagnostic
         free(cola); free(cursor); liberar_grafo(g);
         return ERROR(VLIW_MEMORIA,VLIW_VACIO,VLIW_VACIO,"sin memoria para el grafo");
     }
+    /*
+     * Contamos aristas por origen y grados por destino antes de construir el índice compacto
+     * del DAG.
+     */
     for (size_t a = 0; a < m; ++a) {
         ++g->offset[e->dependencias[a].antes+1];
         ++g->grados[e->dependencias[a].despues];
     }
+    // La suma acumulada convierte cantidades por origen en intervalos [offset[i], offset[i+1]).
+    // cursor avanza dentro de cada intervalo para guardar índices de aristas sin modificar los
+    // límites originales.
     for (size_t i = 1; i <= n; ++i) g->offset[i] += g->offset[i-1];
     memcpy(cursor,g->offset,n*sizeof(size_t));
     for (size_t a = 0; a < m; ++a)
         g->aristas[cursor[e->dependencias[a].antes]++] = a;
     /* Kahn visita el grafo entero antes de emitir nada, incluso componentes
      * desconectados. Un backedge del CFG no es una arista del DAG de emisión. */
+    /*
+     * La cola de Kahn comienza con grado cero; si no visita las n instrucciones hay un ciclo,
+     * aunque esté desconectado del bloque principal.
+     */
     size_t inicio = 0, fin = 0;
     for (size_t i = 0; i < n; ++i) if (!g->grados[i]) cola[fin++] = i;
+    // Al extraer un vértice listo quitamos una dependencia a cada sucesor. Solo cuando su grado
+    // llega a cero entra en la cola; si quedan vértices sin visitar, el DAG contiene un ciclo y
+    // no se emite ningún plan.
     while (inicio < fin) {
         size_t i = cola[inicio++];
         for (size_t a = g->offset[i]; a < g->offset[i+1]; ++a) {
@@ -172,6 +240,9 @@ static VliwEstado construir_grafo(const VliwEntrada *e, Grafo *g, VliwDiagnostic
         liberar_grafo(g);
         return ERROR(VLIW_CICLO,VLIW_VACIO,VLIW_VACIO,"el grafo de dependencias contiene un ciclo");
     }
+    // Después de Kahn contrastamos tipo y máscaras de cada arista con el orden original. También
+    // reconstruimos los grados consumidos por ese recorrido: la selección posterior necesita
+    // contar de nuevo todos los predecesores pendientes.
     for (size_t a = 0; a < m; ++a) {
         const VliwDependencia *ar = &e->dependencias[a];
         const VliwInstruccion *i = &e->instrucciones[ar->antes], *j = &e->instrucciones[ar->despues];
@@ -219,6 +290,9 @@ VliwEstado vliw_verificar(const VliwEntrada *e, const VliwPlan *p, VliwDiagnosti
     }
     if (!p->cantidad_bundles || p->inicio_por_bloque[0] != 0)
         return ERROR(VLIW_PLAN_INVALIDO,VLIW_VACIO,VLIW_VACIO,"inicio del primer bloque inválido");
+    // Revisamos primero los intervalos del plan y las dos guardas NOP de cada entrada protegida.
+    // Esto incluye B0 si un backedge puede volver a él; el salto debe alcanzar las guardas y no
+    // saltárselas.
     bool protege_inicial = proteger_cero(e);
     for (size_t b = 0; b < e->cantidad_bloques; ++b) {
         size_t inicio = p->inicio_por_bloque[b];
@@ -233,6 +307,9 @@ VliwEstado vliw_verificar(const VliwEntrada *e, const VliwPlan *p, VliwDiagnosti
             if (p->bundles[q].bloque != b)
                 return ERROR(VLIW_PLAN_INVALIDO,VLIW_VACIO,VLIW_VACIO,"bundle movido entre bloques");
     }
+    // El arreglo visto detecta instrucciones duplicadas u omitidas. Recorremos bundle y slot,
+    // contrastamos el mapa inverso y exigimos que barreras y transferencias estén aisladas en la
+    // posición permitida.
     bool *visto = calloc(n,sizeof(bool));
     if (!visto) return ERROR(VLIW_MEMORIA,VLIW_VACIO,VLIW_VACIO,"sin memoria para verificar índices");
     size_t vacios = 0, total = 0;
@@ -264,6 +341,9 @@ VliwEstado vliw_verificar(const VliwEntrada *e, const VliwPlan *p, VliwDiagnosti
     free(visto);
     if (total != n || vacios != p->cantidad_vacios)
         return ERROR(VLIW_PLAN_INVALIDO,VLIW_VACIO,VLIW_VACIO,"instrucción omitida o conteo de vacíos incorrecto");
+    // Comparamos la distancia efectiva del plan con cada arista original. El verificador no
+    // confía en la selección del scheduler: un consumidor demasiado cercano se rechaza aunque
+    // todos los índices estén bien formados.
     for (size_t a = 0; a < e->cantidad_dependencias; ++a) {
         const VliwDependencia *ar = &e->dependencias[a];
         size_t antes = p->bundle_por_instruccion[ar->antes], despues = p->bundle_por_instruccion[ar->despues];
@@ -276,6 +356,9 @@ VliwEstado vliw_verificar(const VliwEntrada *e, const VliwPlan *p, VliwDiagnosti
     for (size_t i = 0; i < n; ++i) for (size_t j = i+1; j < n; ++j) {
         const VliwInstruccion *a = &e->instrucciones[i], *b = &e->instrucciones[j];
         size_t ca = p->bundle_por_instruccion[i], cb = p->bundle_por_instruccion[j];
+        // La comprobación por pares detecta riesgos aun si faltaba una arista externa. RAW y
+        // barreras necesitan tres bundles; WAR, WAW y orden de memoria exigen conservar al menos
+        // el orden. Se rechaza el plan, sin inventar dependencias para repararlo.
         bool raw = (escribe(a) & lee(b)) != 0;
         bool orden = (lee(a) & escribe(b)) || (escribe(a) & escribe(b)) ||
             ((a->efectos & EF_MEM) && (b->efectos & EF_MEM));
@@ -311,6 +394,9 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
     if (estado != VLIW_OK) return estado;
     Grafo g;
     estado = construir_grafo(e,&g,d); if (estado != VLIW_OK) return estado;
+    // El plan se construye en memoria privada junto al grafo. Sus mapas empiezan vacíos para
+    // distinguir instrucciones pendientes de las ya elegidas; la salida del cliente todavía no
+    // cambia.
     VliwPlan *p = calloc(1,sizeof(*p));
     if (!p) { liberar_grafo(&g); return ERROR(VLIW_MEMORIA,VLIW_VACIO,VLIW_VACIO,"sin memoria para el plan"); }
     size_t n = e->cantidad_instrucciones;
@@ -324,6 +410,10 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
         }
         for (size_t i = 0; i < n; ++i) p->bundle_por_instruccion[i] = VLIW_VACIO;
     }
+    /*
+     * piso conserva la separación global impuesta por barreras; los índices de bundle
+     * representan layout estático, no ciclos medidos del simulador.
+     */
     size_t piso = 0;
     bool protege_inicial = proteger_cero(e);
     for (size_t b = 0; b < e->cantidad_bloques; ++b) {
@@ -350,6 +440,9 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
                     (barrera(&e->instrucciones[i]) || e->instrucciones[i].control != VLIW_CONTROL_NINGUNO)) {
                     frontera = i; break;
                 }
+            // Buscamos el primer acceso a memoria todavía pendiente. Sin información externa de
+            // aliasing no adelantamos otro acceso, aunque utilice otro recurso o una dirección
+            // que parezca distinta.
             size_t siguiente_memoria = bb->fin;
             for (size_t i = bb->inicio; i < bb->fin; ++i)
                 if (p->bundle_por_instruccion[i] == VLIW_VACIO && (e->instrucciones[i].efectos & EF_MEM)) {
@@ -357,6 +450,9 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
                 }
             for (size_t i = bb->inicio; i < bb->fin && i <= frontera; ++i) {
                 const VliwInstruccion *in = &e->instrucciones[i];
+                // Una operación está disponible si no fue emitida, no tiene predecesores
+                // pendientes, alcanzó su mínimo y el piso global, y su slot sigue libre. Tener
+                // grado cero no basta para satisfacer una latencia.
                 if (p->bundle_por_instruccion[i] != VLIW_VACIO || g.grados[i] ||
                     g.minimo[i] > ciclo || piso > ciclo || bu->instrucciones[in->slot] != VLIW_VACIO) continue;
                 /* Sin aliasing externo, solo el primer acceso pendiente puede
@@ -365,6 +461,9 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
                 if ((in->efectos & EF_MEM) && i != siguiente_memoria) continue;
                 bool especial = barrera(in) || in->control != VLIW_CONTROL_NINGUNO;
                 bool listo = !especial || !bu->operaciones;
+                // Para aislar una barrera o cerrar con BRU esperamos a todas las instrucciones
+                // anteriores del bloque. Además contrastamos máscaras con las operaciones ya
+                // elegidas: cuatro unidades no permiten ignorar riesgos entre ellas.
                 if (especial) for (size_t j = bb->inicio; listo && j < i; ++j) {
                     size_t previo = p->bundle_por_instruccion[j];
                     if (previo == VLIW_VACIO || previo + (barrera(in) ? 3u : 1u) > ciclo) listo = false;
@@ -374,8 +473,15 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
                 if (!listo) continue;
                 /* Orden original desempata las instrucciones listas. La
                  * restricción de slot limita a una operación por unidad. */
+                /*
+                 * Publicamos la selección en el slot y su mapeo inverso; recién entonces
+                 * liberamos sucesores y actualizamos su mínimo de emisión.
+                 */
                 bu->instrucciones[in->slot] = i; ++bu->operaciones;
                 p->bundle_por_instruccion[i] = ciclo; --pendientes;
+                // La instrucción elegida satisface una dependencia de cada sucesor. Restamos su
+                // grado y elevamos el mínimo al máximo de productor+distancia; un sucesor con
+                // varios productores debe esperar al más tardío.
                 for (size_t a = g.offset[i]; a < g.offset[i+1]; ++a) {
                     const VliwDependencia *ar = &e->dependencias[g.aristas[a]];
                     --g.grados[ar->despues];
@@ -390,6 +496,9 @@ VliwEstado vliw_planificar(const VliwEntrada *e, VliwPlan **salida, VliwDiagnost
             p->cantidad_vacios += bu->operaciones == 0;
         }
     }
+    // Verificamos todo el plan por una vía independiente antes de entregarlo. Si aparece un
+    // riesgo no cubierto por el DAG, informamos metadatos insuficientes; la limpieza común
+    // descarta el plan privado.
     estado = vliw_verificar(e,p,d);
     if (estado == VLIW_PLAN_INVALIDO)
         estado = ERROR(VLIW_METADATOS,d ? d->instruccion : VLIW_VACIO,
@@ -400,6 +509,10 @@ capacidad:
 terminar:
     liberar_grafo(&g);
     if (estado != VLIW_OK) { vliw_liberar(&p); return estado; }
+    /*
+     * La salida del cliente cambia únicamente después de verificar el plan completo; los
+     * errores anteriores liberan el plan privado.
+     */
     *salida = p;
     return ERROR(VLIW_OK,VLIW_VACIO,VLIW_VACIO,"calendarización completa y verificada");
 }

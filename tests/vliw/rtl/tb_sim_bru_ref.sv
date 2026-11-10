@@ -31,6 +31,9 @@ module tb_sim_bru_ref;
     always @(posedge clk) begin
         if(reset) begin admitidos<=0; completados<=0; anulados<=0; end
         else begin
+            // La admisión excluye IF descartado por flush; WB válido sí completa aun en ese
+            // flanco. ID válido anulado se cuenta por separado para contrastar el balance de
+            // bundles con C.
             if(DUT.fetch_valid&&!DUT.branch_flush) admitidos<=admitidos+1;
             if(DUT.ex_wb_valid) completados<=completados+1;
             if(DUT.id_valid&&DUT.branch_flush) anulados<=anulados+1;
@@ -42,12 +45,18 @@ module tb_sim_bru_ref;
     logic [31:0] dir_reset,antes_reset,dir_ex;
     string ruta,precarga,previo;
 
+    // Publica los 32 GPR del DUT en el protocolo de la sonda; el llamador decide si observa
+    // antes o después del flanco.
     task automatic imprimir_registros;
+        // El recorrido incluye los 32 GPR para detectar escrituras indebidas fuera del destino
+        // esperado. Esta tarea solo imprime: el instante de observación lo elige quien la llama.
         $write("\"regs\":[");
         for(integer r=0;r<32;r=r+1) $write("%s%0d",r?",":"",DUT.REGFILE.regs[r]);
         $write("]}\n");
     endtask
 
+    // Seleccionamos vectores BRU aislados o un programa completo. Python consume la traza para
+    // contrastar decisiones anteriores y efectos posteriores al flanco.
     initial begin
         if($value$plusargs("VECTORES=%s",ruta)) begin
             archivo=$fopen(ruta,"r");

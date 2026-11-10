@@ -45,16 +45,22 @@ class InfraestructuraError(ValueError):
 
 
 class PublicacionError(OSError):
+    # Conserva el mensaje y las rutas ya publicadas para informar con precisión un fallo parcial
+    # de publicación.
     def __init__(self, mensaje, publicados):
         super().__init__(mensaje)
         self.publicados = publicados
 
 
+# Comprueba la condición del contrato y lanza ValueError con el diagnóstico recibido si no se
+# cumple.
 def exigir(condicion, mensaje):
     if not condicion:
         raise ValueError(mensaje)
 
 
+# Valida tipo, longitud, contenido no vacío y UTF-8 del texto recibido; devuelve el mismo valor
+# o rechaza el contrato.
 def texto(valor, nombre, maximo=4096, vacio=False):
     exigir(type(valor) is str and (vacio or bool(valor.strip())), nombre + ': texto requerido')
     exigir('\0' not in valor and len(valor) <= maximo, nombre + ': longitud o carácter inválido')
@@ -62,27 +68,35 @@ def texto(valor, nombre, maximo=4096, vacio=False):
     return valor
 
 
+# Exige un entero JSON dentro del intervalo, excluyendo bool aunque herede de int; devuelve el
+# valor validado.
 def entero(valor, nombre, maximo=LIMITE_U64, minimo=0):
     # bool hereda de int en Python: el contrato exige un entero JSON real.
     exigir(type(valor) is int and minimo <= valor <= maximo, nombre + ': entero fuera de rango')
     return valor
 
 
+# Comprueba campos requeridos y opcionales de un objeto y rechaza claves ausentes o
+# desconocidas.
 def campos(objeto, requeridos, opcionales=()):
     exigir(type(objeto) is dict, 'se requiere un objeto JSON')
     exigir(set(requeridos) <= objeto.keys() and objeto.keys() <= set(requeridos) | set(opcionales),
            'campos ausentes o desconocidos: ' + repr(sorted(objeto)))
 
 
+# Exige un booleano JSON real; no acepta enteros como sustituto de una garantía.
 def booleano(v, nombre):
     exigir(type(v) is bool, nombre + ': booleano requerido')
 
 
+# Valida que el número sea finito y, cuando corresponde, no negativo; rechaza NaN e infinitos.
 def numero(v, nombre, no_negativo=False):
     exigir(type(v) in (int, float), nombre + ': número requerido')
     exigir(math.isfinite(v) and (not no_negativo or v >= 0), nombre + ': número inválido')
 
 
+# Lee JSON UTF-8 con comprobaciones de claves duplicadas y números finitos; devuelve el objeto o
+# propaga el rechazo.
 def decodificar(datos):
     # JSON estándar permite por defecto duplicados y NaN. Rechazarlos evita
     # interpretar silenciosamente otra versión del manifiesto o respuesta B1.
@@ -93,9 +107,11 @@ def decodificar(datos):
             d[k] = v
         return d
 
+    # Rechaza las constantes JSON no finitas mediante ValueError; no sustituye el dato por cero.
     def constante(v):
         raise ValueError('número no finito: ' + v)
 
+    # Convierte un número JSON a float y rechaza desbordamientos a infinito.
     def real(v):
         n = float(v)
         exigir(math.isfinite(n), 'número no finito')
@@ -105,6 +121,8 @@ def decodificar(datos):
                       parse_constant=constante, parse_float=real)
 
 
+# Calcula SHA-256 en bloques sin superar el límite del archivo; detecta también crecimiento
+# durante la lectura.
 def huella(ruta):
     h = hashlib.sha256()
     total = 0
@@ -116,12 +134,16 @@ def huella(ruta):
     return h.hexdigest()
 
 
+# Comprueba que la ruta sea un archivo regular acotado y devuelve su identidad de ruta y
+# SHA-256.
 def archivo(ruta):
     s = ruta.stat()
     exigir(stat.S_ISREG(s.st_mode) and s.st_size <= MAX_ARCHIVO, 'archivo no regular o demasiado grande: ' + str(ruta))
     return {'ruta': str(ruta), 'sha256': huella(ruta)}
 
 
+# Valida todo el manifiesto antes de ejecutar casos, resuelve rutas relativas a él y rechaza
+# versiones, tipos o identificadores inconsistentes.
 def leer_manifiesto(ruta):
     try:
         ruta = Path(ruta).resolve(strict=True)
@@ -133,6 +155,9 @@ def leer_manifiesto(ruta):
         campos(m, ('version', 'casos'))
         exigir(type(m['version']) is int and m['version'] == 1, 'versión de manifiesto incompatible')
         exigir(type(m['casos']) is list and len(m['casos']) <= MAX_CASOS, 'lista de casos inválida o excesiva')
+        # Validamos todos los casos antes de ejecutar el primero: identificadores únicos,
+        # categoría, modo, presupuesto y ambas entradas. Las rutas se anclan al manifiesto para
+        # que cambiar el cwd no seleccione otros programas.
         ids = set()
         for c in m['casos']:
             campos(c, ('id', 'categoria', 'referencia', 'candidato', 'modo', 'presupuesto'), ('descripcion', 'procedencia'))
@@ -150,6 +175,9 @@ def leer_manifiesto(ruta):
                 # El manifiesto conserva su significado aunque el usuario lance
                 # B2 desde otro cwd. resolve también detecta alias de symlinks.
                 c[lado].update(archivo((ruta.parent / nombre).resolve(strict=True)))
+            # La procedencia se valida como declaración: niveles y fuente BAL deben tener formas
+            # reconocidas. Guardar su SHA identifica los bytes, pero no demuestra que esos
+            # binarios se compilaron con el nivel indicado.
             proc = c.get('procedencia', {})
             campos(proc, (), ('fuente_bal', 'nivel_referencia', 'nivel_candidato'))
             for nivel in ('nivel_referencia', 'nivel_candidato'):
@@ -163,6 +191,8 @@ def leer_manifiesto(ruta):
         raise ManifiestoInvalido(str(e)) from e
 
 
+# Contrasta el JSON B1 con su código de salida y las métricas disponibles; una respuesta
+# incoherente no acredita equivalencia.
 def validar_b1(b, codigo):
     # Se valida el esquema real B1 v1, no otra comparación de GPR, memoria o
     # IPC. Las métricas opcionales conservan null; nunca se completan con cero.
@@ -198,6 +228,9 @@ def validar_b1(b, codigo):
             campos(t, ('ciclo', 'pc', 'vector'))
             entero(t['ciclo'], 'ciclo trap'); entero(t['pc'], 'pc trap', (1 << 32) - 1)
             entero(t['vector'], 'vector', (1 << 32) - 1)
+    # El diagnóstico arquitectónico debe incluir índices, cantidades y pares de valores dentro
+    # de rango. Las diferencias de métricas se validan después y solo pueden existir si ambos
+    # lados aportaron mediciones.
     a = b['diferencias_arquitectonicas']
     campos(a, ('comparadas', 'registros', 'primer_registro', 'valores_registro', 'bytes', 'primer_byte',
                'valores_byte', 'crypto', 'cantidad_traps', 'vector', 'primer_vector', 'valores_vector'))
@@ -225,6 +258,9 @@ def validar_b1(b, codigo):
             exigir(d['porcentaje_ciclos'] is None, 'porcentaje no definido debe ser null')
         exigir(all(b[l]['metricas'] is not None for l in ('referencia', 'candidato')), 'deltas sin métricas')
     exigir(type(b['limites']) is list and all(type(x) is str for x in b['limites']), 'límites B1 inválidos')
+    # Contrastamos la conclusión con sus garantías: equivalencia o diferencia requieren dos
+    # ejecuciones terminadas y comparación final. INCONCLUSO debe explicar iniciales
+    # incompatibles o límite; no se promueve a equivalente.
     r = b['resultado_comparacion']
     if r in ('EQUIVALENTE', 'DIFERENTE'):
         exigir(b['iniciales_compatibles'] and a['comparadas'] and d is not None and b['motivo'] == 0 and
@@ -245,6 +281,8 @@ def validar_b1(b, codigo):
     return b
 
 
+# Ejecuta argumentos sin shell, captura stdout/stderr con límites y timeout y recoge el grupo de
+# procesos incluso ante fallos.
 def proceso(args, timeout):
     salidas = [bytearray(), bytearray()]
     motivo = None
@@ -256,6 +294,8 @@ def proceso(args, timeout):
             sel = selectors.DefaultSelector()
             for i, f in enumerate((p.stdout, p.stderr)):
                 sel.register(f, selectors.EVENT_READ, i)
+            # Leemos ambos pipes sin bloquear uno por el otro, aplicando el mismo plazo de pared
+            # y límites de bytes durante toda la captura.
             while sel.get_map():
                 restante = limite - time.monotonic()
                 if restante <= 0:
@@ -275,6 +315,9 @@ def proceso(args, timeout):
                         break
                 if motivo:
                     break
+            # Cerrar ambos pipes no demuestra que el proceso terminó: todavía puede seguir
+            # ejecutándose sin escribir. Esperamos su salida usando el tiempo restante del mismo
+            # plazo, antes de recoger el grupo en finally.
             if not motivo:
                 try:
                     p.wait(timeout=max(0.001, limite - time.monotonic()))
@@ -295,6 +338,8 @@ def proceso(args, timeout):
     return p.returncode, bytes(salidas[0]), bytes(salidas[1]), motivo
 
 
+# Invoca B1 para un par validado y transforma su salida en un caso del lote; separa diferencias
+# funcionales de fallos de infraestructura.
 def ejecutar_caso(c, comparador, timeout, disponible):
     args = [comparador['ruta'], c['referencia']['formato'], c['referencia']['ruta'],
             c['candidato']['formato'], c['candidato']['ruta'], c['modo'], str(c['presupuesto']), 'json']
@@ -316,6 +361,9 @@ def ejecutar_caso(c, comparador, timeout, disponible):
                'B1 identificó archivos distintos de los solicitados')
         for f in (comparador, c['referencia'], c['candidato']):
             exigir(archivo(Path(f['ruta']))['sha256'] == f['sha256'], 'entrada/comparador cambió durante la comparación')
+        # Solo incorporamos la respuesta B1 después de verificar su protocolo, código de salida,
+        # rutas e identidades antes y después. Si algo falla, quedan bytes diagnósticos sin
+        # validar y el resultado conserva su categoría de infraestructura.
         r['b1'] = b
         r['resultado'] = b['resultado_comparacion']
         # Solo esta certificación completa habilita estadísticas de rendimiento.
@@ -327,16 +375,21 @@ def ejecutar_caso(c, comparador, timeout, disponible):
     return r, len(out) + len(err)
 
 
+# Representa el signo y la magnitud de una diferencia sin perder el sentido base/candidato.
 def firmado(d):
     # Solo cambia la representación signo/magnitud entregada por B1; no
     # calcula otra diferencia entre las métricas de las dos ejecuciones.
     return -d['magnitud'] if d['negativa'] else d['magnitud']
 
 
+# Acumula los resultados válidos del lote y su cobertura; los casos sin métricas no se
+# convierten en observaciones cero.
 def agregar(casos):
     conteos = {x: sum(c['resultado'] == x for c in casos) for x in (*RESULTADOS.values(), INFRA)}
     rendimiento = {}
     for modo in ('finita', 'fisica'):
+        # Agregamos rendimiento solo cuando B1 certificó equivalencia y el modo coincide;
+        # DIFERENTE e INCONCLUSO conservan datos diagnósticos separados.
         validos = [c for c in casos if c['rendimiento_valido'] and c['modo'] == modo]
         # Son sumas de mediciones compatibles, no promedios de IPC ni tiempo
         # real. Python conserva enteros exactos al superar el rango uint64_t.
@@ -351,6 +404,8 @@ def agregar(casos):
             'conteos': conteos, 'rendimiento_validado_por_modo': rendimiento}
 
 
+# Valida entradas, ejecuta los casos en orden y compone reporte y cobertura; no certifica la
+# procedencia de los niveles de optimización declarados.
 def ejecutar_lote(m, comparador, timeout=30, exigir_cobertura=False):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 3600:
         raise InfraestructuraError('timeout debe estar entre cero exclusivo y 3600 segundos')
@@ -365,6 +420,9 @@ def ejecutar_lote(m, comparador, timeout=30, exigir_cobertura=False):
         r, usados = ejecutar_caso(c, exe, timeout, restante)
         resultados.append(r)
         restante -= usados
+    # Agregamos por categoría y por modo de ejecución, y calculamos aparte la cobertura oficial.
+    # Los casos de demostración no completan los quince requeridos ni convierten datos
+    # diagnósticos en rendimiento validado.
     categorias = {}
     for nombre in (*CATEGORIAS, 'demostracion'):
         grupo = [c for c in resultados if c['categoria'] == nombre]
@@ -396,6 +454,7 @@ COLUMNAS = ('id', 'categoria', 'resultado', 'motivo', 'ciclos_referencia', 'cicl
             'nivel_referencia_declarado', 'nivel_candidato_declarado', 'procedencia_verificada', 'descripcion')
 
 
+# Escapa celdas que podrían interpretarse como fórmulas al abrir el CSV en una hoja de cálculo.
 def csv_seguro(v):
     # Las comillas CSV no impiden fórmulas en una hoja de cálculo. Solo se
     # prefijan textos peligrosos; los números conservan su signo y valor real.
@@ -404,6 +463,8 @@ def csv_seguro(v):
     return v
 
 
+# Construye el CSV del reporte conservando resultados ausentes y separando observaciones
+# individuales de estadísticas.
 def generar_csv(reporte):
     salida = io.StringIO(newline='')
     w = csv.DictWriter(salida, fieldnames=COLUMNAS, lineterminator='\n')
@@ -421,6 +482,9 @@ def generar_csv(reporte):
             metricas = b[lado]['metricas'] if b else None
             for k in ('ciclos', 'ipc', 'instrucciones', 'bundles'):
                 fila[k + '_' + lado] = metricas[k] if metricas is not None else None
+        # Conservamos como ausentes los deltas no disponibles; sustituirlos por cero aparentaría
+        # una medición sin cambios. Antes de escribir la fila escapamos textos que una hoja de
+        # cálculo podría interpretar como fórmulas.
         d = b['diferencias_metricas'] if b else None
         for k in ('ciclos', 'instrucciones', 'bundles'):
             fila['diferencia_' + k] = firmado(d[k]) if d else None
@@ -430,6 +494,8 @@ def generar_csv(reporte):
     return salida.getvalue()
 
 
+# Rechaza salidas que colisionen entre sí o con entradas protegidas antes de publicar
+# artefactos.
 def destinos_validos(destinos, protegidos):
     rutas = [Path(p).resolve() for p in destinos]
     exigir(len(set(rutas)) == len(rutas), 'destinos JSON/CSV coinciden')
@@ -441,6 +507,8 @@ def destinos_validos(destinos, protegidos):
     return rutas
 
 
+# Escribe artefactos en temporales y los publica según el contrato; registra lo ya publicado si
+# ocurre un fallo parcial.
 def publicar(reporte, json_path, csv_path, protegidos):
     publicados = []
     temporales = []
@@ -454,6 +522,9 @@ def publicar(reporte, json_path, csv_path, protegidos):
                                              prefix='.b2-', delete=False) as f:
                 temporales.append(Path(f.name))
                 f.write(contenido); f.flush(); os.fsync(f.fileno())
+        # Los temporales ya contienen ambos reportes completos y sincronizados. Cada reemplazo
+        # es atómico por separado; registramos los destinos publicados porque el segundo puede
+        # fallar después de publicar el primero.
         for temporal, destino in zip(temporales, destinos):
             os.replace(temporal, destino)
             publicados.append(str(destino))
@@ -465,6 +536,8 @@ def publicar(reporte, json_path, csv_path, protegidos):
     return publicados
 
 
+# Selecciona el código de salida del lote con la prioridad de errores y resultados exigida por
+# la CLI.
 def codigo_lote(r):
     # Un error tiene prioridad sobre cobertura o comparaciones válidas. Una
     # ejecución equivalente no puede ocultar que otro caso del lote falló.
@@ -483,10 +556,14 @@ def codigo_lote(r):
 
 
 class Argumentos(argparse.ArgumentParser):
+    # Convierte el rechazo de argumentos de argparse en ValueError para que la CLI aplique su
+    # diagnóstico y código de salida previstos.
     def error(self, message):
         raise ValueError(message)
 
 
+# Valida los argumentos de la CLI, ejecuta el recorrido y transforma diagnósticos o resultados
+# en los códigos públicos de salida; no oculta errores de infraestructura.
 def main(argv=None):
     p = Argumentos(description='Benchmarks VLIW mediante el comparador público B1')
     for nombre in ('manifest', 'comparador', 'json', 'csv'):
@@ -494,12 +571,17 @@ def main(argv=None):
     p.add_argument('--timeout', type=float, default=30)
     p.add_argument('--exigir-cobertura', action='store_true')
     try:
+        # Primero validamos argumentos y límites sin ejecutar programas. Los errores de uso
+        # mantienen su código específico; después, el recorrido y la publicación tienen
+        # diagnósticos separados de infraestructura.
         a = p.parse_args(argv)
         exigir(math.isfinite(a.timeout) and 0 < a.timeout <= 3600, 'timeout inválido')
     except ValueError as e:
         print('argumentos: ' + str(e), file=sys.stderr)
         return 64
     try:
+        # El manifiesto completo se valida antes de lanzar el comparador. Si falla, devolvemos
+        # su código propio y no intentamos publicar un reporte basado en casos incompletos.
         m = leer_manifiesto(a.manifest)
     except ManifiestoInvalido as e:
         print('manifiesto: ' + str(e), file=sys.stderr)
@@ -510,6 +592,9 @@ def main(argv=None):
             protegidos += [c[l]['ruta'] for l in ('referencia', 'candidato')]
             if 'fuente_bal' in c['procedencia']:
                 protegidos.append(c['procedencia']['fuente_bal']['ruta'])
+        # Verificamos que las salidas no sobrescriban fuentes, imágenes, manifiesto ni
+        # herramienta. Solo entonces ejecutamos el lote y publicamos los dos formatos; si la
+        # publicación fue parcial lo informamos explícitamente.
         destinos_validos((a.json, a.csv), protegidos)
         r = ejecutar_lote(m, a.comparador, a.timeout, a.exigir_cobertura)
         publicar(r, a.json, a.csv, protegidos)

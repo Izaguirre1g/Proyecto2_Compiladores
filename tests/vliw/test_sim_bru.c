@@ -9,7 +9,7 @@ static size_t comprobaciones;
     fprintf(stderr,"FAIL BRU línea %d: %s\n",__LINE__,#c); exit(1); } } while (0)
 static const SimOperacion ops[]={SIM_OP_IGUALSI,SIM_OP_IGUALNO,SIM_OP_MENORA,
     SIM_OP_MAYOROIGUAL,SIM_OP_SYE,SIM_OP_SYER};
-
+/* Comprueba las condiciones BRU y el cálculo de destino y enlace con valores conocidos. */
 static void condiciones_y_destinos(void)
 {
     /* Las expectativas signed son literales: ordenan INT_MIN, -1, cero y
@@ -21,7 +21,7 @@ static void condiciones_y_destinos(void)
         {0x80000000u,UINT32_MAX,false,true},{UINT32_MAX,0x80000000u,false,false},
         {UINT32_MAX,UINT32_MAX,true,false},{0x80000000u,0x80000000u,true,false}
     };
-    for(size_t n=0;n<sizeof pares/sizeof *pares;++n) {
+    /* Cada par prueba las cuatro condiciones, incluidos extremos signed. */ for(size_t n=0;n<sizeof pares/sizeof *pares;++n) {
         const bool decisiones[]={pares[n].eq,!pares[n].eq,pares[n].lt,!pares[n].lt};
         for(unsigned i=0;i<4;++i) {
             SimResultadoBru r;
@@ -61,11 +61,11 @@ static uint32_t salto(unsigned rd,int off)
 {
     return 0x96000000u|(rd<<16)|((uint32_t)off&65535u);
 }
-static uint32_t sumai(unsigned rd,int v)
+/* Construye la palabra SUMAI del fixture con los campos recibidos; no ejecuta ni resuelve hazards. */ static uint32_t sumai(unsigned rd,int v)
 {
     return 0x80000000u|(rd<<11)|((uint32_t)v&2047u);
 }
-
+/* Comprueba saltos, anulación del camino incorrecto y políticas de búsqueda con los casos controlados del banco. */
 static void flush_bucles_y_politicas(void)
 {
     SimImagen imagen={.cantidad_bundles=4};
@@ -93,7 +93,7 @@ static void flush_bucles_y_politicas(void)
     SimPipeline otro;
     sim_pipeline_iniciar(&s,&imagen); sim_pipeline_iniciar(&otro,&imagen);
     C(sim_pipeline_ejecutar(&s,3)==SIM_PIPE_LIMITE && s.pc==0 && !s.fin_busqueda);
-    C(sim_pipeline_ejecutar(&s,17)==SIM_PIPE_LIMITE && s.ciclos==20);
+    /* La búsqueda se reanuda en el bucle: alcanzar el fin no es HALT. */ C(sim_pipeline_ejecutar(&s,17)==SIM_PIPE_LIMITE && s.ciclos==20);
     C(sim_pipeline_ejecutar(&otro,20)==SIM_PIPE_LIMITE);
     C(s.pc==otro.pc && s.bundles_completados==otro.bundles_completados &&
       memcmp(s.registros,otro.registros,sizeof s.registros)==0);
@@ -127,19 +127,19 @@ static void flush_bucles_y_politicas(void)
     imagen.imem[0][2]=salto(0,1); sim_pipeline_iniciar(&s,&imagen);
     C(sim_pipeline_ejecutar(&s,5)==SIM_PIPE_DECODIFICACION && s.ciclos==1);
 }
-
+/* Escribe el estado de los 32 registros en el protocolo que consumirá Python para el contraste diferencial. */
 static void registros(const SimPipeline *s)
 {
     printf("\"regs\":[");
     for(unsigned r=0;r<32;++r) printf("%s%u",r?",":"",s->registros[r]);
     printf("]}\n");
 }
-
+/* Emite las observaciones del flanco y el estado público para compararlos con RTL; no modifica las etapas. */
 static void traza(const SimPipeline *s)
 {
     const SimCiclo *c=&s->ultimo_ciclo;
     const SimAccesoLsu *t=&c->ex_lsu;
-    uint32_t post=0; sim_memoria_leer_palabra(&s->memoria,t->direccion,&post);
+    /* La traza conserva buses previos; post lee DMEM después del flanco. */ uint32_t post=0; sim_memoria_leer_palabra(&s->memoria,t->direccion,&post);
     printf("{\"c\":%llu,\"pc\":%u,\"stages\":[%u,%u,%u,%u],\"pcs\":[%u,%u,%u,%u],",
         (unsigned long long)c->ciclo,s->pc,c->if_.valido,c->id.valido,c->ex.valido,c->wb.valido,
         c->if_.pc,c->id.pc,c->ex.pc,c->wb.pc);
@@ -162,7 +162,7 @@ static void traza(const SimPipeline *s)
         (unsigned long long)s->bundles_anulados);
     registros(s);
 }
-
+/* Lee los vectores externos y ejecuta cada operación para compararla con la referencia de hardware. */
 static int vectores(const char *ruta)
 {
     FILE *f=fopen(ruta,"r"); C(f!=NULL);
@@ -175,7 +175,7 @@ static int vectores(const char *ruta)
     }
     C(n==EOF && !ferror(f)); C(fclose(f)==0); return 0;
 }
-
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */
 int main(int argc,char **argv)
 {
     if(argc==1) {
@@ -195,7 +195,7 @@ int main(int argc,char **argv)
     SimPipeline s; sim_pipeline_iniciar(&s,imagen);
     if(strcmp(argv[5],"fisica")==0) sim_pipeline_configurar_busqueda(&s,SIM_BUSQUEDA_FISICA);
     unsigned limite=(unsigned)strtoul(argv[3],NULL,10),reinicio=(unsigned)strtoul(argv[4],NULL,10);
-    for(unsigned n=0;n<limite && s.estado==SIM_PIPE_ACTIVO;++n) {
+    /* Avanzamos y publicamos trazas solo de flancos aceptados, no del rechazo. */ for(unsigned n=0;n<limite && s.estado==SIM_PIPE_ACTIVO;++n) {
         if(reinicio && n==reinicio) {
             uint32_t dir=s.id_ex.lsu.valido?s.id_ex.lsu.base+(uint32_t)s.id_ex.lsu.offset:0;
             uint32_t antes=0,despues=0;
@@ -210,7 +210,7 @@ int main(int argc,char **argv)
         traza(&s);
     }
     sim_pipeline_ejecutar(&s,0);
-    for(unsigned p=0;p<65536;p+=4) {
+    /* Volcamos palabras no nulas; las restantes representan ceros de toda DMEM. */ for(unsigned p=0;p<65536;p+=4) {
         uint32_t v=0; sim_memoria_leer_palabra(&s.memoria,p,&v);
         if(v) printf("{\"mem\":%u,\"valor\":%u}\n",p,v);
     }

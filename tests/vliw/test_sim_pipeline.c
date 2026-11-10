@@ -14,11 +14,11 @@ static uint32_t sumai(unsigned rd, unsigned rs1, int inmediato)
 {
     return (0x40u << 25) | (rs1 << 16) | (rd << 11) | ((uint32_t)inmediato & 2047u);
 }
-static uint32_t suma(unsigned rd, unsigned rs1, unsigned rs2)
+/* Construye la palabra SUMA utilizada para probar capturas de operandos y publicación WB. */ static uint32_t suma(unsigned rd, unsigned rs1, unsigned rs2)
 {
     return (0x6au << 25) | (8u << 21) | (rd << 16) | (rs1 << 11) | (rs2 << 6);
 }
-
+/* Exige el estado arquitectónico inicial y las etapas vacías tras reiniciar el pipeline. */
 static void comprobar_reset(const SimPipeline *s)
 {
     COMPROBAR(s->pc == 0 && s->ciclos == 0 && s->estado == SIM_PIPE_ACTIVO);
@@ -27,8 +27,8 @@ static void comprobar_reset(const SimPipeline *s)
     COMPROBAR(s->bundles_admitidos == 0 && s->bundles_completados == 0);
     for (unsigned r = 0; r < 32; ++r) COMPROBAR(s->registros[r] == 0);
 }
-
-static void temporizacion_n_mas_3(void)
+/* Separa productor y consumidor por distintas distancias y comprueba el valor realmente capturado sin forwarding. */
+/* El consumidor lee en ID antes de publicar el WB del mismo flanco; los casos distinguen explícitamente N+1, N+2 y N+3. */ static void temporizacion_n_mas_3(void)
 {
     /* B0 produce x2=7. B1 y B2 leen x2 antes de su escritura del flanco 4;
      * B3 lo lee en el 5. No hay NOP agregado, stalls ni forwarding. */
@@ -70,7 +70,7 @@ static void temporizacion_n_mas_3(void)
     COMPROBAR(sim_avanzar_ciclo(&otro) == SIM_PIPE_ACTIVO);
     COMPROBAR(otro.registros[2] == 0 && s.registros[2] == 7);
 }
-
+/* Comprueba bundles NOP, reinicio y agotamiento del presupuesto sin confundir sus estados. */
 static void nop_reset_y_limite(void)
 {
     SimImagen imagen = {.cantidad_bundles = 3};
@@ -101,7 +101,7 @@ static void nop_reset_y_limite(void)
     COMPROBAR(sim_pipeline_ejecutar(&s, 6) == SIM_PIPE_TERMINADO);
     COMPROBAR(s.registros[31] == 13 && s.ciclos == 6);
 }
-
+/* Encadena operaciones y verifica el orden de escritura y la disponibilidad de sus resultados. */
 static void escrituras_y_cadenas(void)
 {
     /* Tres productores consecutivos escriben x4 en ciclos 4/5/6. Los lectores
@@ -111,7 +111,7 @@ static void escrituras_y_cadenas(void)
     for (unsigned b = 3; b < 6; ++b) imagen.imem[b][0] = suma(b + 2, 4, 0);
     SimPipeline s;
     sim_pipeline_iniciar(&s, &imagen);
-    for (unsigned c = 1; c <= 9; ++c) {
+    /* Cada ciclo comprueba qué versión de x4 leyó ID antes de publicar WB. */ for (unsigned c = 1; c <= 9; ++c) {
         sim_avanzar_ciclo(&s);
         if (c >= 4 && c <= 6) COMPROBAR(s.ultimo_ciclo.wb_valor == c - 3);
         if (c >= 5 && c <= 7) COMPROBAR(s.ultimo_ciclo.id_a == c - 4);
@@ -129,7 +129,7 @@ static void escrituras_y_cadenas(void)
     COMPROBAR(sim_pipeline_ejecutar(&s, 11) == SIM_PIPE_TERMINADO);
     COMPROBAR(s.registros[2] == 13 && s.registros[3] == 9 && s.registros[4] == 13 && s.registros[5] == 22);
 }
-
+/* Comprueba argumentos y estados rechazados y el drenado al terminar una imagen finita. */
 static void rechazos_y_final(void)
 {
     SimPipeline s;
@@ -145,7 +145,7 @@ static void rechazos_y_final(void)
     COMPROBAR(sim_pipeline_reiniciar(NULL) == SIM_PIPE_ARGUMENTO);
     COMPROBAR(sim_pipeline_ejecutar(NULL, 1) == SIM_PIPE_ARGUMENTO);
     imagen.entrada = 0;
-    for (unsigned pc = 3; pc <= 32; pc += 29) {
+    /* Un PC no admisible debe rechazar el intento sin sumar ciclos. */ for (unsigned pc = 3; pc <= 32; pc += 29) {
         sim_pipeline_iniciar(&s, &imagen);
         /* Inyección de PC: uno desalineado y otro por encima de la extensión
          * antes de alcanzar su final secuencial. No debe haber acceso a IMEM. */
@@ -214,7 +214,7 @@ static void mostrar(const SimPipeline *s)
     for (unsigned r = 0; r < 32; ++r) printf("%s%u", r ? "," : "", s->registros[r]);
     printf("]}\n");
 }
-
+/* Selecciona el escenario autoverificable o el modo de sonda solicitado; sus códigos y salidas son comprobados por la suite Python. */
 int main(int argc, char **argv)
 {
     if (argc == 1) {
@@ -231,7 +231,7 @@ int main(int argc, char **argv)
     sim_pipeline_iniciar(&s, imagen);
     uint64_t limite = strtoull(argv[3], NULL, 10);
     uint64_t reset_despues = argc == 5 ? strtoull(argv[4], NULL, 10) : 0;
-    for (uint64_t n = 0; n < limite && s.estado == SIM_PIPE_ACTIVO; ++n) {
+    /* Solo imprimimos flancos aceptados; TERMINADO puede incluir el último. */ for (uint64_t n = 0; n < limite && s.estado == SIM_PIPE_ACTIVO; ++n) {
         /* El reset de prueba ocurre entre pasos; descarta el resultado que
          * habría escrito el próximo flanco, igual que reset prioritario RTL. */
         if (reset_despues && n == reset_despues) sim_pipeline_reiniciar(&s);

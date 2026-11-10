@@ -25,6 +25,8 @@ LIMITACIONES = [
 ]
 
 
+# Busca una única etiqueta o anotación ASM y devuelve su línea y naturaleza; rechaza duplicados
+# sin atribuir semántica de símbolo a un comentario.
 def localizar(texto, nombre):
     # La salida real de resolucion_saltos convierte etiquetas en comentarios.
     # Se conserva esa distinción para no atribuirles semántica de símbolo CB.
@@ -37,6 +39,8 @@ def localizar(texto, nombre):
     return encontrados[0] if encontrados else None
 
 
+# Contrasta hechos estáticos, eventos BRU y garantías M2 y clasifica el final observado; un
+# retorno compatible no certifica main.
 def clasificar(d, etiqueta):
     # Hecho dinámico y certificación se mantienen separados incluso cuando
     # el candidato coincide con la convención ret/x1 de la llamada inicial.
@@ -54,6 +58,9 @@ def clasificar(d, etiqueta):
     c = d.get('comparacion_m2')
     b2.campos(c, ('disponible','memoria_completa_igual','metricas_iguales','estado_igual'))
     for k in c: b2.booleano(c[k],k)
+    # Cada hecho de control debe ser un evento BRU tomado, sin excepción, dentro del horizonte
+    # medido. Después comprobamos por separado la autorreferencia de la sentinela, una
+    # redirección hacia ella y el retorno candidato.
     for k in ('llamada_inicial_observada','retorno_candidato','redireccion_a_sentinela','bucle_final_observado'):
         e=d.get(k)
         if e is None: continue
@@ -69,11 +76,16 @@ def clasificar(d, etiqueta):
         e=d['redireccion_a_sentinela']
         b2.exigir(patron and e['destino']==d['direccion_sentinela'] and e['ex_pc']!=e['destino'],
                   'redirección a sentinela incoherente')
+    # El candidato exige SYER x0,x1,0 posterior a la llamada y destino igual a su enlace. Esta
+    # relación de valores y tiempos no demuestra por sí sola que se ejecutó el retorno semántico
+    # de main.
     if d.get('retorno_candidato') is not None:
         e=d['retorno_candidato'];ll=d.get('llamada_inicial_observada')
         b2.exigir(patron and ll is not None and e['ciclo']>ll['ciclo'] and
                   e.get('operacion')=='syer' and e.get('rd')==0 and e.get('rs1')==1 and
                   e.get('inmediato')==0 and e['destino']==ll.get('enlace'), 'retorno candidato incoherente')
+    # Solo hechos coherentes con la sonda y M2 pueden sostener una conclusión; igualdad de
+    # estado no certifica el retorno semántico de main.
     error = d['error_dinamico'] or not c['disponible'] or not all(c[k] for k in c if k!='disponible')
     hechos=[]
     if patron: hechos.append('PATRON_ESTATICO_VALIDO')
@@ -87,6 +99,8 @@ def clasificar(d, etiqueta):
                 estado_simulador=m['estado'] if m is not None else d.get('estado_simulador'))
 
 
+# Procesa copias BAL mediante el compilador y la sonda B4; verifica identidades ASM/BALB/MEM y
+# publica hechos y limitaciones sin cambiar el horizonte de ejecución.
 def analizar(config):
     fuentes=[p.resolve(strict=True) for p in config.fuente]
     b2.exigir(1<=len(fuentes)<=32 and len(set(fuentes))==len(fuentes),'cantidad de fuentes inválida/repetida')
@@ -109,6 +123,9 @@ def analizar(config):
                    conclusion='ERROR',limitaciones=LIMITACIONES)
             casos.append(c)
             try:
+                # Copiamos el fuente y sus hermanos antes de compilar. La sonda recibe
+                # artefactos de esta compilación y líneas de anotaciones ASM; verifica palabras
+                # y PC, sin tratar los comentarios del compilador como símbolos autenticados.
                 c['dependencias']=b3.copiar_fuentes(fuente,d/'fuentes')
                 copia=d/'fuentes'/fuente.name;binario=d/'programa.bin';asm=copia.with_suffix('.asm')
                 rc,_,_,motivo=b3.invocar([config.balc,'-s','-o',binario,copia],config.timeout,d,'compilador',h)
@@ -116,6 +133,8 @@ def analizar(config):
                 if rc!=0 or motivo: continue
                 mem=binario.with_suffix('.mem')
                 c['formato']=b3.validar_formato(binario,mem)
+                # Guardamos identidades antes de ejecutar la sonda para comprobar después que el
+                # diagnóstico no haya alterado ASM, BALB o MEM.
                 identidades={k:dict(b3.identidad(p),ruta=id_+'/'+str(p.relative_to(d)))
                              for k,p in (('asm',asm),('balb',binario),('mem',mem))}
                 c['identidad_artefactos']=identidades
@@ -127,6 +146,10 @@ def analizar(config):
                                           config.timeout,d,'sonda',h)
                 if rc!=0 or motivo:
                     c['diagnostico']=dict(codigo=rc,motivo=motivo);continue
+                # Solo una sonda exitosa con JSON coherente alimenta la clasificación.
+                # Conservamos su horizonte completo, incluidos flancos posteriores disponibles,
+                # y contrastamos después las identidades para detectar alteraciones de los
+                # artefactos.
                 s=b2.decodificar(out);resultado=clasificar(s,sent)
                 if s.get('metricas') is not None:
                     b2.exigir(s['metricas']['ciclos']<=config.presupuesto,'sonda excedió el presupuesto')
@@ -141,6 +164,9 @@ def analizar(config):
         for k,v in herramientas.items(): b2.exigir(b3.identidad(getattr(config,k))==v,'herramienta cambió')
         r=dict(version=1,herramientas=herramientas,presupuesto=config.presupuesto,
                casos=casos,limitaciones=LIMITACIONES)
+        # Los hechos y diagnósticos se escriben y sincronizan en el temporal. Renombrarlo
+        # publica todo el árbol a una salida nueva; un error de caso permanece explícito y no se
+        # convierte en demostración de fin.
         for n,v in (('reporte.json',r),('anfitrion.json',anfitrion)):
             with (raiz/n).open('x',encoding='utf-8') as f:
                 json.dump(v,f,ensure_ascii=False,sort_keys=True,indent=2,allow_nan=False)
@@ -150,6 +176,8 @@ def analizar(config):
     return r
 
 
+# Valida los argumentos de la CLI, ejecuta el recorrido y transforma diagnósticos o resultados
+# en los códigos públicos de salida; no oculta errores de infraestructura.
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     for k in ('balc','sonda','salida'):p.add_argument('--'+k,type=Path,required=True)
@@ -157,6 +185,9 @@ def main(argv=None):
     p.add_argument('--presupuesto',required=True)
     p.add_argument('--timeout',type=float,default=30)
     try:
+        # Primero validamos argumentos y límites sin ejecutar programas. Los errores de uso
+        # mantienen su código específico; después, el recorrido y la publicación tienen
+        # diagnósticos separados de infraestructura.
         a=p.parse_args(argv)
         if not re.fullmatch('[0-9]{1,7}',a.presupuesto):p.error('presupuesto decimal requerido')
         a.presupuesto=int(a.presupuesto)

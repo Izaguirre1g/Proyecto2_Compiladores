@@ -12,10 +12,18 @@ static const char *const tipos[] = {"RAW", "WAR", "WAW", "MEMORIA", "CONTROL", "
 static const char *const destinos_tipo[] = {"DIRECTO", "CONDICIONAL", "INDIRECTO", "RETORNO", "NO_RESUELTO"};
 typedef struct {
     char *datos;
+    /*
+     * longitud cuenta bytes escritos sin el cero final; capacidad limita la reserva propia y
+     * estado conserva el primer fallo de construcción.
+     */
     size_t longitud, capacidad;
     VliwVisualEstado estado;
 } Buffer;
 typedef struct {
+    /*
+     * La vista toma prestados entrada, plan y destinos; las estadísticas se calculan desde
+     * índices ya verificados por S7.
+     */
     const VliwEntrada *e;
     const VliwPlan *p;
     const VliwDestinos *destinos;
@@ -23,17 +31,29 @@ typedef struct {
     VliwEstadisticas estadisticas;
 } Vista;
 
+/*
+ * Escribe el estado, índice y mensaje prestado en el diagnóstico opcional y devuelve el estado
+ * al llamador.
+ */
 static VliwVisualEstado informar(VliwVisualDiagnostico *d, VliwVisualEstado s,
     size_t i, const char *mensaje)
 {
     if (d) { d->estado = s; d->instruccion = i; d->mensaje = mensaje; }
     return s;
 }
+/*
+ * Inicializa los índices del diagnóstico a VLIW_VACIO y deja el mensaje sin error; admite un
+ * destino NULL.
+ */
 static void iniciar_diagnostico(VliwVisualDiagnostico *d)
 {
     if (d) *d = (VliwVisualDiagnostico){.instruccion = VLIW_VACIO,
         .dependencia = VLIW_VACIO, .mensaje = "sin error"};
 }
+/*
+ * Consulta si el CFG tiene una arista hacia B0 para reconocer los NOP de protección de esa
+ * entrada.
+ */
 static bool proteger_inicial(const VliwEntrada *e)
 {
     for (size_t b = 0; b < e->cantidad_bloques; ++b)
@@ -41,11 +61,19 @@ static bool proteger_inicial(const VliwEntrada *e)
             if (e->bloques[b].sucesores[j] == 0) return true;
     return false;
 }
+/*
+ * Reconoce los dos primeros bundles de una entrada protegida; otros vacíos no se atribuyen a
+ * esta causa.
+ */
 static bool proteccion(const Vista *v, size_t q)
 {
     size_t b = v->p->bundles[q].bloque;
     return (b != 0 || v->protege_inicial) && q - v->p->inicio_por_bloque[b] < 2;
 }
+/*
+ * Recorre los cuatro slots del bundle y detecta si alguna instrucción contiene una
+ * transferencia de control.
+ */
 static bool control(const Vista *v, size_t q)
 {
     const VliwBundle *b = &v->p->bundles[q];
@@ -54,12 +82,20 @@ static bool control(const Vista *v, size_t q)
             v->e->instrucciones[b->instrucciones[s]].control != VLIW_CONTROL_NINGUNO) return true;
     return false;
 }
+/*
+ * Clasifica el bundle como protección, vacío, control u operaciones, con prioridad para las
+ * guardas del bloque.
+ */
 static const char *clase(const Vista *v, size_t q)
 {
     if (proteccion(v, q)) return "PROTECCION";
     if (!v->p->bundles[q].operaciones) return "VACIO";
     return control(v, q) ? "CONTROL" : "OPERACIONES";
 }
+/*
+ * Distingue texto NULL o vacío de una operación con texto; esta ausencia no convierte la
+ * operación en un NOP.
+ */
 static bool ausente(const char *s) { return !s || !*s; }
 
 /* S7 se invoca antes de recorrer índices o multiplicar cantidades. El límite
@@ -77,6 +113,9 @@ static VliwVisualEstado preparar(const VliwEntrada *e, const VliwPlan *p,
         return informar(d, s == VLIW_MEMORIA ? VLIW_VIS_MEMORIA : VLIW_VIS_PLAN,
                         sd.instruccion, sd.mensaje);
     *v = (Vista){.e = e, .p = p, .protege_inicial = proteger_inicial(e)};
+    // Usamos las cantidades verificadas para obtener slots disponibles, utilizados y vacíos y
+    // bytes IMEM. Son estadísticas estáticas: una posición del plan puede ejecutarse varias
+    // veces en un bucle.
     VliwEstadisticas *a = &v->estadisticas;
     a->instrucciones_utiles = e->cantidad_instrucciones;
     a->bundles_totales = p->cantidad_bundles;
@@ -94,6 +133,8 @@ static VliwVisualEstado preparar(const VliwEntrada *e, const VliwPlan *p,
     for (size_t i = 0; i < e->cantidad_dependencias; ++i)
         ++a->dependencias_por_tipo[e->dependencias[i].tipo];
     for (size_t q = 0; q < p->cantidad_bundles; ++q) a->bundles_proteccion += proteccion(v, q);
+    // Recorridos los slots y tipos de dependencia, calculamos utilización y operaciones por
+    // bundle. El plan vacío mantiene sus cocientes iniciales en cero y evita dividir entre cero.
     if (a->bundles_totales) {
         a->utilizacion_porcentual = 100.0 * (double)a->slots_utilizados / (double)a->slots_disponibles;
         a->operaciones_por_bundle = (double)a->instrucciones_utiles / (double)a->bundles_totales;
@@ -109,6 +150,8 @@ VliwVisualEstado vliw_estadisticas(const VliwEntrada *e, const VliwPlan *p,
 {
     iniciar_diagnostico(d);
     if (!resultado) return informar(d, VLIW_VIS_ARGUMENTO, VLIW_VACIO, "resultado requerido");
+    // Antes de indexar el plan preparamos una vista verificada por S7. Validamos después
+    // anotaciones y UTF-8; ninguna de estas fases reserva todavía una salida pública.
     Vista v;
     VliwVisualEstado s = preparar(e, p, &v, d);
     if (s == VLIW_VIS_OK) *resultado = v.estadisticas;
@@ -117,10 +160,16 @@ VliwVisualEstado vliw_estadisticas(const VliwEntrada *e, const VliwPlan *p,
 
 /* No cambia el locale global. Los cocientes JSON se generan con enteros y
  * punto decimal fijo; las métricas públicas siguen siendo double completas. */
+/*
+ * Asegura espacio para el texto y su terminador mediante crecimiento geométrico; conserva un
+ * error previo y no pierde el bloque ante realloc fallido.
+ */
 static bool reservar(Buffer *b, size_t n)
 {
     if (b->estado != VLIW_VIS_OK) return false;
     if (n > SIZE_MAX - b->longitud - 1) { b->estado = VLIW_VIS_GENERACION; return false; }
+    // El mínimo incluye texto acumulado, fragmento nuevo y terminador. Si falta capacidad,
+    // duplicamos hasta cubrirlo; el puntero previo sigue liberable si realloc falla.
     size_t requerida = b->longitud + n + 1;
     if (requerida > b->capacidad) {
         size_t capacidad = b->capacidad ? b->capacidad : 256;
@@ -131,15 +180,25 @@ static bool reservar(Buffer *b, size_t n)
     }
     return true;
 }
+/*
+ * Agrega el texto al buffer de la vista y propaga el estado de error sin entregar una cadena
+ * parcial al cliente.
+ */
 static void texto(Buffer *b, const char *s)
 {
     size_t n = strlen(s);
     if (!reservar(b, n)) return;
     memcpy(b->datos + b->longitud, s, n + 1); b->longitud += n;
 }
+/*
+ * Calcula la longitud con una copia de los argumentos variádicos, reserva y escribe; registra
+ * cualquier fallo de generación.
+ */
 static void formato(Buffer *b, const char *f, ...)
 {
     if (b->estado != VLIW_VIS_OK) return;
+    // Copiamos los argumentos variádicos: una lectura mide el tamaño y la segunda escribe. Un
+    // fallo queda en el buffer y evita publicar una cadena parcialmente generada.
     va_list args, copia;
     va_start(args, f); va_copy(copia, args);
     int n = vsnprintf(NULL, 0, f, args); va_end(args);
@@ -151,12 +210,20 @@ static void formato(Buffer *b, const char *f, ...)
     }
     va_end(copia);
 }
+/*
+ * Escribe el cociente escalado y redondeado a seis decimales mediante enteros; denominador
+ * cero produce cero sin cambiar el locale.
+ */
 static void cociente(Buffer *b, size_t numerador, size_t denominador, unsigned factor)
 {
     uint64_t escalado = denominador ? ((uint64_t)numerador * factor * UINT64_C(1000000)
         + denominador / 2) / denominador : 0;
     formato(b, "%" PRIu64 ".%06" PRIu64, escalado / 1000000, escalado % 1000000);
 }
+/*
+ * Serializa el índice y su representación especial según el protocolo del reporte; no reserva
+ * ni cambia el plan.
+ */
 static void indice(Buffer *b, size_t i)
 {
     if (i == VLIW_VACIO) texto(b, "null"); else formato(b, "%zu", i);
@@ -176,6 +243,9 @@ static bool utf8(const char *s)
         else if (c >= 0xe0 && c <= 0xef) { restantes = 2; valor = c & 15u; minimo = 0x800; }
         else if (c >= 0xf0 && c <= 0xf4) { restantes = 3; valor = c & 7u; minimo = 0x10000; }
         else return false;
+        // Cada byte de continuación debe comenzar por 10 y aporta seis bits al punto Unicode.
+        // Rechazamos sobrecodificaciones, sustitutos y valores fuera de Unicode antes de
+        // producir JSON.
         for (unsigned j = 0; j < restantes; ++j) {
             if ((*p & 0xc0) != 0x80) return false;
             valor = (valor << 6) | (*p++ & 63u);
@@ -184,10 +254,16 @@ static bool utf8(const char *s)
     }
     return true;
 }
+/*
+ * Escribe un string JSON con controles escapados; NULL se representa como null y no como texto
+ * vacío.
+ */
 static void json_cadena(Buffer *b, const char *s)
 {
     if (!s) { texto(b, "null"); return; }
     texto(b, "\"");
+    // Comillas y barras deben escaparse; los controles se representan con secuencias Unicode
+    // para no romper JSON. El texto prestado se recorre sin modificarlo.
     for (const unsigned char *p = (const unsigned char *)s; *p; ++p) {
         if (*p == '"' || *p == '\\') formato(b, "\\%c", *p);
         else if (*p < 32) formato(b, "\\u%04x", *p);
@@ -195,6 +271,10 @@ static void json_cadena(Buffer *b, const char *s)
     }
     texto(b, "\"");
 }
+/*
+ * Encierra el texto CSV entre comillas y duplica las comillas internas para conservar
+ * separadores y saltos de línea.
+ */
 static void csv_cadena(Buffer *b, const char *s)
 {
     texto(b, "\"");
@@ -203,23 +283,38 @@ static void csv_cadena(Buffer *b, const char *s)
     }
     texto(b, "\"");
 }
+/*
+ * Busca la anotación prestada de una instrucción por su índice original; devuelve NULL si no
+ * se anotó.
+ */
 static const VliwDestino *destino(const Vista *v, size_t i)
 {
     if (v->destinos) for (size_t t = 0; t < v->destinos->cantidad; ++t)
         if (v->destinos->items[t].instruccion == i) return &v->destinos->items[t];
     return NULL;
 }
+/*
+ * Comprueba pertenencia al conjunto de sucesores del bloque sin atribuir significado al orden
+ * del arreglo.
+ */
 static bool sucesor(const VliwBloque *b, size_t i)
 {
     for (size_t j = 0; j < b->cantidad_sucesores; ++j) if (b->sucesores[j] == i) return true;
     return false;
 }
+/*
+ * Rechaza destinos duplicados, índices y tipos inválidos o anotaciones incompatibles con el
+ * control y el CFG ya verificado.
+ */
 static VliwVisualEstado validar_anotaciones(Vista *v, const VliwDestinos *ds,
     VliwVisualDiagnostico *d)
 {
     if (!ds) return VLIW_VIS_OK;
     if (ds->cantidad > v->e->cantidad_instrucciones || (ds->cantidad && !ds->items))
         return informar(d, VLIW_VIS_DESTINO, VLIW_VACIO, "tabla de anotaciones inválida");
+    // Para cada anotación comprobamos índice y tipo antes de acceder a la instrucción. Sus rutas
+    // deben pertenecer al CFG del bloque y no puede haber otra anotación para la misma
+    // operación.
     for (size_t t = 0; t < ds->cantidad; ++t) {
         const VliwDestino *a = &ds->items[t];
         if (a->instruccion >= v->e->cantidad_instrucciones || (unsigned)a->tipo > VLIW_DEST_NO_RESUELTO)
@@ -239,18 +334,29 @@ static VliwVisualEstado validar_anotaciones(Vista *v, const VliwDestinos *ds,
     return VLIW_VIS_OK;
 }
 
+/*
+ * Escribe las estadísticas estáticas de la vista en texto; los bundles de IMEM no se presentan
+ * como ciclos dinámicos.
+ */
 static void estadisticas_texto(Buffer *b, const Vista *v)
 {
     const VliwEstadisticas *a = &v->estadisticas;
     formato(b, "\nEstadísticas estáticas: instrucciones=%zu bundles=%zu vacíos=%zu con_operaciones=%zu protección=%zu\n",
         a->instrucciones_utiles, a->bundles_totales, a->bundles_vacios, a->bundles_con_operaciones, a->bundles_proteccion);
     formato(b, "Slots: disponibles=%zu utilizados=%zu vacíos=%zu; utilización=", a->slots_disponibles, a->slots_utilizados, a->slots_vacios);
+    // La utilización divide slots ocupados entre disponibles y multiplica por cien.
+    // Operaciones/bundle usa instrucciones útiles; ambos son cocientes del layout, sin medir
+    // ejecución.
     cociente(b, a->slots_utilizados, a->slots_disponibles, 100);
     texto(b, "%; operaciones/bundle="); cociente(b, a->instrucciones_utiles, a->bundles_totales, 1);
     formato(b, "; bytes_IMEM=%zu bloques=%zu textos_ausentes=%zu\n", a->bytes_imem, a->bloques, a->textos_ausentes);
     for (unsigned s = 0; s < VLIW_SLOTS; ++s) formato(b, "%s=%zu%s", slots[s], a->operaciones_por_slot[s], s == 3 ? "\n" : " ");
     for (unsigned t = 0; t < VLIW_VIS_TIPOS_DEPENDENCIA; ++t) formato(b, "%s=%zu%s", tipos[t], a->dependencias_por_tipo[t], t == VLIW_DEP_BARRERA ? "\n" : " ");
 }
+/*
+ * Serializa estadísticas y cocientes estáticos, con denominadores explícitos y sin depender
+ * del locale global.
+ */
 static void estadisticas_json(Buffer *b, const Vista *v)
 {
     const VliwEstadisticas *a = &v->estadisticas;
@@ -258,6 +364,8 @@ static void estadisticas_json(Buffer *b, const Vista *v)
         a->instrucciones_utiles, a->bundles_totales, a->bundles_vacios, a->bundles_con_operaciones, a->bundles_proteccion);
     formato(b, "\"slots_disponibles\":%zu,\"slots_utilizados\":%zu,\"slots_vacios\":%zu,\"bytes_imem\":%zu,\"bloques\":%zu,\"textos_ausentes\":%zu,",
         a->slots_disponibles, a->slots_utilizados, a->slots_vacios, a->bytes_imem, a->bloques, a->textos_ausentes);
+    // Tras los contadores exportamos cocientes con seis decimales y punto fijo. Los mapas por
+    // slot y dependencia conservan también las categorías con valor cero.
     texto(b, "\"utilizacion_porcentual\":"); cociente(b, a->slots_utilizados, a->slots_disponibles, 100);
     texto(b, ",\"operaciones_por_bundle\":"); cociente(b, a->instrucciones_utiles, a->bundles_totales, 1);
     texto(b, ",\"operaciones_por_slot\":{");
@@ -276,6 +384,9 @@ static void celda(const Vista *v, size_t i, size_t ancho, char salida[161])
     size_t j = (size_t)n;
     const unsigned char *s = (const unsigned char *)v->e->instrucciones[i].texto;
     if (!s || !*s) s = (const unsigned char *)"<SIN TEXTO>";
+    // La celda de terminal escapa controles y bytes no ASCII para que no alteren columnas. Solo
+    // esta representación puede truncarse con puntos suspensivos; CSV y JSON conservan el texto
+    // íntegro.
     bool truncado = false;
     for (; *s; ++s) {
         char pieza[8];
@@ -289,8 +400,15 @@ static void celda(const Vista *v, size_t i, size_t ancho, char salida[161])
     if (truncado) { if (j > ancho - 3) j = ancho - 3; memcpy(salida + j, "...", 3); j += 3; }
     salida[j] = 0;
 }
+/*
+ * Recorre el plan y genera filas legibles por bundle, slots y PC; agrega dependencias,
+ * destinos y estadísticas según las opciones.
+ */
 static void tabla(Buffer *b, const Vista *v, const VliwVisualOpciones *o)
 {
+    // Primero calculamos el ancho de cada columna: usamos la opción explícita o medimos las
+    // celdas escapadas. Así el alineamiento depende del texto visible y no del tamaño original
+    // con caracteres de control.
     size_t anchos[VLIW_SLOTS];
     for (unsigned s = 0; s < VLIW_SLOTS; ++s) {
         anchos[s] = o->ancho_slot ? o->ancho_slot : 8;
@@ -302,6 +420,9 @@ static void tabla(Buffer *b, const Vista *v, const VliwVisualOpciones *o)
     texto(b, "Calendarización VLIW estática (bundle IMEM; no es ciclo de ejecución)\n");
     formato(b, "Bundle | PC     | Bloque | Inicio | Clase       | Control | %-*s | %-*s | %-*s | %-*s\n",
         (int)anchos[0], slots[0], (int)anchos[1], slots[1], (int)anchos[2], slots[2], (int)anchos[3], slots[3]);
+    // Cada fila CSV corresponde a un bundle y conserva cuatro campos de texto en orden de slot.
+    // Los índices y las banderas de texto ausente permiten distinguir un NOP de una instrucción
+    // sin descripción.
     for (size_t q = 0; q < v->p->cantidad_bundles; ++q) {
         const VliwBundle *bu = &v->p->bundles[q];
         formato(b, "%6zu | 0x%04zx | B%-5zu | %-6s | %-11s | %-7s", q, 16 * q, bu->bloque,
@@ -309,6 +430,9 @@ static void tabla(Buffer *b, const Vista *v, const VliwVisualOpciones *o)
         for (unsigned s = 0; s < VLIW_SLOTS; ++s) { char t[161]; celda(v, bu->instrucciones[s], anchos[s], t); formato(b, " | %-*s", (int)anchos[s], t); }
         texto(b, "\n");
     }
+    // Después de las filas del layout añadimos dependencias opcionales con productor, consumidor
+    // y distancias. Son posiciones IMEM verificadas por S7, no ciclos dinámicos ni una ejecución
+    // del programa.
     if (o->mostrar_dependencias) {
         texto(b, "\nDependencias externas (distancias en bundles estáticos):\n");
         for (size_t j = 0; j < v->e->cantidad_dependencias; ++j) {
@@ -327,9 +451,16 @@ static void tabla(Buffer *b, const Vista *v, const VliwVisualOpciones *o)
     }
     if (o->mostrar_estadisticas) estadisticas_texto(b, v);
 }
+/*
+ * Genera una fila CSV por bundle con índices, textos y categorías; conserva los textos
+ * completos y su escapado.
+ */
 static void csv(Buffer *b, const Vista *v)
 {
     texto(b, "bundle,pc,bloque,alu,lsu,bru,cripto,operaciones,inicio_bloque,proteccion,control,clase,alu_indice,lsu_indice,bru_indice,cripto_indice,alu_texto_ausente,lsu_texto_ausente,bru_texto_ausente,cripto_texto_ausente\r\n");
+    // El JSON comienza por los bundles: cada slot conserva su índice y texto, usando null para
+    // la ausencia. Luego se publican bloques y operaciones originales para enlazar la vista con
+    // el plan.
     for (size_t q = 0; q < v->p->cantidad_bundles; ++q) {
         const VliwBundle *bu = &v->p->bundles[q];
         formato(b, "%zu,0x%04zx,%zu", q, 16 * q, bu->bloque);
@@ -343,6 +474,10 @@ static void csv(Buffer *b, const Vista *v)
         texto(b, "\r\n");
     }
 }
+/*
+ * Exporta bundles, bloques, instrucciones, aristas y estadísticas; conserva índices originales
+ * y anotaciones sin reinterpretar operandos.
+ */
 static void json(Buffer *b, const Vista *v)
 {
     texto(b, "{\"version\":1,\"resumen\":{\"naturaleza\":\"estatica\",\"unidad\":\"bundle_IMEM\",\"origen_pc\":0,\"plan_verificado\":true},\"bundles\":[");
@@ -359,6 +494,9 @@ static void json(Buffer *b, const Vista *v)
         texto(b, "]}");
     }
     texto(b, "],\"bloques\":[");
+    // Los bloques incluyen el intervalo de bundles, su PC inicial, guardas y sucesores CFG. Las
+    // etiquetas son descriptivas: este reporte no reescribe operandos de salto ni emite
+    // ensamblador.
     for (size_t j = 0; j < v->e->cantidad_bloques; ++j) {
         const VliwBloque *bb = &v->e->bloques[j];
         formato(b, "%s{\"indice\":%zu,\"etiqueta\":\"B%zu\",\"inicio_bundle\":%zu,\"fin_bundle\":%zu,\"pc\":%zu,\"proteccion_bundles\":%u,\"sucesores\":[", j ? "," : "", j, j, v->p->inicio_por_bloque[j], j+1 < v->p->cantidad_bloques ? v->p->inicio_por_bloque[j+1] : v->p->cantidad_bundles, 16*v->p->inicio_por_bloque[j], j || v->protege_inicial ? 2u : 0u);
@@ -366,6 +504,9 @@ static void json(Buffer *b, const Vista *v)
         texto(b, "]}");
     }
     texto(b, "],\"instrucciones\":[");
+    // Cada instrucción conserva su índice original, identificador externo y bundle asignado. La
+    // anotación de destino se exporta aparte del texto para no confundir visualización con
+    // resolución de saltos.
     for (size_t i = 0; i < v->e->cantidad_instrucciones; ++i) {
         const VliwInstruccion *in = &v->e->instrucciones[i]; const VliwDestino *a = destino(v, i);
         formato(b, "%s{\"indice\":%zu,\"id\":%zu,\"slot\":\"%s\",\"bloque\":%zu,\"bundle\":%zu,\"pc\":%zu,\"lee\":%" PRIu64 ",\"escribe\":%" PRIu64 ",\"efectos\":%u,\"control\":%u,\"texto\":", i ? "," : "", i, in->id, slots[in->slot], in->bloque, v->p->bundle_por_instruccion[i], 16*v->p->bundle_por_instruccion[i], in->lee, in->escribe, in->efectos, (unsigned)in->control);
@@ -407,9 +548,16 @@ VliwVisualEstado vliw_visualizar(const VliwEntrada *e, const VliwPlan *p,
     for (size_t i = 0; i < e->cantidad_instrucciones; ++i)
         if (!utf8(e->instrucciones[i].texto)) return informar(d, VLIW_VIS_TEXTO, i, "texto no es UTF-8 válido");
     Buffer b = {0};
+    /*
+     * Elegimos únicamente la representación: todas consumen la misma vista verificada y
+     * ninguna reordena instrucciones.
+     */
     if (f == VLIW_VIS_TABLA) tabla(&b, &v, &o);
     else if (f == VLIW_VIS_CSV) csv(&b, &v);
     else json(&b, &v);
+    // El buffer acumula un estado de error que no puede borrarse por escrituras posteriores. Si
+    // cualquier formato falló, liberamos su cadena parcial y devolvemos la causa; solo el camino
+    // exitoso publica el reporte.
     if (b.estado != VLIW_VIS_OK) {
         free(b.datos);
         return informar(d, b.estado, VLIW_VACIO, b.estado == VLIW_VIS_MEMORIA ? "sin memoria para el reporte" : "error al generar el reporte");

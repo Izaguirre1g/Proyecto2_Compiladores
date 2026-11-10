@@ -29,6 +29,10 @@ void sim_comparador_liberar_reporte(char **s)
 {
     if (s) { free(*s); *s=NULL; }
 }
+/*
+ * Comprueba que el resumen describa el reset público: ciclo cero, registros vacíos, INIT y
+ * ningún bundle o trap pendiente.
+ */
 static bool inicial(const SimMetricasResumen *r)
 {
     if (!r->valido || r->estado!=SIM_PIPE_ACTIVO || r->ciclos || r->pc ||
@@ -47,6 +51,9 @@ static SimEjecucionCodigo ejecutar(SimEjecucion *s,uint64_t presupuesto,unsigned
     unsigned intentos=0; uint64_t restantes=presupuesto;
     for (;;) {
         SimEjecucionCodigo e=sim_ejecucion_ejecutar(s,restantes);
+        // La falta de memoria de M1 deja un flanco ya ejecutado pendiente de observación.
+        // Reintentamos solo esa observación; luego consultamos ciclos para consumir el
+        // presupuesto restante, sin repetir efectos de CPU.
         while (e==SIM_EJECUCION_PENDIENTE && intentos<maximo) {
             ++intentos; e=sim_ejecucion_reintentar(s);
         }
@@ -120,6 +127,9 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
         }
         c->r.resumen_disponible[i]=true;
     }
+    // Antes de ejecutar exigimos reset público compatible y todos los bytes DMEM iniciales
+    // iguales. Si no coinciden, la comparación queda inconclusa: igualarlos silenciosamente
+    // cambiaría las entradas.
     c->r.bytes_iniciales_distintos=memoria(datos,datos+SIM_CARGADOR_DMEM_BYTES,&c->r.primer_byte_inicial);
     c->r.iniciales_compatibles=!c->r.bytes_iniciales_distintos &&
         inicial(&c->r.resumenes[0]) && inicial(&c->r.resumenes[1]);
@@ -163,6 +173,9 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
         c->r.resultado=SIM_COMPARADOR_INCONCLUSO; c->r.motivo=SIM_COMPARADOR_NO_TERMINADO;
         goto terminar;
     }
+    // Ambos programas ya terminaron: ahora comparamos los 32 GPR y registramos la primera
+    // diferencia y su cantidad. Las métricas de rendimiento calculadas antes no prueban esta
+    // igualdad funcional.
     c->r.comparacion_realizada=true;
     for (unsigned i=0;i<32;++i) if (c->r.resumenes[0].registros[i]!=c->r.resumenes[1].registros[i]) {
         if (!c->r.registros_distintos) {
@@ -174,6 +187,9 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     for (unsigned i=0;i<2;++i) if (sim_ejecucion_memoria(s[i],datos+i*SIM_CARGADOR_DMEM_BYTES,SIM_CARGADOR_DMEM_BYTES)!=0) {
         c->r.resultado=SIM_COMPARADOR_ERROR; c->r.motivo=SIM_COMPARADOR_CONSULTA; goto terminar;
     }
+    // Releemos y comparamos toda DMEM final byte a byte. Después contrastamos AUTH/INIT y el
+    // número y orden de vectores de trap; PC y ciclos pueden cambiar entre layouts y se
+    // conservan como diagnóstico.
     c->r.bytes_distintos=memoria(datos,datos+SIM_CARGADOR_DMEM_BYTES,&c->r.primer_byte);
     if (c->r.bytes_distintos) for (unsigned i=0;i<2;++i)
         c->r.valores_byte[i]=datos[i*SIM_CARGADOR_DMEM_BYTES+c->r.primer_byte];
@@ -190,6 +206,9 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     c->r.resultado=c->r.registros_distintos || c->r.bytes_distintos || c->r.crypto_distinto ||
         c->r.cantidad_traps_distinta || c->r.vector_distinto ? SIM_COMPARADOR_DIFERENTE:SIM_COMPARADOR_EQUIVALENTE;
 terminar:
+    // Antes de destruir ambas sesiones guardamos sus estados de coordinación. El resultado posee
+    // rutas, resúmenes e historiales; el buffer de DMEM solo fue temporal. Si falló una reserva
+    // propia no publicamos ese resultado.
     for (unsigned i=0;i<2;++i) {
         if (s[i]) (void)sim_ejecucion_estado(s[i],&c->r.estados[i]);
         sim_ejecucion_liberar(&s[i]);
@@ -221,13 +240,22 @@ SimComparadorCodigo sim_comparador_trap(const SimComparador *c,unsigned lado,siz
 /* El reporte tiene almacenamiento privado hasta completar su generación.
  * La lista blanca evita serializar sesiones, memoria o bóveda completas. */
 typedef struct { char *s; size_t n,cap; SimComparadorCodigo error; } Texto;
+/*
+ * Amplía el buffer privado de B1 y agrega texto formateado; preserva el error para impedir la
+ * publicación de un reporte parcial.
+ */
 static void agregar(Texto *b,const char *f,...)
 {
     if (b->error) return;
+    // Primero medimos el texto con una copia de los argumentos variádicos. Conservamos la otra
+    // copia para escribir después de reservar; un error previo impide seguir construyendo un
+    // reporte parcial.
     va_list a,c; va_start(a,f); va_copy(c,a); int n=vsnprintf(NULL,0,f,a); va_end(a);
     if (n<0) b->error=SIM_COMPARADOR_GENERACION;
     else if ((size_t)n>SIZE_MAX-b->n-1) b->error=SIM_COMPARADOR_MEMORIA;
     else {
+        // El tamaño incluye el terminador. Ampliamos de forma geométrica sin perder la reserva
+        // anterior si realloc falla; la longitud solo avanza después de una escritura completa.
         size_t requerido=b->n+(size_t)n+1;
         if (requerido>b->cap) {
             size_t cap=b->cap?b->cap:512;
@@ -243,6 +271,10 @@ static void agregar(Texto *b,const char *f,...)
     }
     va_end(c);
 }
+/*
+ * Escapa comillas, barras y controles de una cadena en el buffer JSON sin cambiar el texto
+ * prestado.
+ */
 static void cadena(Texto *b,const char *s)
 {
     agregar(b,"\"");
@@ -263,28 +295,47 @@ static void cadena(Texto *b,const char *s)
     }
     agregar(b,"\"");
 }
+/*
+ * Devuelve el nombre estable del resultado de comparación para los reportes públicos.
+ */
 static const char *resultado(SimComparadorResultado r)
 {
     static const char *const nombres[]={"EQUIVALENTE","DIFERENTE","INCONCLUSO","ERROR"};
     return nombres[r];
 }
+/*
+ * Traduce el estado del pipeline a su nombre para el reporte, sin cambiar el estado de
+ * ejecución.
+ */
 static const char *estado(SimPipelineEstado e)
 {
     static const char *const nombres[]={"ACTIVO","TERMINADO","LIMITE","ARGUMENTO","PC",
         "DECODIFICACION","NO_SOPORTADA","ALU","LSU","BRU","CRYPTO"};
     return nombres[e];
 }
+/*
+ * Devuelve la descripción del motivo de comparación para distinguir diferencias, límites y
+ * errores.
+ */
 static const char *motivo(SimComparadorMotivo m)
 {
     static const char *const nombres[]={"sin impedimento","condiciones iniciales incompatibles",
         "ejecución sin terminar","carga fallida","ejecución fallida","observación pendiente sin recuperar","consulta fallida"};
     return nombres[m];
 }
+/*
+ * Escribe una diferencia de métricas conservando signo y magnitud; no convierte una mejora
+ * numérica en equivalencia.
+ */
 static void delta(Texto *b,SimMetricasDiferencia d,bool json)
 {
     if (json) agregar(b,"{\"negativa\":%s,\"magnitud\":%" PRIu64 "}",d.negativa?"true":"false",d.magnitud);
     else agregar(b,"%s%" PRIu64,d.negativa?"-":"",d.magnitud);
 }
+/*
+ * Serializa el resumen de un lado de B1, incluyendo métricas y excepciones disponibles, sin
+ * exponer secretos criptográficos.
+ */
 static void programa(Texto *b,const SimComparador *c,unsigned i)
 {
     const SimMetricasResumen *r=&c->r.resumenes[i];
@@ -292,6 +343,9 @@ static void programa(Texto *b,const SimComparador *c,unsigned i)
     agregar(b,",\"creada\":%s,\"ejecutada\":%s,\"estado\":",c->r.creadas[i]?"true":"false",c->r.ejecutadas[i]?"true":"false");
     if (c->r.creadas[i]) agregar(b,"%u",(unsigned)c->r.estados[i].pipeline); else agregar(b,"null");
     agregar(b,",\"metricas\":");
+    // Una sesión creada no garantiza un resumen disponible: una observación M1 pendiente puede
+    // impedir consultarlo. Exportamos null en ese caso; si existe, escribimos sus métricas y
+    // luego el historial propio.
     if (!c->r.resumen_disponible[i]) agregar(b,"null");
     else agregar(b,"{\"ciclos\":%" PRIu64 ",\"bundles\":%" PRIu64 ",\"instrucciones\":%" PRIu64
         ",\"ipc\":%.17g,\"pc_diagnostico\":%" PRIu32 ",\"estado_crypto\":%" PRIu32 ",\"traps\":%" PRIu64 "}",
@@ -315,6 +369,9 @@ SimComparadorCodigo sim_comparador_exportar(const SimComparador *c,SimMetricasFo
     if (!loc) return SIM_COMPARADOR_GENERACION;
     locale_t previo=uselocale(loc);
     if (!previo) { freelocale(loc); return SIM_COMPARADOR_GENERACION; }
+    // Construimos el formato elegido sobre el mismo resumen. Los campos no disponibles
+    // permanecen null y los errores de ejecución siguen visibles; no se recalcula la conclusión
+    // al serializar.
     const SimComparadorResumen *r=&c->r; Texto b={0}; bool json=f==SIM_METRICAS_JSON;
     if (json) {
         agregar(&b,"{\"version\":1,\"contrato\":\"estricto-publico\",\"resultado_comparacion\":");cadena(&b,resultado(r->resultado));
@@ -359,6 +416,8 @@ SimComparadorCodigo sim_comparador_exportar(const SimComparador *c,SimMetricasFo
         }
         agregar(&b,"Límites: bóveda privada no observable; se comparan 32 GPR sin correspondencia de renombramiento. PC final y PC/ciclo de traps solo son diagnósticos.\n");
     }
+    // Restauramos el locale del hilo aun si la generación falló. Liberamos cualquier texto
+    // parcial y solo entregamos una cadena cuando el buffer conserva estado de éxito.
     (void)uselocale(previo);freelocale(loc);
     if (b.error) { free(b.s); return b.error; }
     *salida=b.s;return SIM_COMPARADOR_OK;

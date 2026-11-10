@@ -25,7 +25,7 @@ static void comprobar_ausentes(const SimInstruccion *i)
     COMPROBAR(i->salto == SIM_SALTO_NINGUNO && !i->tiene_direccion && i->direccion == 0);
     COMPROBAR(!i->requiere_auth && !i->requiere_init);
 }
-
+/* Barre las codificaciones y sus campos esperados, incluidos NOP, reservas y argumentos inválidos. */
 static void casos_unitarios(void)
 {
     /* Las máscaras indican IDs ISA reconocidos, no ALU_* internos. Se barren
@@ -37,7 +37,7 @@ static void casos_unitarios(void)
     };
     SimInstruccion i;
     unsigned reconocidas = 0;
-    for (unsigned tipo = 0; tipo < 128; ++tipo) {
+    /* Barrimos tipo e ID y contrastamos cada slot con el catálogo permitido. */ for (unsigned tipo = 0; tipo < 128; ++tipo) {
         for (unsigned id = 0; id < 16; ++id) {
             unsigned slot_real = 4;
             for (size_t f = 0; f < sizeof familias / sizeof *familias; ++f)
@@ -138,7 +138,7 @@ int main(int argc, char **argv)
             ? sim_cargar_mem(argv[3], &imagen, stderr)
             : sim_cargar_balb(argv[3], &imagen, stderr);
         if (estado != SIM_CARGA_OK) return 1;
-        for (size_t b = 0; b < imagen->cantidad_bundles; ++b) {
+        /* S1 carga la imagen y S2 decodifica sus cuatro slots, sin ejecutarlos. */ for (size_t b = 0; b < imagen->cantidad_bundles; ++b) {
             SimInstruccion bundle[4];
             SimDecodeEstado dec = sim_decode_bundle(imagen->imem[b], bundle);
             for (unsigned s = 0; s < 4; ++s) mostrar(&bundle[s], b, dec);
