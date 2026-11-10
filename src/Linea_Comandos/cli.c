@@ -11,6 +11,7 @@
 #include "diagnosticos.h"
 #include "clones.h"
 #include "ir.h"
+#include "dce.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -158,11 +159,8 @@ static const char *almacen_sim(SimAlmacen a)
     return "desconocido";
 }
 
-/* Mapa de memoria del contrato: globales desde 0x4000 hasta 0x7FFF y pila
- * desde 0x10000 hacia abajo (0x8000-0xFFFF). El codigo empieza en 0. */
-#define CLI_GP_BASE 0x4000u
-#define CLI_FIN_GLOBALES 0x8000u
-#define CLI_TOPE_PILA 0x10000u
+/* El mapa de memoria (CLI_GP_BASE, CLI_FIN_GLOBALES, CLI_TOPE_PILA y
+ * CLI_CAPACIDAD_MARCO) esta en include/cli.h: lo comparte con el IDE. */
 
 /* Opciones de la especificacion. Todas agregan salidas a la compilacion. */
 typedef struct {
@@ -177,6 +175,7 @@ typedef struct {
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
     int ir;                 /* --ir: IR de tres direcciones */
+    int dce;                /* --dce: IR + variables vivas + eliminacion de codigo muerto */
 } Compilacion;
 
 typedef struct {
@@ -199,6 +198,8 @@ static void usage(FILE *out) {
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
+          "--dce         como --ir, y ademas calcula las variables vivas y elimina\n"
+          "              el codigo muerto (muestra la IR antes y despues)\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
@@ -214,6 +215,8 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
+        /* --dce trabaja sobre la IR: cuenta como --ir (y tiene sus mismas reglas). */
+        if (!posicional && !strcmp(arg, "--dce")) { c->ir = 1; c->dce = 1; continue; }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -241,7 +244,7 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (!c->entrada) { usage(stderr); return -1; }
     if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
-        fputs("--ir se ejecuta de forma independiente (sin otras banderas)\n", stderr);
+        fputs("--ir y --dce se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         return -1;
     }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
@@ -409,7 +412,7 @@ static int compilar_proyecto(void *ctx, const Ast *arbol, SimTabla *tabla, FILE 
     if (op->detallado) puts("[fase 3] semántico: declaraciones, tipos, ámbitos y llamadas válidos");
     MemProyectoMapa mapa = {0};
     MemProyectoResultado r = mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
-                                                  1020, &mapa);
+                                                  CLI_CAPACIDAD_MARCO, &mapa);
     if (r != MEM_PROYECTO_OK) {
         fprintf(diagnosticos, "asignacion de memoria no disponible (codigo %d)\n", (int)r);
         return 1;
@@ -710,16 +713,39 @@ static int buscar_clones(int argc, char **argv)
     return estado;
 }
 
-/* Solo para visualizar IR validada: no genera ensamblador ni binario. */
+/* Solo para visualizar IR validada: no genera ensamblador ni binario.
+ * Con --dce ("ctx" apunta a un 1) tambien muestra las variables vivas de
+ * cada bloque, elimina el codigo muerto y muestra la IR resultante. */
 static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag)
 {
-    (void)ctx;
     (void)tabla;
+    int con_dce = ctx != NULL && *(const int *)ctx;
     IrPrograma ir = {0};
     int estado = ir_desde_ast(arbol, &ir, diag);
     if (estado == 0) {
         puts("[IR de tres direcciones]");
         estado = ir_imprimir(&ir, stdout);
+    }
+    if (estado == 0 && con_dce) {
+        DceVivas vivas;
+        estado = dce_calcular_vivas(&ir, &vivas);
+        if (estado == 0) {
+            puts("\n[Analisis de variables vivas]");
+            estado = dce_imprimir_vivas(&vivas, stdout);
+        }
+        dce_liberar_vivas(&vivas);
+
+        DceResultado resultado = {0};
+        if (estado == 0) estado = dce_eliminar(&ir, &resultado);
+        if (estado == 0) {
+            puts("\n[Eliminacion de codigo muerto]");
+            estado = dce_imprimir_resultado(&resultado, stdout);
+        }
+        if (estado == 0) {
+            puts("\n[IR despues del DCE]");
+            estado = ir_imprimir(&ir, stdout);
+        }
+        dce_liberar_resultado(&resultado);
     }
     ir_liberar(&ir);
     return estado;
@@ -731,7 +757,7 @@ int cli_run(int argc, char **argv) {
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
-    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, NULL);
+    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op.dce);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }

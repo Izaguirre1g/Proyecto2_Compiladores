@@ -67,6 +67,7 @@ mismo orden en que un programa `.bal` las atraviesa:
 | 2 | `src/Analisis_Sintactico/` | Revisa la gramática y construye el AST (Bison). | `gramatica.y`, `puente_lexer.c`, `ast.c` |
 | 3 | `src/Analisis_Semantico/` | Tabla de símbolos, tipos, módulos (`bring`) y memoria. | `semantic.c`, `symbol_table.c`, `semantic_modules.c`, `memory.c` |
 | 4 | `src/Representacion_Intermedia/` | Código de tres direcciones y bloques básicos. | `ir.c` |
+| 4b | `src/DCE/` | Eliminación de código muerto con análisis de variables vivas, sobre la IR (`balc --dce`). Ver [docs/dce.md](docs/dce.md). | `dce.c` |
 | 5 | `src/Generacion_Codigo/` | Traduce el AST a ensamblador VLIW (expresiones, control, funciones). | `generacion_*.c`, `funciones_*.c` |
 | 6 | `src/Resolucion_y_Enlace/` | Resuelve variables, etiquetas y saltos, y enlaza las funciones. | `resolucion_*.c`, `enlace_funciones.c` |
 | 7 | `src/Codificacion_Binaria/` | Convierte cada bundle en palabras binarias y escribe `.bin`/`.mem`. | `codificacion_binaria.c`, `formato_binario.c` |
@@ -78,7 +79,8 @@ mismo orden en que un programa `.bal` las atraviesa:
 Las interfaces públicas (`.h`) están todas en `include/`. Solo tres
 encabezados viven junto a su código porque son internos o generados:
 `lexer_flex.h`, `parser.h` y `generacion_interna.h`. Las pruebas están en
-`tests/` y los programas de ejemplo en `examples/`.
+`tests/` y los programas de ejemplo en `examples/`. Los tres programas de la
+eliminación de código muerto están aparte, en `examples/dce/` (ver [docs/dce.md](docs/dce.md)).
 
 ## Uso del compilador
 
@@ -151,6 +153,24 @@ make ide
 ./balc-ide                          # abre un archivo nuevo, sin nombre
 ```
 
+Para probar la eliminación de código muerto, abre uno de sus ejemplos y pulsa
+el botón **Código muerto**:
+
+```bash
+./balc-ide examples/dce/dce_llamadas.bal   # llamadas con efectos que se conservan
+./balc-ide examples/dce/dce_ciclo.bal      # código muerto en un ciclo (2 pasadas)
+./balc-ide examples/dce/dce_division.bal   # divisiones que pueden fallar
+```
+
+Los archivos están en la carpeta `examples/dce/`. También se pueden abrir desde
+el IDE con el botón **Abrir** (Ctrl+O):
+
+| Archivo | Qué muestra | Abrir en el IDE | Ver en la terminal |
+|---|---|---|---|
+| [`examples/dce/dce_llamadas.bal`](examples/dce/dce_llamadas.bal) | Asignaciones muertas mezcladas con llamadas que escriben en un arreglo: las llamadas se conservan. | `./balc-ide examples/dce/dce_llamadas.bal` | `./balc --dce examples/dce/dce_llamadas.bal` |
+| [`examples/dce/dce_ciclo.bal`](examples/dce/dce_ciclo.bal) | Código muerto dentro de un ciclo; una variable queda muerta recién en la segunda pasada. | `./balc-ide examples/dce/dce_ciclo.bal` | `./balc --dce examples/dce/dce_ciclo.bal` |
+| [`examples/dce/dce_division.bal`](examples/dce/dce_division.bal) | Una división entre una variable se conserva porque puede fallar; una entre un número fijo se elimina. | `./balc-ide examples/dce/dce_division.bal` | `./balc --dce examples/dce/dce_division.bal` |
+
 `make ide` genera el ejecutable `balc-ide`. No se sube al repositorio, porque se
 vuelve a generar al compilar.
 
@@ -165,6 +185,8 @@ vuelve a generar al compilar.
 | Delimitadores | Si sobra o falta un paréntesis, corchete o llave, se indica cuál y dónde se abrió. |
 | Mensajes en español | Los errores del parser se traducen, por ejemplo `no se esperaba el nombre 'numero' en este lugar`. |
 | Corrección automática | Si el IDE sabe arreglar un error (un `;` que falta, un `)` o `}` sin cerrar, un cierre que sobra), la lista muestra el arreglo y un botón **Corregir**. Ctrl+. corrige el error de la línea del cursor y Ctrl+Z lo deshace. |
+| Código muerto | El botón **Código muerto** elimina el código muerto con el análisis de variables vivas. Las líneas eliminadas completas se tachan y las que solo perdieron una parte (por ejemplo, la llamada se conserva) quedan en gris. La pestaña **Código muerto** las lista, y **Ver IR y variables vivas** muestra la IR antes y después y la tabla `use`/`def`/`IN`/`OUT`. Ver [docs/dce.md](docs/dce.md). |
+| Ensamblador | El botón **Ensamblador** genera el ensamblador VLIW del código del editor (aunque no esté guardado), el mismo que `balc -s`. La pestaña **Ensamblador (.asm)** muestra cada bundle con sus 4 slots (`ALU \| LSU \| BRU \| CRIPTO`) y **Binario** muestra cada bundle con su PC y su codificación, como `balc -p`. |
 | Clones | El botón **Buscar clones** compara el archivo abierto (aunque no esté guardado) con los demás `.bal` de su carpeta. Los clones se pintan de amarillo y la pestaña **Clones** dice dónde está cada copia; un clic lleva al fragmento. |
 
 | Atajo | Acción |
@@ -180,6 +202,18 @@ Si hay cambios sin guardar, el IDE pregunta antes de cerrar o de abrir otro arch
 Para revisar el código sin guardarlo, el IDE crea un archivo oculto
 `.ide_<nombre>.bal` en la misma carpeta y lo borra enseguida. Va en la misma
 carpeta para que los `bring` encuentren sus módulos.
+
+### Código muerto desde la terminal
+
+`balc --dce` muestra la IR, las variables vivas de cada bloque, lo que se
+eliminó y la IR después del DCE:
+
+```bash
+./balc --dce examples/dce/dce_llamadas.bal
+./balc --dce examples/dce/dce_ciclo.bal
+./balc --dce examples/dce/dce_division.bal
+make test-dce test-ide-dce                  # pruebas
+```
 
 ### Clones desde la terminal
 

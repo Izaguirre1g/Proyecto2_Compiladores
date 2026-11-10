@@ -19,7 +19,7 @@
  * El punto al inicio del nombre lo oculta en Linux.
  * Devuelve memoria nueva (liberar con free), o NULL si no hay memoria.
  */
-static char *ruta_temporal(const char *ruta)
+char *ide_ruta_temporal(const char *ruta)
 {
     const char *nombre = (ruta != NULL) ? ruta : IDE_SIN_NOMBRE;
 
@@ -41,7 +41,7 @@ static char *ruta_temporal(const char *ruta)
 }
 
 /* Escribe el texto completo en un archivo. Devuelve 0 si funcionó, -1 si no. */
-static int escribir_archivo(const char *ruta, const char *texto, size_t largo)
+int ide_escribir_archivo(const char *ruta, const char *texto, size_t largo)
 {
     FILE *f = fopen(ruta, "wb");
     if (f == NULL) return -1;
@@ -389,9 +389,9 @@ int ide_analizar_texto(const char *texto, size_t largo, const char *ruta,
     size_t primero_nuevo = lista->cantidad;  /* Desde aquí empiezan los errores de esta revisión. */
 
     /* Paso 1: guardar el texto del editor en el archivo temporal. */
-    char *temporal = ruta_temporal(ruta);
+    char *temporal = ide_ruta_temporal(ruta);
     if (temporal == NULL) return -1;
-    if (escribir_archivo(temporal, texto, largo) != 0) {
+    if (ide_escribir_archivo(temporal, texto, largo) != 0) {
         free(temporal);
         return -1;
     }
