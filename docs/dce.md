@@ -18,6 +18,33 @@ La salida tiene cuatro partes: la IR original, las variables vivas de cada
 bloque (`use`, `def`, `IN`, `OUT`), lo que se eliminó (`extra` y `base`, en
 3 pasadas) y la IR después del DCE. La llamada a `acumular` se conserva.
 
+### En el IDE
+
+`./balc-ide tests/dce/dce_llamadas.bal` y el botón **Código muerto**
+([`src/IDE/ide_dce.c`](../src/IDE/ide_dce.c)):
+
+- Corre lo mismo que `balc --dce` sobre el texto del editor, aunque no esté guardado.
+- **Tacha** las líneas eliminadas completas (`b * declare_int : a pitagoras 2;`).
+- Pone **fondo gris** a las que solo perdieron una parte. Por ejemplo, en
+  `c * declare_int : registrar(datos, a);` se elimina la copia a `c`, pero
+  la llamada se queda.
+- La pestaña **Código muerto** lista cada línea con lo eliminado; un clic lleva a la línea.
+- **Ver IR y variables vivas** abre la IR antes, la tabla `use`/`def`/`IN`/`OUT`
+  de cada bloque y la IR después ([`ide_dce_ventana.c`](../src/IDE/ide_dce_ventana.c)).
+- Si se edita el código, las marcas se borran, porque las líneas ya no coinciden.
+- Si el archivo tiene errores, o la IR todavía no soporta algo (por ejemplo,
+  `cycle` con `step` negativo), lo dice en la pestaña en vez de marcar.
+
+Para mostrar en la defensa que el DCE decide por las variables vivas:
+
+1. Pulsa **Código muerto**: la línea 12 (`b`) sale tachada.
+2. Agrega `registrar(datos, b);` antes de la `}` final y pulsa **Código muerto** otra vez.
+3. Ahora la línea 12 ya no se tacha, porque `b` está viva.
+
+La prueba sin ventanas es [`tests/test_ide_dce.c`](../tests/test_ide_dce.c) (`make test-ide-dce`).
+
+## Sobre qué trabaja
+
 El DCE trabaja sobre la **IR de tres direcciones** ([ir.md](ir.md)): recibe el
 programa ya dividido en bloques básicos con su grafo de flujo, quita las
 instrucciones muertas y vuelve a calcular los bloques con `ir_bloques_basicos()`.

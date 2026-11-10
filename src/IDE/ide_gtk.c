@@ -33,6 +33,12 @@
  *   7. Tabla LL(1): el botón "Tabla LL(1)" abre una ventana con la tabla
  *      M[A, a], las producciones y PRIMERO/SIGUIENTE, que son lo que usan
  *      las sugerencias y las correcciones (ver ide_tabla_ll1.c).
+ *   8. Código muerto: el botón "Código muerto" hace la eliminación de código
+ *      muerto con variables vivas sobre el código del editor (ide_dce.c).
+ *      Las líneas eliminadas completas se tachan; las que solo perdieron una
+ *      parte (por ejemplo, se fue la copia del resultado pero la llamada se
+ *      queda) se marcan en gris. La pestaña "Código muerto" lista cada línea,
+ *      y "Ver IR y variables vivas" abre el detalle (ide_dce_ventana.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -43,6 +49,8 @@
 #include "clones.h"
 #include "ide_analisis.h"
 #include "ide_arreglos.h"
+#include "ide_dce.h"
+#include "ide_dce_ventana.h"
 #include "ide_nucleo.h"
 #include "ide_tabla_ll1.h"
 
@@ -65,7 +73,12 @@ typedef struct {
     GtkTextTag *marca_clon;        /* Estilo del fondo amarillo de los clones. */
     GtkListBox *lista_clones;      /* Lista de clones (pestaña "Clones"). */
     GtkLabel *resumen_clones;      /* "2 clones en este archivo...". */
-    GtkNotebook *pestanas;         /* Pestañas de abajo: Errores y Clones. */
+    GtkTextTag *marca_muerta;      /* Línea eliminada completa: tachada y en gris. */
+    GtkTextTag *marca_parcial;     /* Línea a la que se le quitó una parte: fondo gris. */
+    GtkListBox *lista_dce;         /* Lista de la pestaña "Código muerto". */
+    GtkLabel *resumen_dce;         /* "5 de 29 instrucciones eliminadas...". */
+    GtkWidget *boton_detalle_dce;  /* "Ver IR y variables vivas". */
+    GtkNotebook *pestanas;         /* Pestañas de abajo: Errores, Clones y Código muerto. */
     GtkLabel *barra_estado;        /* "Línea X, columna Y · N errores". */
     GtkWidget *ventana_sugerencias;   /* Cuadro flotante con las sugerencias. */
     GtkListBox *lista_sugerencias;
@@ -78,6 +91,8 @@ typedef struct {
     gboolean revision_vigente;  /* FALSE si el texto cambió después de revisarlo. */
     int largo_prefijo;          /* Letras ya escritas de la palabra que se sugiere. */
     int digitos_numeros;        /* Cifras que caben en la columna de números de línea. */
+    IdeDce dce;                 /* Último resultado del botón "Código muerto". */
+    gboolean dce_mostrado;      /* TRUE si ese resultado está marcado en el editor. */
 } Ide;
 
 /* ================================================================== */
@@ -383,6 +398,13 @@ static void liberar_arreglos(Ide *ide)
 }
 
 static void al_pulsar_corregir(GtkWidget *boton, gpointer datos);
+static void limpiar_dce(Ide *ide, const char *mensaje);
+
+/* Lo que dice la pestaña "Código muerto" antes de usar el botón. */
+#define DCE_SIN_ANALIZAR "Pulsa \"Código muerto\" para eliminar el código muerto de este archivo " \
+                         "con el análisis de variables vivas."
+#define DCE_CODIGO_CAMBIO "El código cambió: pulsa \"Código muerto\" para analizarlo otra vez."
+
 
 /* Agrega una fila a la lista de errores de abajo. */
 static void agregar_fila_error(Ide *ide, size_t indice)
@@ -945,6 +967,8 @@ static void al_cambiar_texto(GtkTextBuffer *buffer, gpointer datos)
         actualizar_titulo(ide);
     }
     ajustar_margen_numeros(ide);  /* Por si ahora hacen falta más cifras. */
+    /* Las líneas marcadas por el DCE ya pueden no coincidir: se borran. */
+    if (ide->dce_mostrado) limpiar_dce(ide, DCE_CODIGO_CAMBIO);
     programar_revision(ide);
 }
 
@@ -964,7 +988,7 @@ static void al_mover_marca(GtkTextBuffer *buffer, GtkTextIter *posicion, GtkText
 /* ================================================================== */
 
 /* Página de cada pestaña de abajo. */
-enum { PESTANA_ERRORES = 0, PESTANA_CLONES = 1 };
+enum { PESTANA_ERRORES = 0, PESTANA_CLONES = 1, PESTANA_DCE = 2 };
 
 /* TRUE si el nombre es un programa BAL visible ("x.bal", pero no ".ide_x.bal"). */
 static gboolean es_archivo_bal(const char *nombre)
@@ -1187,6 +1211,193 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
 }
 
 /* ================================================================== */
+/* Código muerto (DCE con variables vivas)                             */
+/* ================================================================== */
+
+/* Quita las marcas y la lista del DCE, y deja "mensaje" en el resumen. */
+static void limpiar_dce(Ide *ide, const char *mensaje)
+{
+    GtkTextIter inicio, fin;
+    gtk_text_buffer_get_bounds(ide->buffer, &inicio, &fin);
+    gtk_text_buffer_remove_tag(ide->buffer, ide->marca_muerta, &inicio, &fin);
+    gtk_text_buffer_remove_tag(ide->buffer, ide->marca_parcial, &inicio, &fin);
+    vaciar_lista(ide->lista_dce);
+    gtk_label_set_text(ide->resumen_dce, mensaje);
+    gtk_widget_set_sensitive(ide->boton_detalle_dce, FALSE);
+    ide_dce_liberar(&ide->dce);
+    ide->dce_mostrado = FALSE;
+}
+
+/*
+ * Marca el CÓDIGO de una línea del editor: sin la sangría del inicio y sin
+ * el comentario del final (%% ...), que no es código y no se elimina.
+ *     "    b * declare_int : a pitagoras 2;   %% muerta"
+ *          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  solo esto
+ */
+static void marcar_linea(Ide *ide, size_t linea, GtkTextTag *marca)
+{
+    if (linea == 0 || linea > (size_t)gtk_text_buffer_get_line_count(ide->buffer)) return;
+    GtkTextIter inicio, fin;
+    gtk_text_buffer_get_iter_at_line(ide->buffer, &inicio, (gint)linea - 1);
+    while (!gtk_text_iter_ends_line(&inicio) && g_unichar_isspace(gtk_text_iter_get_char(&inicio))) {
+        gtk_text_iter_forward_char(&inicio);
+    }
+
+    /* Avanzar hasta el final de la línea o hasta un "%%" que no esté
+     * dentro de un texto entre comillas. */
+    fin = inicio;
+    gboolean en_texto = FALSE;
+    while (!gtk_text_iter_ends_line(&fin)) {
+        gunichar c = gtk_text_iter_get_char(&fin);
+        if (c == '"') en_texto = !en_texto;
+        if (c == '%' && !en_texto) {
+            GtkTextIter siguiente = fin;
+            gtk_text_iter_forward_char(&siguiente);
+            if (gtk_text_iter_get_char(&siguiente) == '%') break;
+        }
+        gtk_text_iter_forward_char(&fin);
+    }
+    /* Sin los espacios que quedan antes del comentario. */
+    while (gtk_text_iter_compare(&fin, &inicio) > 0) {
+        GtkTextIter anterior = fin;
+        gtk_text_iter_backward_char(&anterior);
+        if (!g_unichar_isspace(gtk_text_iter_get_char(&anterior))) break;
+        fin = anterior;
+    }
+    gtk_text_buffer_apply_tag(ide->buffer, marca, &inicio, &fin);
+}
+
+/*
+ * Agrega una fila a la lista del DCE:
+ *
+ *   Línea 12 · eliminada completa
+ *      $t5 = a pitagoras 2; b = $t5
+ *   Línea 13 · se eliminó una parte (1 de 4 instrucciones)
+ *      c = $t6 · lo demás se conserva (tiene efectos o se usa después)
+ */
+static void agregar_fila_dce(Ide *ide, const IdeDceLinea *l)
+{
+    gchar *titulo = l->completa
+        ? g_strdup_printf("Línea %zu · eliminada completa", l->linea)
+        : g_strdup_printf("Línea %zu · se eliminó una parte (%zu de %zu instrucciones)",
+                          l->linea, l->eliminadas, l->total);
+    gchar *marcado = l->completa
+        ? g_markup_printf_escaped("<small><tt>%s</tt></small>", l->detalle)
+        : g_markup_printf_escaped("<small><tt>%s</tt> · lo demás se conserva "
+                                  "(tiene efectos o se usa después)</small>", l->detalle);
+
+    GtkWidget *etiqueta = gtk_label_new(titulo);
+    gtk_label_set_xalign(GTK_LABEL(etiqueta), 0.0f);
+    gtk_widget_set_margin_start(etiqueta, 6);
+    gtk_widget_set_margin_top(etiqueta, 2);
+
+    GtkWidget *detalle = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(detalle), marcado);
+    gtk_label_set_xalign(GTK_LABEL(detalle), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(detalle), TRUE);
+    gtk_widget_set_margin_start(detalle, 18);
+    gtk_widget_set_margin_bottom(detalle, 2);
+
+    GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(caja), etiqueta, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(caja), detalle, FALSE, FALSE, 0);
+
+    GtkWidget *fila = gtk_list_box_row_new();
+    gtk_container_add(GTK_CONTAINER(fila), caja);
+    /* Igual que en los clones: la fila recuerda su línea para ir ahí con
+     * un clic (al_elegir_clon sirve para las dos listas). */
+    g_object_set_data(G_OBJECT(fila), "linea", GSIZE_TO_POINTER(l->linea));
+    g_object_set_data(G_OBJECT(fila), "columna", GSIZE_TO_POINTER((gsize)1));
+    gtk_list_box_insert(ide->lista_dce, fila, -1);
+    gtk_widget_show_all(fila);
+
+    g_free(titulo);
+    g_free(marcado);
+}
+
+/*
+ * Botón "Código muerto".
+ *   1. Corre semántico -> IR -> variables vivas -> DCE sobre el texto del
+ *      editor (ide_dce.c), aunque no esté guardado.
+ *   2. Tacha las líneas eliminadas completas y pone en gris las que solo
+ *      perdieron una parte.
+ *   3. Llena la pestaña "Código muerto" con una fila por línea y el resumen.
+ */
+static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    limpiar_dce(ide, "");
+    gtk_notebook_set_current_page(ide->pestanas, PESTANA_DCE);
+
+    gchar *texto = texto_del_editor(ide);
+    int estado = ide_dce_analizar(texto, strlen(texto), ide->ruta, &ide->dce);
+    g_free(texto);
+
+    if (estado != 0) {
+        gtk_label_set_text(ide->resumen_dce, "No se pudo analizar (falta de memoria o "
+                                             "no se pudo escribir el archivo temporal).");
+        return;
+    }
+    if (ide->dce.estado == IDE_DCE_CON_ERRORES) {
+        gtk_label_set_text(ide->resumen_dce, "Este archivo tiene errores: corrígelos "
+                                             "(pestaña Errores) para eliminar el código muerto.");
+        ide_dce_liberar(&ide->dce);
+        return;
+    }
+    if (ide->dce.estado == IDE_DCE_SIN_IR) {
+        gchar *mensaje = g_strdup_printf("La IR todavía no soporta este programa (%s), "
+                                         "así que no se puede hacer el DCE.", ide->dce.motivo);
+        gtk_label_set_text(ide->resumen_dce, mensaje);
+        g_free(mensaje);
+        ide_dce_liberar(&ide->dce);
+        return;
+    }
+
+    /* Marcar las líneas y llenar la lista. */
+    for (size_t i = 0; i < ide->dce.cantidad_lineas; ++i) {
+        const IdeDceLinea *l = &ide->dce.lineas[i];
+        marcar_linea(ide, l->linea, l->completa ? ide->marca_muerta : ide->marca_parcial);
+        agregar_fila_dce(ide, l);
+    }
+
+    /* El resumen: cuánto se eliminó y qué se conservó. */
+    const DceResultado *r = &ide->dce.resultado;
+    GString *resumen = g_string_new(NULL);
+    if (r->cantidad_eliminadas == 0) {
+        g_string_append(resumen, "No hay código muerto: todas las asignaciones se usan.");
+    } else {
+        g_string_append_printf(resumen, "%zu de %zu instrucciones de la IR eliminadas, en %zu pasadas",
+                               r->cantidad_eliminadas, r->instrucciones_antes, r->pasadas);
+    }
+    if (r->llamadas_conservadas > 0) {
+        g_string_append_printf(resumen, " · %zu llamada%s conservada%s por tener efectos",
+                               r->llamadas_conservadas, r->llamadas_conservadas == 1 ? "" : "s",
+                               r->llamadas_conservadas == 1 ? "" : "s");
+    }
+    if (r->riesgosas_conservadas > 0) {
+        g_string_append_printf(resumen, " · %zu operaci%s conservada%s porque puede%s fallar",
+                               r->riesgosas_conservadas,
+                               r->riesgosas_conservadas == 1 ? "ón" : "ones",
+                               r->riesgosas_conservadas == 1 ? "" : "s",
+                               r->riesgosas_conservadas == 1 ? "" : "n");
+    }
+    gtk_label_set_text(ide->resumen_dce, resumen->str);
+    g_string_free(resumen, TRUE);
+
+    gtk_widget_set_sensitive(ide->boton_detalle_dce, TRUE);
+    ide->dce_mostrado = TRUE;
+}
+
+/* Botón "Ver IR y variables vivas": el detalle del último DCE. */
+static void al_pulsar_detalle_dce(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    if (ide->dce_mostrado) ide_mostrar_detalle_dce(GTK_WINDOW(ide->ventana), &ide->dce);
+}
+
+/* ================================================================== */
 /* Archivos: nuevo, abrir y guardar                                    */
 /* ================================================================== */
 
@@ -1198,6 +1409,7 @@ static void cargar_texto(Ide *ide, const char *texto, const char *ruta)
 
     gtk_text_buffer_set_text(ide->buffer, texto, -1);
     limpiar_clones(ide);  /* Los clones eran del archivo anterior. */
+    limpiar_dce(ide, DCE_SIN_ANALIZAR);  /* Y el código muerto también. */
     GtkTextIter inicio;
     gtk_text_buffer_get_start_iter(ide->buffer, &inicio);
     gtk_text_buffer_place_cursor(ide->buffer, &inicio);
@@ -1383,6 +1595,7 @@ static void al_destruir(GtkWidget *widget, gpointer datos)
     if (ide->temporizador != 0) g_source_remove(ide->temporizador);
     liberar_arreglos(ide);
     diag_liberar(&ide->errores);
+    ide_dce_liberar(&ide->dce);
     g_free(ide->ruta);
     gtk_main_quit();
 }
@@ -1429,6 +1642,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "Guardar _como", G_CALLBACK(al_pulsar_guardar_como), ide);
     agregar_boton(barra, "Buscar c_lones", G_CALLBACK(al_pulsar_buscar_clones), ide);
     agregar_boton(barra, "_Tabla LL(1)", G_CALLBACK(al_pulsar_tabla_ll1), ide);
+    agregar_boton(barra, "Código _muerto", G_CALLBACK(al_pulsar_dce), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */
@@ -1449,6 +1663,17 @@ static void construir_ventana(Ide *ide)
     GdkRGBA amarillo = {1.0, 0.85, 0.0, 0.25};
     ide->marca_clon = gtk_text_buffer_create_tag(ide->buffer, "clon",
                                                  "background-rgba", &amarillo, NULL);
+
+    /* Estilos del código muerto: la línea eliminada completa va tachada y
+     * en gris; la que solo perdió una parte, con fondo gris suave. */
+    GdkRGBA gris = {0.45, 0.45, 0.45, 1.0};
+    GdkRGBA fondo_gris = {0.5, 0.5, 0.5, 0.18};
+    ide->marca_muerta = gtk_text_buffer_create_tag(ide->buffer, "codigo_muerto",
+                                                   "strikethrough", TRUE,
+                                                   "foreground-rgba", &gris,
+                                                   "background-rgba", &fondo_gris, NULL);
+    ide->marca_parcial = gtk_text_buffer_create_tag(ide->buffer, "codigo_muerto_parcial",
+                                                    "background-rgba", &fondo_gris, NULL);
 
     /* Estilo de los errores: subrayado ondulado rojo con fondo rojo suave. */
     GdkRGBA rojo = {0.85, 0.10, 0.10, 1.0};
@@ -1505,11 +1730,41 @@ static void construir_ventana(Ide *ide)
     gtk_box_pack_start(GTK_BOX(caja_clones), resumen, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(caja_clones), desplazar_clones, TRUE, TRUE, 0);
 
-    /* --- Pestañas de abajo: Errores y Clones --- */
+    /* --- La lista del código muerto: resumen y botón arriba, filas abajo --- */
+    GtkWidget *lista_muerto = gtk_list_box_new();
+    ide->lista_dce = GTK_LIST_BOX(lista_muerto);
+    gtk_list_box_set_activate_on_single_click(ide->lista_dce, TRUE);
+    g_signal_connect(lista_muerto, "row-activated", G_CALLBACK(al_elegir_clon), ide);
+
+    GtkWidget *resumen_dce = gtk_label_new(DCE_SIN_ANALIZAR);
+    ide->resumen_dce = GTK_LABEL(resumen_dce);
+    gtk_label_set_xalign(ide->resumen_dce, 0.0f);
+    gtk_label_set_line_wrap(ide->resumen_dce, TRUE);
+    GtkWidget *detalle_dce = gtk_button_new_with_label("Ver IR y variables vivas");
+    ide->boton_detalle_dce = detalle_dce;
+    gtk_widget_set_sensitive(detalle_dce, FALSE);
+    g_signal_connect(detalle_dce, "clicked", G_CALLBACK(al_pulsar_detalle_dce), ide);
+
+    GtkWidget *encabezado_dce = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(encabezado_dce, 6);
+    gtk_widget_set_margin_end(encabezado_dce, 6);
+    gtk_widget_set_margin_top(encabezado_dce, 4);
+    gtk_widget_set_margin_bottom(encabezado_dce, 4);
+    gtk_box_pack_start(GTK_BOX(encabezado_dce), resumen_dce, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(encabezado_dce), detalle_dce, FALSE, FALSE, 0);
+
+    GtkWidget *desplazar_dce = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(desplazar_dce), lista_muerto);
+    GtkWidget *caja_dce = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(caja_dce), encabezado_dce, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(caja_dce), desplazar_dce, TRUE, TRUE, 0);
+
+    /* --- Pestañas de abajo: Errores, Clones y Código muerto --- */
     GtkWidget *pestanas = gtk_notebook_new();
     ide->pestanas = GTK_NOTEBOOK(pestanas);
     gtk_notebook_append_page(ide->pestanas, desplazar_errores, gtk_label_new("Errores"));
     gtk_notebook_append_page(ide->pestanas, caja_clones, gtk_label_new("Clones"));
+    gtk_notebook_append_page(ide->pestanas, caja_dce, gtk_label_new("Código muerto"));
     gtk_paned_pack2(GTK_PANED(divisor), pestanas, FALSE, FALSE);
     /* El editor ocupa 400 px; el resto queda para la lista de errores. */
     gtk_paned_set_position(GTK_PANED(divisor), 400);
