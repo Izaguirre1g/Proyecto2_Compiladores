@@ -1096,6 +1096,16 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
     Ide *ide = datos;
     limpiar_clones(ide);
 
+    /* Un archivo que nunca se guardó no tiene carpeta: no hay con qué
+     * compararlo. Se avisa en vez de buscar en una carpeta cualquiera. */
+    if (ide->ruta == NULL) {
+        gtk_label_set_text(ide->resumen_clones,
+                           "Este archivo no está guardado. Guárdalo (o abre uno) en la carpeta "
+                           "de los otros .bal para compararlo con ellos.");
+        gtk_notebook_set_current_page(ide->pestanas, PESTANA_CLONES);
+        return;
+    }
+
     /* Paso 1: el archivo abierto va primero, con el texto del editor. */
     GArray *fuentes = g_array_new(FALSE, TRUE, sizeof(ClonFuente));
     GPtrArray *por_liberar = g_ptr_array_new_with_free_func(g_free);
@@ -1105,13 +1115,13 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
     g_array_append_val(fuentes, actual);
 
     /* ...y después los demás .bal de su carpeta (sin repetir el abierto). */
-    gchar *carpeta = (ide->ruta != NULL) ? g_path_get_dirname(ide->ruta) : g_strdup(".");
-    gchar *base_actual = (ide->ruta != NULL) ? g_path_get_basename(ide->ruta) : NULL;
+    gchar *carpeta = g_path_get_dirname(ide->ruta);
+    gchar *base_actual = g_path_get_basename(ide->ruta);
     GDir *dir = g_dir_open(carpeta, 0, NULL);
     const char *nombre;
     while (dir != NULL && (nombre = g_dir_read_name(dir)) != NULL) {
         if (!es_archivo_bal(nombre)) continue;
-        if (base_actual != NULL && strcmp(nombre, base_actual) == 0) continue;
+        if (strcmp(nombre, base_actual) == 0) continue;
 
         gchar *ruta = g_build_filename(carpeta, nombre, NULL);
         gchar *contenido = NULL;
@@ -1156,6 +1166,10 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
         resumen = g_strdup("No se pudieron buscar los clones (falta de memoria).");
     } else if (abierto_omitido) {
         resumen = g_strdup("Este archivo tiene errores de sintaxis: corrígelos para buscar clones.");
+    } else if (fuentes->len == 1) {
+        /* Solo está el archivo abierto: se dice en qué carpeta se buscó. */
+        resumen = g_strdup_printf("%zu clon%s en este archivo · no hay otros .bal en la carpeta %s",
+                                  mostrados, mostrados == 1 ? "" : "es", carpeta);
     } else {
         resumen = g_strdup_printf("%zu clon%s en este archivo · se compararon %u archivo%s .bal de la carpeta",
                                   mostrados, mostrados == 1 ? "" : "es",
