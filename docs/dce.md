@@ -195,17 +195,19 @@ en ningún camino del grafo de flujo (diapositiva 15):
 | Caso | Ejemplo en BAL | Qué se elimina |
 |---|---|---|
 | Después de un salto incondicional | `give x gauss x;` seguido de `y * declare_int : 5;` | lo que va después del `give` |
-| Condición siempre falsa | `debug * declare_boolean : declare_false;` y `whether (debug) { ... }` | el cuerpo del `whether` |
+| Condición siempre falsa | `whether (declare_false) { ... }` | el cuerpo del `whether` |
 | Condición que se calcula al compilar | `whale (1 > 2) { ... } stop;` | el cuerpo del `whale` |
 | Condición siempre verdadera | `whether (declare_true) { ... } also { ... }` | la rama `also` |
+| Condición con una **variable** | `n * declare_int : 5;` y `whether (n <= 1) { ... }` | **nada**: no es código muerto |
 
 Cómo se hace ([`src/DCE/dce.c`](../src/DCE/dce.c), sección 5):
 
-1. **Propagación y plegado de constantes** (diapositiva 20). Una variable con
-   **una sola asignación** de un valor constante vale eso en todo el programa
-   (`debug = declare_false`), y una operación con operandos constantes se
-   calcula al compilar (`1 > 2` es falso). Una variable con dos o más
-   asignaciones (como `i : i gauss 1` en un ciclo) no es constante.
+1. **Plegado de constantes** (diapositiva 20). Una condición **escrita con
+   constantes** se calcula al compilar: `declare_false`, `1 > 2`,
+   `~declare_true`. **No se propagan valores de variables**: en
+   `n * declare_int : 5; whether (n <= 1)`, `n` es un dato del programa (con
+   otro valor de `n` la rama sí se ejecuta), así que ese `whether` no es código
+   muerto aunque `n` valga 5 en este código.
 2. Si la condición de un salto condicional es constante, el salto se vuelve
    **fijo** (si siempre salta) o se **elimina** (si nunca salta).
 3. **Bloques inalcanzables:** se recorre el grafo de flujo desde el inicio de
@@ -213,16 +215,18 @@ Cómo se hace ([`src/DCE/dce.c`](../src/DCE/dce.c), sección 5):
    ejecutan, y se eliminan (salvo el inicio y el fin de la función).
 
 Los dos tipos se repiten en las mismas pasadas: al quitar una rama, una
-variable puede quedar sin leer (tipo 1). En el ejemplo, `debug` ya no la lee
-nadie y se elimina también.
+variable puede quedar sin leer (tipo 1).
 
-**En `factorial.bal`**: `n` se asigna una sola vez con `5`, así que `n <= 1` es
-siempre falso y la rama `resultado : 1;` **nunca se ejecuta** (tipo 2). No es
-tipo 1: `resultado` sí se usa. Si `n` fuera un parámetro, la rama se quedaría.
+**En `factorial.bal`** no se elimina nada: `whether (n <= 1)` depende de la
+variable `n`, así que la rama `resultado : 1;` no es inalcanzable; y
+`resultado` se usa, así que tampoco es tipo 1.
 
 En el IDE, las líneas inalcanzables dicen **"inalcanzable: nunca se ejecuta"**,
 y en el código nuevo se borra la sentencia completa (todo el `whether` o
-`whale`) cuando todo lo de adentro es inalcanzable. El backend rechaza
+`whale`) cuando todo lo de adentro es inalcanzable. Si la sentencia se queda
+(por ejemplo, `whether (declare_false) { ... } also { ... }`, donde el `also`
+sí se ejecuta), su primera línea **no se tacha**: solo se marca en gris, porque
+la sentencia sigue en el código. El backend rechaza
 sentencias después del `give` final; en ese caso el IDE avisa que el código
 original no compila pero el nuevo sí, y con cuántos bundles.
 

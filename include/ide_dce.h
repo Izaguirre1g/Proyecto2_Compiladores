@@ -78,6 +78,12 @@ typedef struct {
     size_t sentencias_cambiadas;   /* Sentencias reescritas o unidas. */
     size_t sentencias_conservadas; /* Con algo muerto, pero que BAL o el backend no
                                     * permiten escribir de otra forma. */
+    /* Líneas donde empieza una sentencia con bloque (whether, whale, cycle...)
+     * que tiene código muerto adentro pero NO se borra entera (por ejemplo,
+     * un whether cuya rama also se queda). Esas líneas no se tachan en el
+     * editor: la sentencia sigue en el código. */
+    size_t *cabeceras_que_quedan;
+    size_t cantidad_cabeceras;
 
     /* El ensamblador del código original y del nuevo (en bundles), si el
      * backend lo puede generar. */

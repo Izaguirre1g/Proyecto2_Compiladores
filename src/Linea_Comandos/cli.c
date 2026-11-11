@@ -12,6 +12,11 @@
 #include "clones.h"
 #include "ir.h"
 #include "dce.h"
+#include "loop_unrolling.h"
+#include "ro_json.h"
+#include "lu_reporte.h"
+#include "reordenamiento.h"
+#include "ro_reporte.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -176,6 +181,11 @@ typedef struct {
     int paquetes;           /* -p */
     int ir;                 /* --ir: IR de tres direcciones */
     int dce;                /* --dce: IR + variables vivas + eliminacion de codigo muerto */
+    int unroll;             /* --unroll[=k]: IR antes/despues del loop unrolling */
+    unsigned unroll_factor; /* k de --unroll=k (0: valor por defecto) */
+    int reorder;            /* --reorder[=L]: reordenamiento seguro en bloques */
+    unsigned reorder_lat;   /* L de --reorder=L (0: valor por defecto) */
+    int reorder_json;       /* --reorder-json[=L]: grafo de dependencias en JSON */
 } Compilacion;
 
 typedef struct {
@@ -200,6 +210,13 @@ static void usage(FILE *out) {
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
           "--dce         como --ir, y ademas calcula las variables vivas y elimina\n"
           "              el codigo muerto (muestra la IR antes y despues)\n"
+          "--unroll[=k]  muestra la IR antes y despues del loop unrolling (factor k,\n"
+          "              por defecto 4); no genera ningun archivo\n"
+          "--reorder[=L] reordena cada bloque basico respetando RAW/WAR/WAW y muestra\n"
+          "              la IR antes y despues (latencia L, por defecto 3); se puede\n"
+          "              combinar con --unroll (primero desenrolla y luego reordena)\n"
+          "--reorder-json[=L]  exporta el grafo de dependencias de cada bloque (ruta\n"
+          "              critica y orden nuevo) como JSON por stdout; admite --unroll\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <tokens>] <archivo.bal>...\n"
@@ -217,6 +234,45 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
         /* --dce trabaja sobre la IR: cuenta como --ir (y tiene sus mismas reglas). */
         if (!posicional && !strcmp(arg, "--dce")) { c->ir = 1; c->dce = 1; continue; }
+        if (!posicional && !strncmp(arg, "--unroll", 8) && (arg[8] == '\0' || arg[8] == '=')) {
+            c->ir = c->unroll = 1;
+            if (arg[8] == '=') {
+                char *fin = NULL;
+                unsigned long k = strtoul(arg + 9, &fin, 10);
+                if (!arg[9] || *fin || k < 2 || k > 64) {
+                    fputs("--unroll=k necesita un factor entero entre 2 y 64\n", stderr);
+                    return -1;
+                }
+                c->unroll_factor = (unsigned)k;
+            }
+            continue;
+        }
+        if (!posicional && !strncmp(arg, "--reorder-json", 14) && (arg[14] == '\0' || arg[14] == '=')) {
+            c->ir = c->reorder_json = 1;
+            if (arg[14] == '=') {
+                char *fin = NULL;
+                unsigned long l = strtoul(arg + 15, &fin, 10);
+                if (!arg[15] || *fin || l < 1 || l > 16) {
+                    fputs("--reorder-json=L necesita una latencia entera entre 1 y 16\n", stderr);
+                    return -1;
+                }
+                c->reorder_lat = (unsigned)l;
+            }
+            continue;
+        }
+        if (!posicional && !strncmp(arg, "--reorder", 9) && (arg[9] == '\0' || arg[9] == '=')) {
+            c->ir = c->reorder = 1;
+            if (arg[9] == '=') {
+                char *fin = NULL;
+                unsigned long l = strtoul(arg + 10, &fin, 10);
+                if (!arg[10] || *fin || l < 1 || l > 16) {
+                    fputs("--reorder=L necesita una latencia entera entre 1 y 16\n", stderr);
+                    return -1;
+                }
+                c->reorder_lat = (unsigned)l;
+            }
+            continue;
+        }
         if (!posicional && arg[0] == '-' && arg[1] && !arg[2]) {
             switch (arg[1]) {
                 case 'h': usage(stdout); return 1;
@@ -244,7 +300,15 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (!c->entrada) { usage(stderr); return -1; }
     if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
-        fputs("--ir y --dce se ejecutan de forma independiente (sin otras banderas)\n", stderr);
+        fputs("--ir, --dce, --unroll y --reorder se ejecutan de forma independiente (sin otras banderas)\n", stderr);
+        return -1;
+    }
+    if (c->dce && (c->unroll || c->reorder || c->reorder_json)) {
+        fputs("--dce no se combina con --unroll, --reorder ni --reorder-json\n", stderr);
+        return -1;
+    }
+    if (c->reorder_json && c->reorder) {
+        fputs("--reorder-json ya incluye el reordenamiento: no se combina con --reorder\n", stderr);
         return -1;
     }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
@@ -714,15 +778,55 @@ static int buscar_clones(int argc, char **argv)
 }
 
 /* Solo para visualizar IR validada: no genera ensamblador ni binario.
- * Con --dce ("ctx" apunta a un 1) tambien muestra las variables vivas de
- * cada bloque, elimina el codigo muerto y muestra la IR resultante. */
+ * "ctx" apunta a la Compilacion. Con --dce tambien muestra las variables
+ * vivas de cada bloque, elimina el codigo muerto y muestra la IR resultante.
+ * Con --unroll / --reorder / --reorder-json aplica esas optimizaciones. */
 static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag)
 {
+    const Compilacion *op = ctx;
     (void)tabla;
-    int con_dce = ctx != NULL && *(const int *)ctx;
+    int con_dce = op && op->dce;
     IrPrograma ir = {0};
     int estado = ir_desde_ast(arbol, &ir, diag);
-    if (estado == 0) {
+    if (estado == 0 && op && op->reorder_json) {
+        /* --reorder-json: solo JSON por stdout (el unrolling, si se pidio, va en silencio). */
+        LuOpciones lu;
+        lu_opciones_defecto(&lu);
+        if (op->unroll_factor) lu.factor = op->unroll_factor;
+        if (op->unroll) estado = lu_desenrollar(&ir, &lu, NULL, NULL);
+        RoOpciones ro;
+        ro_opciones_defecto(&ro);
+        if (op->reorder_lat) ro.latencia = op->reorder_lat;
+        if (estado == 0) estado = ro_exportar_json(stdout, op->entrada, &ir, ro.latencia,
+                                                   op->unroll ? lu.factor : 0);
+    } else if (estado == 0 && op && (op->unroll || op->reorder)) {
+      if (op->unroll) {
+        /* --unroll: foto de la IR, desenrollado, otra foto y reporte visual. */
+        LuOpciones opciones;
+        LuResumen resumen = {0};
+        LuVista antes = {0}, despues = {0};
+        lu_opciones_defecto(&opciones);
+        if (op->unroll_factor) opciones.factor = op->unroll_factor;
+        estado = lu_vista_crear(&ir, NULL, &antes);
+        if (estado == 0) estado = lu_desenrollar(&ir, &opciones, &resumen, NULL);
+        if (estado == 0) estado = lu_vista_crear(&ir, &antes, &despues);
+        if (estado == 0) lu_reporte(stdout, op->entrada, opciones.factor, &antes, &despues,
+                                    &resumen, lu_usar_color(stdout));
+        lu_vista_liberar(&antes);
+        lu_vista_liberar(&despues);
+        lu_resumen_liberar(&resumen);
+      }
+      if (estado == 0 && op->reorder) {
+        /* --reorder: reordena (despues del unrolling si tambien se pidio). */
+        RoOpciones ro;
+        RoResumen rr = {0};
+        ro_opciones_defecto(&ro);
+        if (op->reorder_lat) ro.latencia = op->reorder_lat;
+        estado = ro_reordenar(&ir, &ro, &rr);
+        if (estado == 0) ro_reporte(stdout, op->entrada, &ir, &rr, ro.latencia, ro_usar_color(stdout));
+        ro_resumen_liberar(&rr);
+      }
+    } else if (estado == 0) {
         puts("[IR de tres direcciones]");
         estado = ir_imprimir(&ir, stdout);
     }
@@ -757,7 +861,7 @@ int cli_run(int argc, char **argv) {
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
-    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op.dce);
+    if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
 }

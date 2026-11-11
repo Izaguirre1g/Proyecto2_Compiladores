@@ -249,6 +249,12 @@ static int agrupar_por_linea(const Contexto *c, IdeDce *s)
         e->eliminadas = eliminadas[l];
         e->total = c->por_linea[l];
         e->completa = eliminadas[l] >= c->por_linea[l];
+        /* La primera línea de una sentencia con bloque que se queda (por
+         * ejemplo "whether (declare_false) {" con su also) no es "completa":
+         * la sentencia sigue en el código. */
+        for (size_t k = 0; k < s->cantidad_cabeceras; ++k) {
+            if (s->cabeceras_que_quedan[k] == l) e->completa = 0;
+        }
         for (size_t i = 0; i < r->cantidad_eliminadas; ++i) {
             if (r->eliminadas[i].linea == l && r->eliminadas[i].tipo == DCE_INALCANZABLE) e->inalcanzable = 1;
         }
@@ -383,9 +389,11 @@ int ide_dce_analizar(const char *texto, size_t largo, const char *ruta, IdeDce *
         } else if (resultado == 0 && c.llego) {
             /* Paso 4: agrupar por línea. */
             s->estado = IDE_DCE_LISTO;
-            estado = agrupar_por_linea(&c, s);
-            /* Paso 5: el código nuevo y su ensamblador. */
-            if (estado == 0) estado = codigo_y_ensamblador(&c, texto, largo, ruta, s);
+            /* Paso 5 (antes que el 4: el código nuevo dice qué sentencias con
+             * bloque se quedan, y esas líneas no se tachan). */
+            estado = codigo_y_ensamblador(&c, texto, largo, ruta, s);
+            /* Paso 4: agrupar por línea. */
+            if (estado == 0) estado = agrupar_por_linea(&c, s);
         } else if (c.llego) {
             /* El programa es válido, pero la IR no lo soporta todavía. */
             s->estado = IDE_DCE_SIN_IR;
@@ -421,5 +429,6 @@ void ide_dce_liberar(IdeDce *s)
     free(s->ir_despues);
     free(s->codigo_nuevo);
     free(s->motivo_ensamblador);
+    free(s->cabeceras_que_quedan);
     memset(s, 0, sizeof *s);
 }
