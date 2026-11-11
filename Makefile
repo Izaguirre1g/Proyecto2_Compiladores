@@ -36,6 +36,12 @@ LL1_SRC := $(LL1)/ll1_gramatica.c $(LL1)/ll1_tabla.c $(LL1)/ll1_analizador.c $(L
 # generacion_interna.h (contrato privado de los generadores).
 CPPFLAGS ?= -Iinclude -I$(LEXICO) -I$(SINTACTICO) -I$(GENERACION)
 
+# Proyecto II: optimizacion de loop unrolling (carpeta propia).
+CPPFLAGS += -Iloop_unrolling
+
+# Proyecto II: reordenamiento seguro dentro de bloques basicos.
+CPPFLAGS += -Ireordenamiento
+
 # Archivos del parser y del AST.
 PARSER_SRC := $(SINTACTICO)/parser.c $(SINTACTICO)/puente_lexer.c $(SINTACTICO)/ast.c
 
@@ -48,7 +54,9 @@ SRC := $(CLI)/main.c $(CLI)/cli.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token
        $(GENERACION)/funciones_marco.c $(GENERACION)/funciones_llamada.c $(ENLACE)/referencias_integracion.c \
        $(ENLACE)/resolucion_referencias.c $(ENLACE)/resolucion_saltos.c $(ENLACE)/enlace_funciones.c \
        $(BINARIO)/codificacion_binaria.c $(BINARIO)/formato_binario.c $(CLI)/diagnosticos.c $(CLONES)/clones.c $(IR)/ir.c \
-       $(DCE)/dce.c $(LL1_SRC)
+       $(DCE)/dce.c $(LL1_SRC) \
+       loop_unrolling/loop_unrolling.c loop_unrolling/lu_reporte.c \
+       reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c reordenamiento/ro_json.c
 
 # Estos nombres son comandos de Make, no archivos.
 .PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ll1 tabla-ll1 ide clean
@@ -70,7 +78,9 @@ $(SINTACTICO)/parser.c $(SINTACTICO)/parser.h &: $(SINTACTICO)/gramatica.y
 balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h $(SINTACTICO)/parser.h \
       include/enlace_funciones.h include/resolucion_saltos.h include/resolucion_referencias.h include/codificacion_binaria.h \
       include/referencias_integracion.h include/generacion_adaptador.h include/generacion_funciones.h \
-      $(GENERACION)/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h include/dce.h
+      $(GENERACION)/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h include/dce.h \
+      loop_unrolling/loop_unrolling.h loop_unrolling/lu_reporte.h \
+      reordenamiento/reordenamiento.h reordenamiento/ro_reporte.h reordenamiento/ro_json.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SRC) -o $@
 
 # Compila las pruebas del lexer, sin necesitar el parser.
@@ -78,7 +88,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -791,3 +801,25 @@ balc-ll1: $(LL1)/ll1_herramienta.c $(LL1_SRC) include/ll1.h $(LEXICO)/lexer.c $(
 # Regenera docs/ll1_tabla.md a partir de la gramatica.
 tabla-ll1: balc-ll1
 	./balc-ll1 --tabla > docs/ll1_tabla.md
+
+# Proyecto II: loop unrolling. Pruebas unitarias sobre IR (con interprete que
+# compara resultados antes/despues) y pruebas de extremo a extremo con balc.
+.PHONY: test-loop-unrolling
+loop_unrolling/pruebas/test_loop_unrolling: loop_unrolling/pruebas/test_loop_unrolling.c loop_unrolling/loop_unrolling.c \
+      loop_unrolling/loop_unrolling.h $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) loop_unrolling/pruebas/test_loop_unrolling.c loop_unrolling/loop_unrolling.c \
+	      $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
+test-loop-unrolling: loop_unrolling/pruebas/test_loop_unrolling balc
+	./loop_unrolling/pruebas/test_loop_unrolling
+	sh loop_unrolling/pruebas/test_bal.sh
+
+# Proyecto II: reordenamiento seguro. Pruebas unitarias (interprete que
+# compara resultados y pruebas aleatorias) y de extremo a extremo con balc.
+.PHONY: test-reordenamiento
+reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+      reordenamiento/reordenamiento.h $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+	      $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
+test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
+	./reordenamiento/pruebas/test_reordenamiento
+	sh reordenamiento/pruebas/test_bal.sh
