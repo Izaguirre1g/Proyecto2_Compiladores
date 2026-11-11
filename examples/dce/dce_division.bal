@@ -17,4 +17,5 @@ create_funk #declare_int# calcular(notas * declare_int[], divisor * declare_int)
 create_funk #declare_infinite_void# main() {
     notas * declare_int[2] : [80, 90];
     r * declare_int : calcular(notas, 0);
+    notas[0] : r;                                 %% guarda el resultado en el arreglo
 }

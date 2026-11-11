@@ -21,5 +21,6 @@ create_funk #declare_int# contar(conteo * declare_int[], n * declare_int) {
 
 create_funk #declare_infinite_void# main() {
     conteo * declare_int[4] : [0, 0, 0, 0];
-    vueltas * declare_int : contar(conteo, 4);   %% resultado de main: se queda
+    vueltas * declare_int : contar(conteo, 4);   %% viva: se lee en la linea siguiente
+    conteo[0] : vueltas;                         %% guarda el resultado en el arreglo
 }
