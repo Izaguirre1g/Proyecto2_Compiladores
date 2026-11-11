@@ -221,6 +221,8 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
 {
     s->codigo_nuevo = NULL;
     s->sentencias_borradas = s->sentencias_cambiadas = s->sentencias_conservadas = 0;
+    s->cabeceras_que_quedan = NULL;
+    s->cantidad_cabeceras = 0;
 
     ListaTokensDce t = {0};
     ListaCambios cambios = {0};
@@ -334,6 +336,18 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
         } else {
             a->accion = ACCION_CONSERVAR;
         }
+    }
+
+    /* Las sentencias con bloque que tienen algo eliminado pero se quedan:
+     * su primera línea no se debe tachar en el editor. */
+    if (estado == 0) {
+        s->cabeceras_que_quedan = calloc(cantidad ? cantidad : 1, sizeof *s->cabeceras_que_quedan);
+        if (s->cabeceras_que_quedan == NULL) estado = -1;
+    }
+    for (size_t k = 0; k < cantidad && estado == 0; ++k) {
+        const Analisis *a = &an[k];
+        if (a->sen == NULL || !a->sen->es_otra || a->eliminadas == 0 || a->accion == ACCION_BORRAR) continue;
+        s->cabeceras_que_quedan[s->cantidad_cabeceras++] = t.elementos[a->i].linea;
     }
 
     /* Fase 4: los cambios en el texto. Una sentencia que está DENTRO de otra

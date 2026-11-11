@@ -404,23 +404,20 @@ static void prueba_potencia(void)
 static void prueba_variables_de_main(void)
 {
     /* factorial.bal: resultado se usa (resultado pitagoras i), así que
-     * ninguna de sus asignaciones es tipo 1. Pero n vale 5 (una sola
-     * asignación), así que "n <= 1" siempre es falso: la rama del whether
-     * con "resultado : 1" nunca se ejecuta (tipo 2, inalcanzable). */
+     * ninguna de sus asignaciones es tipo 1. Y "whether (n <= 1)" depende
+     * de la variable n (un dato del programa): no se propagan valores de
+     * variables, así que la rama no es inalcanzable. No se elimina nada. */
     IrPrograma ir = {0};
     VERIFICAR(generar_ir_de_archivo("examples/factorial.bal", &ir) == 0);
+    size_t antes = ir.cantidad;
     DceResultado r = {0};
     VERIFICAR(dce_eliminar(&ir, &r) == 0);
-    VERIFICAR(contar_tipo(&r, DCE_NO_USADA) == 1);      /* Solo "$t1 = n <= 1". */
-    VERIFICAR(!queda_binaria(&ir, "n", "<=", "1"));
-    VERIFICAR(contar_tipo(&r, DCE_INALCANZABLE) == 3);  /* resultado = 1 y dos goto. */
-    VERIFICAR(r.condiciones_constantes == 1);
-    VERIFICAR(queda_binaria(&ir, "resultado", "pitagoras", "i"));
+    VERIFICAR(r.cantidad_eliminadas == 0 && r.condiciones_constantes == 0);
+    VERIFICAR(ir.cantidad == antes);
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
 
-    /* Si n NO es constante (un parámetro), la rama sí puede ejecutarse:
-     * "resultado : 1" se queda. */
+    /* Con n como parámetro, igual: la rama "resultado : 1" se queda. */
     const char *con_parametro =
         "create_funk #declare_int# fact(n * declare_int) {\n"
         "    resultado * declare_int : 1;\n"
@@ -464,9 +461,8 @@ static void prueba_variables_de_main(void)
     DceResultado r_t = {0};
     VERIFICAR(dce_eliminar(&ir_t, &r_t) == 0);
     VERIFICAR(!se_asigna(&ir_t, "t"));
-    /* Tipo 1: t y la condición constante "n <= 1" (ya no la lee nadie). */
-    VERIFICAR(contar_tipo(&r_t, DCE_NO_USADA) == 2);
-    VERIFICAR(queda_copia(&ir_t, "resultado", "1"));  /* La declaración "resultado = 1" sigue. */
+    VERIFICAR(r_t.cantidad_eliminadas == 1);
+    VERIFICAR(queda_copia(&ir_t, "resultado", "1"));  /* Las dos "resultado = 1" siguen. */
     dce_liberar_resultado(&r_t);
     ir_liberar(&ir_t);
 
@@ -522,7 +518,7 @@ static void prueba_inalcanzable(void)
         "create_funk #declare_int# prueba(n * declare_int) {\n"        /* 5 */
         "    debug * declare_boolean : declare_false;\n"               /* 6 */
         "    r * declare_int : n;\n"                                   /* 7 */
-        "    whether (debug) {\n"                                      /* 8 */
+        "    whether (declare_false) {\n"                              /* 8 */
         "        r : r gauss 100;\n"                                   /* 9: nunca se ejecuta */
         "    }\n"                                                      /* 10 */
         "    whale (1 > 2) {\n"                                        /* 11 */
@@ -533,8 +529,11 @@ static void prueba_inalcanzable(void)
         "    whether (cambia) {\n"                                     /* 16 */
         "        r : r gauss 7;\n"                                     /* 17: puede ejecutarse */
         "    }\n"                                                      /* 18 */
-        "    give r;\n"                                                /* 19 */
-        "}\n"                                                          /* 20 */
+        "    whether (debug) {\n"                                      /* 19: debug es una */
+        "        r : r gauss 3;\n"                                     /* 20: variable: se queda */
+        "    }\n"                                                      /* 21 */
+        "    give r;\n"                                                /* 22 */
+        "}\n"                                                          /* 23 */
         "create_funk #declare_infinite_void# main() {\n"
         "    v * declare_int[2] : [0, 0];\n"
         "    v[0] : doble(2);\n"
@@ -548,10 +547,12 @@ static void prueba_inalcanzable(void)
 
     /* Después del give: inalcanzable. */
     VERIFICAR(!queda_copia(&ir, "y", "5"));
-    /* whether (debug), con debug siempre falso: su cuerpo es inalcanzable,
-     * y después debug ya no se lee (tipo 1). */
+    /* whether (declare_false): su cuerpo es inalcanzable. */
     VERIFICAR(!queda_binaria(&ir, "r", "gauss", "100"));
-    VERIFICAR(!queda_copia(&ir, "debug", "declare_false"));
+    /* whether (debug): debug es una variable; no se propaga su valor, así
+     * que la rama se queda (y debug también, porque se lee). */
+    VERIFICAR(queda_binaria(&ir, "r", "gauss", "3"));
+    VERIFICAR(queda_copia(&ir, "debug", "declare_false"));
     /* whale (1 > 2): "1 > 2" se pliega a falso; el cuerpo es inalcanzable. */
     VERIFICAR(!queda_binaria(&ir, "r", "pitagoras", "2"));
     VERIFICAR(!queda_binaria(&ir, "1", ">", "2"));
@@ -560,6 +561,7 @@ static void prueba_inalcanzable(void)
     VERIFICAR(queda_binaria(&ir, "n", ">", "0"));
     VERIFICAR(r.condiciones_constantes == 2);
     VERIFICAR(r.inalcanzables > 0);
+    VERIFICAR(contar_tipo(&r, DCE_INALCANZABLE) == r.inalcanzables);
     /* Cada eliminada inalcanzable viene de las líneas 3, 8-9 u 11-12. */
     for (size_t i = 0; i < r.cantidad_eliminadas; ++i) {
         if (r.eliminadas[i].tipo != DCE_INALCANZABLE) continue;
