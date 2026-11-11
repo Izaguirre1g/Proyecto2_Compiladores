@@ -642,17 +642,21 @@ static int quitar_marcadas(IrPrograma *ir, const unsigned char *borrar, DceResul
 /* ================================================================== */
 
 /*
- * Propagación y plegado de constantes (diapositiva 20), solo lo necesario
- * para saber si la condición de un salto se conoce al compilar.
+ * Plegado de constantes (diapositiva 20), solo lo necesario para saber si
+ * la condición de un salto se conoce al compilar.
  *
- * Una variable (o temporal) es CONSTANTE si en su función tiene UNA sola
- * definición y esa definición da un valor conocido:
- *     debug = declare_false          (una copia de una constante)
- *     $t3 = 1 > 2                    (una operación con operandos constantes)
- *     $t4 = debug && $t3             (operandos que ya son constantes)
- * Con una sola definición, la variable vale eso en todo lugar donde se usa
- * (en BAL una variable se usa después de declararla). Si tiene dos o más
- * definiciones (por ejemplo i : i gauss 1 en un ciclo) no es constante.
+ * Solo cuentan las condiciones ESCRITAS con constantes:
+ *     whether (declare_false)        la condición ya es una constante
+ *     whale (1 > 2)                  $t3 = 1 > 2: operandos constantes
+ *     whether (~declare_true)        $t4 = ~ declare_true
+ * Los temporales ($tN) que calculan la condición tienen una sola definición
+ * y sus operandos son constantes o temporales ya conocidos, así que su valor
+ * se calcula al compilar.
+ *
+ * NO se propagan valores de VARIABLES: en
+ *     n * declare_int : 5;   whether (n <= 1) { ... }
+ * n es un dato del programa (con otro n la rama sí se ejecuta), así que ese
+ * whether no es código inalcanzable aunque n valga 5 en este código.
  */
 typedef struct {
     const char *nombre;
@@ -746,7 +750,8 @@ static size_t resolver_condiciones(IrPrograma *ir, DceResultado *r)
         }
         for (size_t i = inicio; i < fin; ++i) {
             const char *d = definicion(&ir->codigo[i]);
-            if (d == NULL) continue;
+            /* Solo temporales: las variables no se propagan (ver arriba). */
+            if (d == NULL || d[0] != '$') continue;
             Constante *c = buscar_constante(tabla, cantidad, d);
             if (c == NULL) {
                 c = &tabla[cantidad++];

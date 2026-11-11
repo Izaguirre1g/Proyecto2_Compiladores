@@ -172,9 +172,9 @@ static void prueba_inalcanzable(void)
         "    y * declare_int : 5;\n"                                /* 3 */
         "}\n"                                                       /* 4 */
         "create_funk #declare_int# prueba(n * declare_int) {\n"     /* 5 */
-        "    debug * declare_boolean : declare_false;\n"            /* 6 */
+        "    s * declare_int : 0;\n"                                /* 6 */
         "    r * declare_int : n;\n"                                /* 7 */
-        "    whether (debug) {\n"                                   /* 8 */
+        "    whether (declare_false) {\n"                           /* 8 */
         "        r : r gauss 100;\n"                                /* 9 */
         "    }\n"                                                   /* 10 */
         "    whale (1 > 2) {\n"                                     /* 11 */
@@ -194,14 +194,14 @@ static void prueba_inalcanzable(void)
     VERIFICAR(y != NULL && y->inalcanzable && y->completa);
     VERIFICAR(cuerpo != NULL && cuerpo->inalcanzable);
     VERIFICAR(ciclo != NULL && ciclo->inalcanzable);
-    /* La línea de debug es tipo 1 (ya no se lee), no inalcanzable. */
-    const IdeDceLinea *dbg = buscar(&d, 6);
-    VERIFICAR(dbg != NULL && !dbg->inalcanzable && dbg->completa);
+    /* La línea de s es tipo 1 (nunca se lee), no inalcanzable. */
+    const IdeDceLinea *ns = buscar(&d, 6);
+    VERIFICAR(ns != NULL && !ns->inalcanzable && ns->completa);
 
     VERIFICAR(d.codigo_nuevo != NULL);
     if (d.codigo_nuevo != NULL) {
         VERIFICAR(strstr(d.codigo_nuevo, "y * declare_int") == NULL);
-        VERIFICAR(strstr(d.codigo_nuevo, "debug") == NULL);
+        VERIFICAR(strstr(d.codigo_nuevo, "s * declare_int") == NULL);
         VERIFICAR(strstr(d.codigo_nuevo, "whether") == NULL);
         VERIFICAR(strstr(d.codigo_nuevo, "whale") == NULL);
         VERIFICAR(strstr(d.codigo_nuevo, "r * declare_int : n;") != NULL);
@@ -210,6 +210,42 @@ static void prueba_inalcanzable(void)
     /* El original no compila (código después del give final); el nuevo sí. */
     VERIFICAR(d.hay_ensamblador == 2 && d.bundles_despues > 0);
     VERIFICAR(d.motivo_ensamblador != NULL && strstr(d.motivo_ensamblador, "retorno") != NULL);
+    ide_dce_liberar(&d);
+}
+
+/*
+ * Un whether con la condición siempre falsa pero con also: la rama del
+ * whether es inalcanzable, pero la sentencia se queda (por el also), así
+ * que su primera línea NO se tacha (no es "completa"). Y "whether (n <= 1)"
+ * con n una variable no se toca: no se propagan valores de variables.
+ */
+static void prueba_cabecera_que_queda(void)
+{
+    const char *texto =
+        "create_funk #declare_infinite_void# main() {\n"   /* 1 */
+        "    n * declare_int : 5;\n"                       /* 2 */
+        "    r * declare_int : 1;\n"                       /* 3 */
+        "    whether (declare_false) {\n"                  /* 4 */
+        "        r : 2;\n"                                 /* 5: inalcanzable */
+        "    } also {\n"                                   /* 6 */
+        "        r : r gauss 3;\n"                         /* 7 */
+        "    }\n"                                          /* 8 */
+        "    whether (n <= 1) {\n"                         /* 9 */
+        "        r : r gauss 4;\n"                         /* 10 */
+        "    }\n"                                          /* 11 */
+        "}\n";
+    IdeDce d;
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
+    VERIFICAR(d.estado == IDE_DCE_LISTO);
+    const IdeDceLinea *cabeza = buscar(&d, 4), *rama = buscar(&d, 5);
+    VERIFICAR(cabeza != NULL && cabeza->inalcanzable && !cabeza->completa);
+    VERIFICAR(rama != NULL && rama->inalcanzable && rama->completa);
+    VERIFICAR(buscar(&d, 9) == NULL && buscar(&d, 10) == NULL);
+    if (d.codigo_nuevo != NULL) {
+        VERIFICAR(strstr(d.codigo_nuevo, "r : 2;") == NULL);
+        VERIFICAR(strstr(d.codigo_nuevo, "r : r gauss 3;") != NULL);
+        VERIFICAR(strstr(d.codigo_nuevo, "whether (n <= 1)") != NULL);
+    }
     ide_dce_liberar(&d);
 }
 
@@ -264,6 +300,7 @@ int main(int argc, char **argv)
     prueba_llamadas();
     prueba_ensamblador(argc > 1 ? argv[1] : NULL);
     prueba_inalcanzable();
+    prueba_cabecera_que_queda();
     prueba_con_errores();
     prueba_sin_ir();
     prueba_sin_codigo_muerto();

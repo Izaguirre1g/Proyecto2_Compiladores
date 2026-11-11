@@ -1396,14 +1396,16 @@ static void agregar_fila_dce(Ide *ide, const IdeDceLinea *l)
     gchar *titulo = (l->inalcanzable && l->completa)
         ? g_strdup_printf("Línea %zu · inalcanzable: nunca se ejecuta", l->linea)
         : l->inalcanzable
-        ? g_strdup_printf("Línea %zu · en parte inalcanzable (%zu de %zu instrucciones)",
-                          l->linea, l->eliminadas, l->total)
+        ? g_strdup_printf("Línea %zu · una rama es inalcanzable; la sentencia se queda", l->linea)
         : l->completa
         ? g_strdup_printf("Línea %zu · eliminada completa", l->linea)
         : g_strdup_printf("Línea %zu · se eliminó una parte (%zu de %zu instrucciones)",
                           l->linea, l->eliminadas, l->total);
     gchar *marcado = l->completa
         ? g_markup_printf_escaped("<small><tt>%s</tt></small>", l->detalle)
+        : l->inalcanzable
+        ? g_markup_printf_escaped("<small><tt>%s</tt> · la sentencia sigue en el código "
+                                  "(otra parte sí se ejecuta)</small>", l->detalle)
         : g_markup_printf_escaped("<small><tt>%s</tt> · lo demás se conserva "
                                   "(tiene efectos o se usa después)</small>", l->detalle);
 

@@ -52,14 +52,14 @@
  *   Tipo 2, código inalcanzable: instrucciones que NUNCA se ejecutan, en
  *   ningún camino del grafo de flujo (diapositiva 15). Pasa:
  *     * después de un salto incondicional: en BAL, después de un "give";
- *     * en una rama cuya condición se conoce al compilar. Para saberlo se
- *       usa PROPAGACIÓN y PLEGADO DE CONSTANTES (diapositiva 20): una
- *       variable asignada UNA sola vez con un valor constante vale eso en
- *       todo el programa ("debug * declare_boolean : declare_false;"), y
- *       una operación con operandos constantes se calcula al compilar
- *       ("1 > 2" es falso). Si la condición de un salto condicional es
- *       constante, el salto se vuelve fijo (o desaparece), y la rama que
- *       nunca se toma queda inalcanzable.
+ *     * en una rama cuya condición está ESCRITA con constantes y se
+ *       calcula al compilar con PLEGADO DE CONSTANTES (diapositiva 20):
+ *       "whether (declare_false)", "whale (1 > 2)". Si la condición de un
+ *       salto condicional es constante, el salto se vuelve fijo (o
+ *       desaparece), y la rama que nunca se toma queda inalcanzable.
+ *       No se propagan valores de variables: en "n * declare_int : 5;
+ *       whether (n <= 1)" la condición depende de un dato del programa,
+ *       así que la rama no se considera inalcanzable.
  *   Un bloque es inalcanzable si no hay camino desde el inicio de su
  *   función hasta él: se recorre el grafo desde ahí y lo que no se visita
  *   se elimina (salvo el inicio y el fin de la función).
