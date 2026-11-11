@@ -180,6 +180,7 @@ vuelve a generar al compilar.
 
 | Función | Cómo se usa |
 |---|---|
+| Loop unrolling | El botón **Loop unrolling** desenrolla los ciclos del código del editor con el módulo de Meibel (`loop_unrolling/`), lo mismo que `balc --unroll`. La ventana muestra la decisión para cada ciclo (total, parcial o sin cambios y por qué), las métricas antes y después, y la IR antes y después lado a lado con lo nuevo en verde. El factor k se puede cambiar ahí mismo. |
 | Colores | El código se colorea como en VS Code (tema oscuro Dark+): control (`whether`, `whale`, `give`…) en morado, palabras del lenguaje y operadores (`create_funk`, `gauss`…) en azul, tipos en verde agua, funciones en amarillo, variables en celeste, números en verde claro, textos en naranja, comentarios en verde y `( ) [ ] { }` con un color por nivel. Usa el mismo lexer del compilador. |
 | Errores en vivo | Medio segundo después de dejar de escribir, los errores se subrayan en rojo. Al pasar el mouse encima se ve la explicación. |
 | Lista de errores | Está abajo de la ventana. Al hacer clic en un error, el cursor salta a su línea. |

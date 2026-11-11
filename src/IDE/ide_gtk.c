@@ -48,6 +48,10 @@
  *  10. Colores: el código se colorea como en VS Code (tema Dark+): palabras
  *      de control, tipos, funciones, variables, números, textos, comentarios
  *      y pares de paréntesis por nivel (ide_colores.c).
+ *  11. Loop unrolling: el botón "Loop unrolling" desenrolla los ciclos del
+ *      código del editor con el módulo de Meibel (loop_unrolling/) y muestra
+ *      la decisión de cada ciclo y la IR antes y después
+ *      (ide_unrolling.c e ide_unrolling_ventana.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -63,6 +67,7 @@
 #include "ide_dce_ventana.h"
 #include "ide_ensamblador.h"
 #include "ide_ensamblador_ventana.h"
+#include "ide_unrolling_ventana.h"
 #include "ide_nucleo.h"
 #include "ide_tabla_ll1.h"
 
@@ -1836,6 +1841,17 @@ static void al_pulsar_ensamblador(GtkWidget *boton, gpointer datos)
     ide_ensamblador_liberar(&a);
 }
 
+/* Botón "Loop unrolling": desenrolla los ciclos del código del editor
+ * (aunque no esté guardado) y muestra el resultado en una ventana. */
+static void al_pulsar_unrolling(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    gchar *texto = texto_del_editor(ide);
+    ide_mostrar_unrolling(GTK_WINDOW(ide->ventana), texto, ide->ruta, nombre_actual(ide));
+    g_free(texto);
+}
+
 /* Botón "Tabla LL(1)": abre la ventana con la tabla (ide_tabla_ll1.c). */
 static void al_pulsar_tabla_ll1(GtkWidget *boton, gpointer datos)
 {
@@ -1876,6 +1892,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "_Tabla LL(1)", G_CALLBACK(al_pulsar_tabla_ll1), ide);
     agregar_boton(barra, "Código _muerto", G_CALLBACK(al_pulsar_dce), ide);
     agregar_boton(barra, "_Ensamblador", G_CALLBACK(al_pulsar_ensamblador), ide);
+    agregar_boton(barra, "Loop _unrolling", G_CALLBACK(al_pulsar_unrolling), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */
