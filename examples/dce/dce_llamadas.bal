@@ -16,10 +16,11 @@ create_funk #declare_int# procesar(v * declare_int[], a * declare_int) {
     give a;
 }
 
-%% Las variables de main son el resultado del programa (se leen en la
-%% memoria al terminar): solo muere un valor que se reemplaza sin leerse.
+%% En main, el resultado son las variables que el programa usa. Un valor
+%% que se reemplaza antes de leerse sigue siendo codigo muerto.
 create_funk #declare_infinite_void# main() {
     datos * declare_int[3] : [0, 0, 0];
     total * declare_int : 0;             %% muerta: se reemplaza antes de leerse
-    total : procesar(datos, 4);          %% viva: es el resultado final de total
+    total : procesar(datos, 4);          %% viva: se lee en la linea siguiente
+    datos[1] : total;                    %% guarda el resultado en el arreglo
 }

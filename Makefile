@@ -119,7 +119,7 @@ test-generacion: tests/test_generacion
 # Sirve para volver a compilar todo desde cero.
 # Elimina los ejecutables y archivos generados.
 clean:
-	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones tests/test_dce tests/test_ide_dce tests/test_ide_ensamblador tests/test_ide_colores tests/test_ll1 balc-ll1 balc-ide $(LEXER_GEN)
+	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones tests/test_dce tests/test_ide_dce tests/test_dce_simulador tests/test_ide_ensamblador tests/test_ide_colores tests/test_ll1 balc-ll1 balc-ide $(LEXER_GEN)
 
 # Pruebas de la tabla de símbolos
 .PHONY: test-symbol-table
@@ -651,14 +651,6 @@ IDE_ANALISIS_SRC := $(IDE)/ide_analisis.c $(IDE)/ide_mensajes.c $(IDE)/ide_arreg
 
 # Boton "Codigo muerto" del IDE: semantico -> IR -> variables vivas -> DCE
 # sobre el texto del editor (sin GTK, para poder probarlo).
-IDE_DCE_SRC := $(IDE)/ide_dce.c $(DCE)/dce.c $(IR)/ir.c
-
-tests/test_ide_dce: tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ANALISIS_SRC) include/ide_dce.h include/dce.h include/ir.h include/ide_analisis.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ANALISIS_SRC) -o $@
-
-test-ide-dce: tests/test_ide_dce
-	./tests/test_ide_dce
-
 # Boton "Ensamblador" del IDE: los mismos pasos que balc -s (memoria,
 # generacion, enlace y codificacion) sobre el texto del editor. La prueba
 # compara el resultado con los .asm de examples/, generados con balc -s.
@@ -669,6 +661,33 @@ IDE_ASM_SRC := $(IDE)/ide_ensamblador.c $(SEMANTICO)/memory.c \
                $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c \
                $(ENLACE)/resolucion_saltos.c $(ENLACE)/enlace_funciones.c \
                $(BINARIO)/codificacion_binaria.c
+
+# Boton "Codigo muerto" del IDE: semantico -> IR -> variables vivas -> DCE
+# sobre el texto del editor (sin GTK, para poder probarlo), y el codigo BAL
+# nuevo sin el codigo muerto, con su ensamblador (usa IDE_ASM_SRC).
+IDE_DCE_SRC := $(IDE)/ide_dce.c $(IDE)/ide_dce_codigo.c $(DCE)/dce.c $(IR)/ir.c
+
+tests/test_ide_dce: tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_dce.h include/dce.h include/ir.h include/ide_analisis.h include/ide_ensamblador.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@
+
+# Simulador VLIW: para comprobar que el codigo sin el codigo muerto da el
+# mismo resultado que el original (tests/test_dce_simulador.c).
+SIM_SRC := $(wildcard src/Simulador_VLIW/*.c)
+
+tests/test_dce_simulador: tests/test_dce_simulador.c $(SIM_SRC) include/sim_ejecucion.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_dce_simulador.c $(SIM_SRC) -o $@
+
+# 1. Pruebas del boton Codigo muerto; tambien escribe el codigo nuevo de
+#    examples/dce/dce_ensamblador.bal en tests/dce_nuevo.bal.
+# 2. balc compila el original y el nuevo (el nuevo tiene menos bundles).
+# 3. El simulador ejecuta los dos binarios: deben dar el mismo resultado.
+test-ide-dce: tests/test_ide_dce tests/test_dce_simulador balc
+	./tests/test_ide_dce tests/dce_nuevo.bal
+	cp examples/dce/dce_ensamblador.bal tests/dce_original.bal
+	./balc -o tests/dce_original.bin tests/dce_original.bal > /dev/null
+	./balc -o tests/dce_nuevo.bin tests/dce_nuevo.bal > /dev/null
+	./tests/test_dce_simulador tests/dce_original.bin 24 tests/dce_nuevo.bin 20
+	rm -f tests/dce_original.* tests/dce_nuevo.*
 
 tests/test_ide_ensamblador: tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_ensamblador.h include/cli.h include/ide_analisis.h $(SINTACTICO)/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@

@@ -32,6 +32,11 @@ static GtkWidget *pestana_de_texto(const char *texto)
     return recuadro;
 }
 
+gboolean ide_ensamblador_abierta(void)
+{
+    return ventana_asm != NULL;
+}
+
 void ide_mostrar_ensamblador(GtkWindow *padre, const IdeEnsamblador *a, const char *nombre)
 {
     /* Si ya estaba abierta, se cierra: el resultado nuevo la reemplaza. */

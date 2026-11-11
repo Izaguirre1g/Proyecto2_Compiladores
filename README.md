@@ -160,6 +160,7 @@ el botón **Código muerto**:
 ./balc-ide examples/dce/dce_llamadas.bal   # llamadas con efectos que se conservan
 ./balc-ide examples/dce/dce_ciclo.bal      # código muerto en un ciclo (2 pasadas)
 ./balc-ide examples/dce/dce_division.bal   # divisiones que pueden fallar
+./balc-ide examples/dce/dce_ensamblador.bal  # "Aplicar al código" y el ensamblador baja de 528 a 435 bundles
 ```
 
 Los archivos están en la carpeta `examples/dce/`. También se pueden abrir desde
@@ -170,6 +171,7 @@ el IDE con el botón **Abrir** (Ctrl+O):
 | [`examples/dce/dce_llamadas.bal`](examples/dce/dce_llamadas.bal) | Asignaciones muertas mezcladas con llamadas que escriben en un arreglo: las llamadas se conservan. | `./balc-ide examples/dce/dce_llamadas.bal` | `./balc --dce examples/dce/dce_llamadas.bal` |
 | [`examples/dce/dce_ciclo.bal`](examples/dce/dce_ciclo.bal) | Código muerto dentro de un ciclo; una variable queda muerta recién en la segunda pasada. | `./balc-ide examples/dce/dce_ciclo.bal` | `./balc --dce examples/dce/dce_ciclo.bal` |
 | [`examples/dce/dce_division.bal`](examples/dce/dce_division.bal) | Una división entre una variable se conserva porque puede fallar; una entre un número fijo se elimina. | `./balc-ide examples/dce/dce_division.bal` | `./balc --dce examples/dce/dce_division.bal` |
+| [`examples/dce/dce_ensamblador.bal`](examples/dce/dce_ensamblador.bal) | Solo parámetros `int`, así que el backend genera su ensamblador: con **Aplicar al código** el ensamblador y el binario salen sin el código muerto (528 → 435 bundles) y el simulador da el mismo resultado. | `./balc-ide examples/dce/dce_ensamblador.bal` | `./balc --dce examples/dce/dce_ensamblador.bal` |
 
 `make ide` genera el ejecutable `balc-ide`. No se sube al repositorio, porque se
 vuelve a generar al compilar.
@@ -186,7 +188,7 @@ vuelve a generar al compilar.
 | Delimitadores | Si sobra o falta un paréntesis, corchete o llave, se indica cuál y dónde se abrió. |
 | Mensajes en español | Los errores del parser se traducen, por ejemplo `no se esperaba el nombre 'numero' en este lugar`. |
 | Corrección automática | Si el IDE sabe arreglar un error (un `;` que falta, un `)` o `}` sin cerrar, un cierre que sobra), la lista muestra el arreglo y un botón **Corregir**. Ctrl+. corrige el error de la línea del cursor y Ctrl+Z lo deshace. |
-| Código muerto | El botón **Código muerto** elimina el código muerto con el análisis de variables vivas. Las líneas eliminadas completas se tachan y las que solo perdieron una parte (por ejemplo, la llamada se conserva) quedan en gris. La pestaña **Código muerto** las lista, y **Ver IR y variables vivas** muestra la IR antes y después y la tabla `use`/`def`/`IN`/`OUT`. Ver [docs/dce.md](docs/dce.md). |
+| Código muerto | El botón **Código muerto** elimina los dos tipos de código muerto: asignaciones que nadie lee (análisis de variables vivas) y código inalcanzable (después de un `give`, o en una rama cuya condición siempre es falsa, con propagación de constantes). **Aplicar al código** cambia el código por el código sin el código muerto, así que el ensamblador y el binario salen de él. Las líneas eliminadas completas se tachan y las que solo perdieron una parte (por ejemplo, la llamada se conserva) quedan en gris. La pestaña **Código muerto** las lista, y **Ver IR y variables vivas** muestra la IR antes y después y la tabla `use`/`def`/`IN`/`OUT`. Ver [docs/dce.md](docs/dce.md). |
 | Ensamblador | El botón **Ensamblador** genera el ensamblador VLIW del código del editor (aunque no esté guardado), el mismo que `balc -s`. La pestaña **Ensamblador (.asm)** muestra cada bundle con sus 4 slots (`ALU \| LSU \| BRU \| CRIPTO`) y **Binario** muestra cada bundle con su PC y su codificación, como `balc -p`. |
 | Clones | El botón **Buscar clones** compara el archivo abierto (aunque no esté guardado) con los demás `.bal` de su carpeta. Los clones se pintan de amarillo y la pestaña **Clones** dice dónde está cada copia; un clic lleva al fragmento. |
 

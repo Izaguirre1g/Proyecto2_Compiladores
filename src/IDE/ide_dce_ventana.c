@@ -89,6 +89,12 @@ void ide_mostrar_detalle_dce(GtkWindow *padre, const IdeDce *d)
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_de_texto(despues),
                              gtk_label_new("3. IR después del DCE"));
     g_free(despues);
+    /* El código BAL sin el código muerto: es el que se compila al pulsar
+     * "Aplicar al código", así que de él salen el ensamblador y el binario. */
+    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas),
+                             pestana_de_texto(d->codigo_nuevo != NULL ? d->codigo_nuevo
+                                              : "El código no cambia: no hay sentencias que quitar."),
+                             gtk_label_new("4. Código nuevo"));
 
     GtkWidget *columna = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(columna), 8);

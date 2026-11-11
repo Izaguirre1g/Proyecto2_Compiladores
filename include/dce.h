@@ -11,7 +11,7 @@
  *         IN[B]  = use_B ∪ (OUT[B] − def_B)
  *         OUT[B] = ∪ IN[S]   para cada sucesor S de B
  *         OUT[SALIDA] = ∅                       (funciones comunes)
- *         OUT[SALIDA de main] = variables de main
+ *         OUT[SALIDA de main] = variables de main que se leen en main
  *
  *     use_B: variables que B usa ANTES de asignarlas.
  *     def_B: variables que B asigna.
@@ -21,9 +21,11 @@
  *     ¿Por qué main es distinto? En este proyecto el resultado de un
  *     programa es la memoria final de las variables de main (BAL no tiene
  *     print; el simulador y las pruebas leen ahí, por ejemplo,
- *     "resultado = 120" en factorial.bal). Esa es la salida observable, así
- *     que esas variables están vivas al terminar main. Las variables locales
- *     de las demás funciones desaparecen al hacer "give".
+ *     "resultado = 120" en factorial.bal). Son resultado las variables de
+ *     main que el programa USA (se leen en algún lugar de main): siguen
+ *     vivas al terminar main. Una variable de main que nunca se lee (como
+ *     "t * declare_int : 4;") es código muerto. Las variables locales de
+ *     las demás funciones desaparecen al hacer "give".
  *
  *   - Diapositiva 28, eliminación global de código muerto. Una asignación
  *     "x = ..." es código muerto si x NO está viva justo después y la
@@ -42,9 +44,34 @@
  *         una potencia (descartes) cuyo exponente no es un número >= 0.
  *       * los saltos, etiquetas, retornos y el inicio/fin de las funciones.
  *
+ * Hay DOS TIPOS de código muerto, y el DCE elimina los dos:
+ *
+ *   Tipo 1, asignaciones no usadas: la instrucción SÍ se ejecuta, pero
+ *   calcula un valor que nadie lee (variables vivas, arriba).
+ *
+ *   Tipo 2, código inalcanzable: instrucciones que NUNCA se ejecutan, en
+ *   ningún camino del grafo de flujo (diapositiva 15). Pasa:
+ *     * después de un salto incondicional: en BAL, después de un "give";
+ *     * en una rama cuya condición se conoce al compilar. Para saberlo se
+ *       usa PROPAGACIÓN y PLEGADO DE CONSTANTES (diapositiva 20): una
+ *       variable asignada UNA sola vez con un valor constante vale eso en
+ *       todo el programa ("debug * declare_boolean : declare_false;"), y
+ *       una operación con operandos constantes se calcula al compilar
+ *       ("1 > 2" es falso). Si la condición de un salto condicional es
+ *       constante, el salto se vuelve fijo (o desaparece), y la rama que
+ *       nunca se toma queda inalcanzable.
+ *   Un bloque es inalcanzable si no hay camino desde el inicio de su
+ *   función hasta él: se recorre el grafo desde ahí y lo que no se visita
+ *   se elimina (salvo el inicio y el fin de la función).
+ *
+ * Los dos tipos se repiten en las mismas pasadas: quitar una rama puede
+ * dejar variables sin usar (tipo 1), y quitar código muerto puede volver
+ * constante una condición (tipo 2).
+ *
  * El DCE trabaja sobre la IR (src/Representacion_Intermedia/ir.c) y no la
- * cambia por dentro: quita instrucciones y vuelve a calcular los bloques
- * básicos con ir_bloques_basicos().
+ * cambia por dentro: quita instrucciones (o vuelve fijo un salto
+ * condicional) y vuelve a calcular los bloques básicos con
+ * ir_bloques_basicos().
  */
 #ifndef BAL_DCE_H
 #define BAL_DCE_H
@@ -92,10 +119,17 @@ void dce_liberar_vivas(DceVivas *vivas);
 /* Eliminación de código muerto                                        */
 /* ------------------------------------------------------------------ */
 
+/* Por qué se eliminó una instrucción. */
+typedef enum {
+    DCE_NO_USADA = 1,     /* Tipo 1: calcula un valor que nadie lee. */
+    DCE_INALCANZABLE = 2  /* Tipo 2: nunca se ejecuta. */
+} DceTipo;
+
 /* Una instrucción eliminada, para mostrarla (por ejemplo, "x = 5"). */
 typedef struct {
     size_t linea;      /* Línea del código BAL de donde salió. */
     char texto[128];   /* La instrucción, escrita como en ir_imprimir. */
+    DceTipo tipo;      /* Tipo 1 o tipo 2. */
 } DceEliminada;
 
 /* Qué hizo el DCE. Se crea vacío así: DceResultado r = {0}; */
@@ -109,6 +143,9 @@ typedef struct {
     /* Instrucciones cuyo resultado nadie usa pero que se CONSERVARON: */
     size_t llamadas_conservadas;    /* call: la función puede tener efectos. */
     size_t riesgosas_conservadas;   /* división o potencia que puede fallar. */
+    /* Tipo 2: */
+    size_t inalcanzables;           /* Instrucciones eliminadas por inalcanzables. */
+    size_t condiciones_constantes;  /* Saltos condicionales con condición constante. */
 } DceResultado;
 
 /*
