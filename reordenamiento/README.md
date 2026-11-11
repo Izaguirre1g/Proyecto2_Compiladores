@@ -13,6 +13,8 @@ El reordenamiento pone trabajo independiente en ese hueco.
 reordenamiento/
 ├── reordenamiento.h / .c    la optimización (DAG + list scheduling)
 ├── ro_reporte.h / .c        reporte visual de balc --reorder
+├── ro_json.h / .c           grafo en JSON (balc --reorder-json)
+├── visualizar_grafo.html    visualizador del JSON (grafo, ruta crítica, ciclos)
 ├── README.md                este documento
 └── pruebas/
     ├── test_reordenamiento.c   casos dirigidos + 1000 programas aleatorios
@@ -47,6 +49,73 @@ ro_reordenar(&ir, &op, &r);            /* ir debe tener sus bloques básicos */
 /* r.movidas, r.ciclos_antes, r.ciclos_despues, r.raw, r.war, ... */
 ro_resumen_liberar(&r);
 ```
+
+## Ver el grafo y la ruta crítica
+
+Igual que con el AST (`--ast-json` + `tools/visualizar_ast.html`), el grafo de
+dependencias se puede exportar a JSON y verlo en el navegador:
+
+```sh
+./balc --reorder-json reordenamiento/pruebas/01_war.bal > 01_war.grafo.json
+./balc --reorder-json=2 reordenamiento/pruebas/02_waw.bal > 02_waw.grafo.json   # otra latencia
+./balc --unroll --reorder-json reordenamiento/pruebas/06_ciclo_desenrollado.bal > 06.grafo.json
+```
+
+Después se abre `reordenamiento/visualizar_grafo.html` (doble clic; funciona
+sin Internet) y se elige el `.json`. Para cada bloque básico muestra:
+
+- **El grafo (DAG).** Cada caja es una instrucción, y cada flecha, una
+  dependencia (la de arriba va antes). Los colores indican el tipo: RAW, WAR,
+  WAW, memoria, efecto o control, y la etiqueta dice qué variable la causa y
+  cuántos ciclos hay que esperar. Las dependencias de control (todo → salto
+  final) vienen ocultas, pero se pueden activar.
+- **La ruta crítica**, en rojo. Es la cadena de esperas más larga, y ningún
+  orden puede terminar en menos ciclos que ella. Si el orden nuevo tarda lo
+  mismo que la ruta crítica, el resultado es óptimo.
+- **El detalle de una instrucción.** Al pulsarla se ve qué lee y qué escribe,
+  de quién depende y quién depende de ella, y en qué ciclo sale antes y
+  después.
+- **Una línea de tiempo antes/después**, con un ciclo por casilla. Las casillas
+  rayadas son esperas (NOPs) y se ve cómo el reordenamiento las llena.
+
+El JSON sale del **mismo análisis** que usa `ro_reordenar` (la función
+`ro_analizar_bloque`), así que el grafo y los ciclos coinciden con el reporte
+de `--reorder`. `--reorder-json` no se combina con `--reorder`.
+
+### Formato del JSON
+
+```jsonc
+{
+  "formato": "bal-reordenamiento", "version": 1,
+  "archivo": "01_war.bal", "latencia": 3, "factor_unroll": null,   // o el factor k
+  "bloques": [{
+    "id": 0, "inicio": 0, "fin": 11, "sucesores": [],
+    "fijas": [{"pos": 0, "texto": "func main", "linea": 5}],      // no se mueven
+    "ciclos_antes": 16, "ciclos_despues": 13, "aplicado": true,
+    "orden": [0, 1, 2, 4, 5, 3, 6, 7, 8, 9],     // nodo que queda en cada lugar
+    "ruta_critica": {"ciclos": 13, "nodos": [0, 2, 3, 7, 8, 9]},
+    "nodos": [{
+      "id": 2, "pos": 3, "texto": "$t1 = a pitagoras 2", "linea": 8,
+      "lee": ["a"], "escribe": ["$t1"],
+      "altura": 11,                 // camino crítico desde aquí (prioridad)
+      "critico": true,
+      "ciclo_antes": 3, "ciclo_despues": 3,   // null si no ocupa ciclo (endfunc)
+      "nueva_pos": 2
+    }],
+    "aristas": [{
+      "de": 2, "a": 3, "latencia": 3,
+      "tipos": ["RAW"],             // RAW, WAR, WAW, MEMORIA, EFECTO, CONTROL
+      "por": "$t1",                 // variable que la causa (null en efecto/control)
+      "critica": true
+    }]
+  }],
+  "resumen": {"bloques": 1, "bloques_cambiados": 1, "instrucciones": 11,
+              "movidas": 3, "ciclos_antes": 16, "ciclos_despues": 13}
+}
+```
+
+`de` y `a` son índices de `nodos` del mismo bloque, y siempre `de < a`
+(el orden original). `pos` es la posición en la IR.
 
 ## Reglas (qué NO se puede mover)
 
@@ -121,6 +190,9 @@ viejo de `a` (WAR).
    - **1000 programas aleatorios** con 5 variables (muchos WAR/WAW), `if/else`,
      llamadas, `store` y `load`, con latencias 1 a 4.
 2. **Extremo a extremo** ([pruebas/test_bal.sh](pruebas/test_bal.sh)) con `balc --reorder`.
+   También revisa el JSON de `--reorder-json`: los mismos ciclos que el
+   reporte, que el orden nuevo respete cada arista y que ningún bloque
+   termine en menos ciclos que su ruta crítica.
 
 | Prueba | Qué muestra | Movidas | Ciclos estimados |
 |---|---|---|---|

@@ -27,7 +27,8 @@
  *   2. Modelo de ciclos                             (ciclos_orden, ro_ciclos)
  *   3. Grafo de dependencias                        (Grafo, construir)
  *   4. List scheduling                              (calendarizar)
- *   5. Interfaz publica                             (ro_reordenar, ...)
+ *   5. Analisis de un bloque                        (analizar)
+ *   6. Interfaz publica                             (ro_reordenar, ro_analizar_bloque)
  * ===================================================================== */
 
 #include "reordenamiento.h"   /* RoOpciones, RoResumen, IrPrograma */
@@ -112,12 +113,15 @@ static int terminador(IrOp op) {
 /* Momento en que cada nombre queda listo para leerse. */
 typedef struct { const char *nombre; size_t listo; } Listo;
 
-/* Ciclos para ejecutar las n instrucciones de v en ese orden. */
-static size_t ciclos_orden(const IrInstr *const *v, size_t n, unsigned lat) {
+/* Ciclos para ejecutar las n instrucciones de v en ese orden. Si `emision`
+ * no es NULL, guarda en emision[i] el ciclo en que sale v[i]
+ * (RO_SIN_CICLO para las marcas que no ocupan ciclo). */
+static size_t ciclos_orden(const IrInstr *const *v, size_t n, unsigned lat, size_t *emision) {
     Listo *tabla = malloc((2 * n + 1) * sizeof *tabla);  /* Como mucho 2 escrituras por instruccion */
     if (!tabla) return n;                                /* Sin memoria: estimacion trivial */
     size_t cant = 0, t = 0;                              /* Entradas en la tabla / ciclo actual */
     for (size_t i = 0; i < n; ++i) {
+        if (emision) emision[i] = RO_SIN_CICLO;
         if (!ocupa_ciclo(v[i]->op)) continue;            /* Las marcas no gastan ciclos */
         Usos u; usos(v[i], &u);
         size_t inicio = t;                               /* Lo antes que podria emitirse */
@@ -130,7 +134,8 @@ static size_t ciclos_orden(const IrInstr *const *v, size_t n, unsigned lat) {
             if (k == cant) tabla[cant++].nombre = u.escribe[w];           /* O lo agrega */
             tabla[k].listo = inicio + lat;
         }
-        t = inicio + 1;                                  /* La siguiente va en el ciclo siguiente */
+        if (emision) emision[i] = inicio;                /* Ciclo en que sale */
+        t = inicio + 1;                                 /* La siguiente va en el ciclo siguiente */
     }
     free(tabla);
     return t;                                            /* Total de ciclos usados */
@@ -141,7 +146,7 @@ size_t ro_ciclos(const IrPrograma *ir, size_t inicio, size_t fin, unsigned laten
     const IrInstr **v = malloc((fin - inicio) * sizeof *v); /* Arreglo de punteros en el orden actual */
     if (!v) return fin - inicio;
     for (size_t i = inicio; i < fin; ++i) v[i - inicio] = &ir->codigo[i];
-    size_t c = ciclos_orden(v, fin - inicio, latencia ? latencia : 1);
+    size_t c = ciclos_orden(v, fin - inicio, latencia ? latencia : 1, NULL);
     free(v);
     return c;
 }
@@ -155,13 +160,18 @@ size_t ro_ciclos(const IrPrograma *ir, size_t inicio, size_t fin, unsigned laten
 typedef struct {
     size_t m;                 /* Cantidad de nodos (instrucciones de la region) */
     unsigned char *lat;       /* Matriz m x m de latencias (0 = sin arista) */
+    unsigned char *tipo;      /* Matriz m x m con los bits RO_DEP_* de cada arista */
+    const char **por;         /* Opcional (JSON): variable que causa cada arista */
     size_t raw, war, waw, memoria, efecto, control; /* Contadores para el reporte */
 } Grafo;
 
-/* Agrega la arista i -> j con latencia l (se queda con la mayor). */
-static void arista(Grafo *g, size_t i, size_t j, unsigned l) {
-    unsigned char *p = &g->lat[i * g->m + j];
-    if (l > *p) *p = (unsigned char)l;
+/* Agrega la arista i -> j con latencia l (se queda con la mayor), anota su
+ * tipo t (RO_DEP_*) y, si se pidio, la variable `nombre` que la causa. */
+static void arista(Grafo *g, size_t i, size_t j, unsigned l, unsigned t, const char *nombre) {
+    size_t k = i * g->m + j;                          /* Celda (i, j) de la matriz */
+    if (l > g->lat[k]) g->lat[k] = (unsigned char)l;
+    g->tipo[k] |= (unsigned char)t;                   /* Puede tener varios tipos */
+    if (g->por && nombre && !g->por[k]) g->por[k] = nombre; /* Se queda con la primera */
 }
 
 /* Construye las dependencias de las m instrucciones v[0..m-1].
@@ -178,8 +188,10 @@ static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat,
         for (size_t r = 0; r < u[j].nlee; ++r)
             for (size_t i = j; i-- > 0;)
                 if (escribe_nombre(&u[i], u[j].lee[r])) {
-                    arista(g, i, j, lat);             /* Debe esperar la latencia */
-                    if (igual(u[j].lee[r], MEM)) g->memoria++; else g->raw++;
+                    int es_mem = igual(u[j].lee[r], MEM);
+                    arista(g, i, j, lat, es_mem ? RO_DEP_MEMORIA : RO_DEP_RAW,
+                           u[j].lee[r]);              /* Debe esperar la latencia */
+                    if (es_mem) g->memoria++; else g->raw++;
                     break;                            /* Solo la mas cercana */
                 }
         /* WAW y WAR: j escribe w. */
@@ -188,27 +200,30 @@ static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat,
             int es_mem = igual(nom, MEM);
             for (size_t i = j; i-- > 0;) {
                 if (escribe_nombre(&u[i], nom)) {     /* WAW: escritura anterior mas cercana */
-                    arista(g, i, j, 1);
+                    arista(g, i, j, 1, es_mem ? RO_DEP_MEMORIA : RO_DEP_WAW, nom);
                     if (es_mem) g->memoria++; else g->waw++;
                     break;                            /* Antes de esta ya no importa (transitivo) */
                 }
                 if (lee_nombre(&u[i], nom)) {         /* WAR: alguien lee el valor viejo */
-                    arista(g, i, j, 1);
+                    arista(g, i, j, 1, es_mem ? RO_DEP_MEMORIA : RO_DEP_WAR, nom);
                     if (es_mem) g->memoria++; else g->war++;
                 }
             }
         }
         /* Efectos: arg/call no se mueven respecto a nada de su alrededor. */
         if (u[j].barrera) {
-            for (size_t i = barrera < 0 ? 0 : (size_t)barrera; i < j; ++i) { arista(g, i, j, 1); g->efecto++; }
+            for (size_t i = barrera < 0 ? 0 : (size_t)barrera; i < j; ++i) {
+                arista(g, i, j, 1, RO_DEP_EFECTO, NULL); g->efecto++;
+            }
             barrera = (long)j;
         } else if (barrera >= 0) {
-            arista(g, (size_t)barrera, j, 1); g->efecto++;  /* Nada sube por encima de una llamada */
+            arista(g, (size_t)barrera, j, 1, RO_DEP_EFECTO, NULL); /* Nada sube por encima de una llamada */
+            g->efecto++;
         }
     }
     /* Control: el salto/return final queda despues de todo. */
     if (hay_terminador)
-        for (size_t i = 0; i + 1 < m; ++i) { arista(g, i, m - 1, 1); g->control++; }
+        for (size_t i = 0; i + 1 < m; ++i) { arista(g, i, m - 1, 1, RO_DEP_CONTROL, NULL); g->control++; }
     free(u);
 }
 
@@ -221,6 +236,21 @@ static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat,
  * valores ya estan listos, la de camino critico mas largo (desempate:
  * la que estaba antes). Si ninguna esta lista, avanza al primer ciclo en
  * que alguna lo este. Devuelve 0 si falta memoria. */
+/* Camino critico desde cada nodo: altura[i] = ciclos minimos desde que se
+ * emite i hasta que se emite la ultima instruccion que depende de el (+1).
+ * Como las aristas van siempre de i a j > i, basta recorrer de atras hacia
+ * adelante. */
+static void alturas(const Grafo *g, size_t *altura) {
+    size_t m = g->m;
+    for (size_t i = m; i-- > 0;) {
+        altura[i] = 1;                                /* El nodo solo: 1 ciclo */
+        for (size_t j = i + 1; j < m; ++j) {
+            unsigned l = g->lat[i * m + j];
+            if (l && l + altura[j] > altura[i]) altura[i] = l + altura[j];
+        }
+    }
+}
+
 static int calendarizar(const Grafo *g, size_t *orden) {
     size_t m = g->m;
     size_t *altura = calloc(m, sizeof *altura);       /* Camino critico desde cada nodo */
@@ -230,14 +260,8 @@ static int calendarizar(const Grafo *g, size_t *orden) {
     if (!altura || !temprano || !faltan || !hecho) {
         free(altura); free(temprano); free(faltan); free(hecho); return 0;
     }
-    for (size_t i = m; i-- > 0;) {                    /* Alturas de atras hacia adelante */
-        altura[i] = 1;
-        for (size_t j = i + 1; j < m; ++j) {
-            unsigned l = g->lat[i * m + j];
-            if (l && l + altura[j] > altura[i]) altura[i] = l + altura[j];
-        }
-    }
-    for (size_t i = 0; i < m; ++i)                    /* Cuenta predecesores */
+    alturas(g, altura);                               /* Prioridad: camino critico */
+    for (size_t i = 0; i < m; ++i)                   /* Cuenta predecesores */
         for (size_t j = i + 1; j < m; ++j) if (g->lat[i * m + j]) faltan[j]++;
     size_t ciclo = 0;
     for (size_t paso = 0; paso < m; ++paso) {
@@ -287,7 +311,66 @@ static int respeta(const Grafo *g, const size_t *orden) {
 }
 
 /* ===================================================================== */
-/* 5. INTERFAZ PUBLICA                                                    */
+/* 5. ANALISIS DE UN BLOQUE                                               */
+/* ===================================================================== */
+/* Lo comparten ro_reordenar (que aplica el orden) y ro_analizar_bloque
+ * (que lo exporta para el visualizador), asi ambos ven el MISMO grafo. */
+
+typedef struct {
+    size_t p, m;              /* Region del grafo: ir->codigo[p, p + m) */
+    int hay_term;             /* 1 si la ultima instruccion es un salto/return */
+    int valido;               /* 1 si hay un orden nuevo que respeta el grafo */
+    Grafo g;                  /* Dependencias */
+    size_t *orden;            /* Orden nuevo (identidad si no es valido) */
+    size_t ciclos_nuevo;      /* Ciclos del bloque completo con el orden nuevo */
+} Analisis;
+
+static void analisis_liberar(Analisis *a) {
+    free(a->g.lat); free(a->g.tipo); free((void *)a->g.por); free(a->orden);
+}
+
+/* Arma el grafo del bloque [ini, fin) y calcula el orden nuevo. `nombres`
+ * pide guardar la variable de cada arista (solo para el JSON).
+ * Devuelve 0 en exito y 2 si falta memoria. */
+static int analizar(const IrPrograma *ir, size_t ini, size_t fin, unsigned lat,
+                    int nombres, Analisis *a) {
+    *a = (Analisis){0};
+    size_t p = ini;
+    while (p < fin && fija_inicio(ir->codigo[p].op)) ++p; /* Salta etiquetas/func/param */
+    size_t m = fin - p;                                   /* Nodos del grafo */
+    a->p = p; a->m = m;
+    a->hay_term = m && terminador(ir->codigo[fin - 1].op);
+    a->g.m = m;
+    if (!m) return 0;                                     /* Bloque de solo etiquetas */
+    const IrInstr **v = malloc(m * sizeof *v);            /* Punteros a la region */
+    const IrInstr **nuevo = malloc((fin - ini) * sizeof *nuevo); /* Bloque con el orden nuevo */
+    a->orden = malloc(m * sizeof *a->orden);
+    a->g.lat = calloc(m * m, 1);                          /* Matriz de dependencias */
+    a->g.tipo = calloc(m * m, 1);
+    if (nombres) a->g.por = calloc(m * m, sizeof *a->g.por);
+    if (!v || !nuevo || !a->orden || !a->g.lat || !a->g.tipo || (nombres && !a->g.por)) {
+        free(v); free(nuevo); analisis_liberar(a); *a = (Analisis){0}; return 2;
+    }
+    for (size_t k = 0; k < m; ++k) { v[k] = &ir->codigo[p + k]; a->orden[k] = k; }
+    construir(&a->g, v, m, lat, a->hay_term);             /* Paso 2: el DAG */
+    if (m >= 2 + (size_t)a->hay_term) {                   /* Hay algo que reordenar */
+        if (calendarizar(&a->g, a->orden) && respeta(&a->g, a->orden)) { /* Paso 3 */
+            for (size_t k = ini; k < p; ++k) nuevo[k - ini] = &ir->codigo[k];   /* Parte fija */
+            for (size_t k = 0; k < m; ++k) nuevo[p - ini + k] = v[a->orden[k]]; /* Region nueva */
+            a->ciclos_nuevo = ciclos_orden(nuevo, fin - ini, lat, NULL);       /* Paso 4 */
+            a->valido = 1;
+        } else {
+            for (size_t k = 0; k < m; ++k) a->orden[k] = k; /* Sin orden nuevo: el original */
+        }
+    }
+    free(v); free(nuevo);
+    return 0;
+}
+
+static unsigned limitar(unsigned lat) { return lat < 1 ? 1 : lat > 255 ? 255 : lat; } /* Cabe en un byte */
+
+/* ===================================================================== */
+/* 6. INTERFAZ PUBLICA                                                    */
 /* ===================================================================== */
 
 void ro_opciones_defecto(RoOpciones *op) { op->latencia = 3; }
@@ -312,8 +395,7 @@ int ro_reordenar(IrPrograma *ir, const RoOpciones *opc, RoResumen *res) {
     if (!ir || (ir->cantidad && !ir->bloques)) return 2;  /* Hace falta la IR con bloques */
     RoOpciones o;
     if (opc) o = *opc; else ro_opciones_defecto(&o);
-    if (o.latencia < 1) o.latencia = 1;
-    if (o.latencia > 255) o.latencia = 255;               /* Cabe en un unsigned char */
+    o.latencia = limitar(o.latencia);
     RoResumen r = {0};
     r.instrucciones = ir->cantidad;
     r.bloques = ir->cantidad_bloques;
@@ -330,53 +412,136 @@ int ro_reordenar(IrPrograma *ir, const RoOpciones *opc, RoResumen *res) {
         RoBloque *d = &r.detalle[b];
         d->inicio = ini; d->fin = fin;
         d->ciclos_antes = d->ciclos_despues = ro_ciclos(ir, ini, fin, o.latencia);
-        /* Region movible: despues de etiquetas/func/param, incluyendo el
-         * terminador (que el grafo obliga a quedar ultimo). */
-        size_t p = ini;
-        while (p < fin && fija_inicio(ir->codigo[p].op)) ++p;
-        size_t m = fin - p;                                   /* Nodos del grafo */
-        int hay_term = m && terminador(ir->codigo[fin - 1].op);
-        if (m < 2 + (size_t)hay_term) {                       /* Nada que reordenar */
-            r.ciclos_antes += d->ciclos_antes; r.ciclos_despues += d->ciclos_despues;
-            continue;
-        }
-        const IrInstr **v = malloc(m * sizeof *v);            /* Punteros a la region */
-        size_t *orden = malloc(m * sizeof *orden);            /* Orden nuevo */
-        Grafo g = {m, calloc(m * m, 1), 0, 0, 0, 0, 0, 0};    /* Matriz de dependencias */
-        if (!v || !orden || !g.lat) { free(v); free(orden); free(g.lat); estado = 2; break; }
-        for (size_t k = 0; k < m; ++k) v[k] = &ir->codigo[p + k];
-        construir(&g, v, m, o.latencia, hay_term);            /* Paso 2: el DAG */
-        sumar(d, &r, &g);
-        if (calendarizar(&g, orden) && respeta(&g, orden)) {  /* Paso 3 y verificacion */
-            /* Paso 4: estima el bloque completo con el orden nuevo. */
-            const IrInstr **nuevo = malloc((fin - ini) * sizeof *nuevo);
-            if (nuevo) {
-                for (size_t k = ini; k < p; ++k) nuevo[k - ini] = &ir->codigo[k];   /* Parte fija */
-                for (size_t k = 0; k < m; ++k) nuevo[p - ini + k] = v[orden[k]];    /* Region nueva */
-                size_t c = ciclos_orden(nuevo, fin - ini, o.latencia);
-                if (c < d->ciclos_antes) {                    /* Solo si mejora */
-                    IrInstr *copia = malloc(m * sizeof *copia);
-                    size_t *orig = malloc(m * sizeof *orig);
-                    if (copia && orig) {
-                        for (size_t k = 0; k < m; ++k) {      /* Toma las instrucciones en el orden nuevo */
-                            copia[k] = ir->codigo[p + orden[k]];
-                            orig[k] = r.origen[p + orden[k]];
-                            if (orden[k] != k) d->movidas++;  /* Cambio de lugar */
-                        }
-                        memcpy(&ir->codigo[p], copia, m * sizeof *copia); /* Las escribe de vuelta */
-                        memcpy(&r.origen[p], orig, m * sizeof *orig);
-                        d->ciclos_despues = c;
-                        r.movidas += d->movidas;
-                        r.bloques_cambiados++;
-                    } else estado = 2;
-                    free(copia); free(orig);
+        Analisis a;
+        if (analizar(ir, ini, fin, o.latencia, 0, &a)) { estado = 2; break; } /* Pasos 1 a 4 */
+        if (a.m >= 2 + (size_t)a.hay_term) sumar(d, &r, &a.g); /* Solo bloques con algo que mover */
+        if (a.valido && a.ciclos_nuevo < d->ciclos_antes) {     /* Solo si mejora */
+            IrInstr *copia = malloc(a.m * sizeof *copia);
+            size_t *orig = malloc(a.m * sizeof *orig);
+            if (copia && orig) {
+                for (size_t k = 0; k < a.m; ++k) {    /* Toma las instrucciones en el orden nuevo */
+                    copia[k] = ir->codigo[a.p + a.orden[k]];
+                    orig[k] = r.origen[a.p + a.orden[k]];
+                    if (a.orden[k] != k) d->movidas++; /* Cambio de lugar */
                 }
-                free(nuevo);
+                memcpy(&ir->codigo[a.p], copia, a.m * sizeof *copia); /* Las escribe de vuelta */
+                memcpy(&r.origen[a.p], orig, a.m * sizeof *orig);
+                d->ciclos_despues = a.ciclos_nuevo;
+                r.movidas += d->movidas;
+                r.bloques_cambiados++;
             } else estado = 2;
+            free(copia); free(orig);
         }
         r.ciclos_antes += d->ciclos_antes; r.ciclos_despues += d->ciclos_despues;
-        free(v); free(orden); free(g.lat);
+        analisis_liberar(&a);
     }
     if (res) *res = r; else ro_resumen_liberar(&r);
+    return estado;
+}
+
+/* 1 si s es un nombre de variable (no una constante como "5" o "-2"). */
+static int es_variable(const char *s) {
+    unsigned char c = (unsigned char)s[0];
+    return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80;
+}
+
+void ro_grafo_liberar(RoGrafoBloque *g) {
+    if (!g) return;
+    free(g->nodos); free(g->aristas); free(g->orden); free(g->ruta);
+    *g = (RoGrafoBloque){0};
+}
+
+int ro_analizar_bloque(const IrPrograma *ir, size_t b, unsigned latencia, RoGrafoBloque *out) {
+    if (!out) return 2;
+    *out = (RoGrafoBloque){0};
+    if (!ir || !ir->bloques || b >= ir->cantidad_bloques) return 2;
+    unsigned lat = limitar(latencia);
+    size_t ini = ir->bloques[b].inicio, fin = ir->bloques[b].fin, n = fin - ini;
+    out->inicio = ini; out->fin = fin;
+    out->ciclos_antes = out->ciclos_despues = ro_ciclos(ir, ini, fin, lat);
+    Analisis a;
+    if (analizar(ir, ini, fin, lat, 1, &a)) return 2;
+    size_t m = a.m;
+    out->primero = a.p;
+    out->cantidad_nodos = m;
+    /* Mismo criterio que ro_reordenar: solo se aplica si mejora. */
+    out->aplicado = a.valido && a.ciclos_nuevo < out->ciclos_antes;
+    if (out->aplicado) out->ciclos_despues = a.ciclos_nuevo;
+    if (!m) { analisis_liberar(&a); return 0; }
+    if (!out->aplicado) for (size_t k = 0; k < m; ++k) a.orden[k] = k;
+
+    size_t aristas = 0;                                   /* Cuenta las aristas */
+    for (size_t i = 0; i < m * m; ++i) if (a.g.lat[i]) ++aristas;
+    size_t *altura = malloc(m * sizeof *altura);
+    size_t *em_antes = malloc(n * sizeof *em_antes);      /* Ciclo de cada instruccion (antes) */
+    size_t *em_despues = malloc(n * sizeof *em_despues);  /* ... y despues */
+    const IrInstr **v = malloc(n * sizeof *v);
+    out->nodos = calloc(m, sizeof *out->nodos);
+    out->aristas = calloc(aristas + 1, sizeof *out->aristas);
+    out->orden = malloc(m * sizeof *out->orden);
+    out->ruta = malloc(m * sizeof *out->ruta);
+    int estado = 0;
+    if (!altura || !em_antes || !em_despues || !v || !out->nodos || !out->aristas ||
+        !out->orden || !out->ruta) {
+        estado = 2;
+        goto fin;
+    }
+    /* Ciclo en que sale cada instruccion: en el orden original y en el final. */
+    for (size_t k = 0; k < n; ++k) v[k] = &ir->codigo[ini + k];
+    ciclos_orden(v, n, lat, em_antes);
+    for (size_t k = 0; k < m; ++k) v[a.p - ini + k] = &ir->codigo[a.p + a.orden[k]];
+    ciclos_orden(v, n, lat, em_despues);
+
+    alturas(&a.g, altura);
+    for (size_t k = 0; k < m; ++k) {                      /* Datos de cada nodo */
+        RoNodo *x = &out->nodos[k];
+        x->pos = a.p + k;
+        x->altura = altura[k];
+        x->ciclo_antes = em_antes[a.p - ini + k];
+        Usos u; usos(&ir->codigo[a.p + k], &u);
+        for (size_t r = 0; r < u.nlee; ++r) if (es_variable(u.lee[r])) x->lee[x->nlee++] = u.lee[r];
+        for (size_t w = 0; w < u.nesc; ++w) x->escribe[x->nesc++] = u.escribe[w];
+    }
+    for (size_t k = 0; k < m; ++k) {                      /* Donde quedo cada nodo */
+        out->orden[k] = a.orden[k];
+        out->nodos[a.orden[k]].nueva_pos = k;
+        out->nodos[a.orden[k]].ciclo_despues = em_despues[a.p - ini + k];
+    }
+
+    /* Ruta critica: desde el nodo de mayor altura, seguir siempre al sucesor
+     * que "explica" esa altura (latencia + altura del sucesor). */
+    size_t i = 0;
+    for (size_t k = 1; k < m; ++k) if (altura[k] > altura[i]) i = k;
+    out->longitud_ruta = altura[i];
+    for (;;) {
+        out->ruta[out->largo_ruta++] = i;
+        out->nodos[i].critico = 1;
+        size_t sig = m;
+        for (size_t j = i + 1; j < m && sig == m; ++j) {
+            unsigned l = a.g.lat[i * m + j];
+            if (l && l + altura[j] == altura[i]) sig = j;
+        }
+        if (sig == m) break;                              /* Llego al final */
+        i = sig;
+    }
+    /* Si la ruta termina en una marca que no gasta ciclo (endfunc), no cuenta. */
+    if (!ocupa_ciclo(ir->codigo[a.p + i].op) && out->longitud_ruta) out->longitud_ruta--;
+
+    for (size_t x = 0; x < m; ++x)                        /* Lista de aristas */
+        for (size_t y = x + 1; y < m; ++y) {
+            size_t k = x * m + y;
+            if (!a.g.lat[k]) continue;
+            RoArista *e = &out->aristas[out->cantidad_aristas++];
+            e->de = x; e->a = y;
+            e->latencia = a.g.lat[k];
+            e->tipos = a.g.tipo[k];
+            e->por = a.g.por[k];
+            for (size_t r = 0; r + 1 < out->largo_ruta; ++r)
+                if (out->ruta[r] == x && out->ruta[r + 1] == y) e->critica = 1;
+        }
+fin:
+    free(altura); free(em_antes); free(em_despues); free(v);
+    analisis_liberar(&a);
+    if (estado) ro_grafo_liberar(out);
     return estado;
 }

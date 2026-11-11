@@ -16,4 +16,7 @@ void ro_reporte(FILE *f, const char *archivo, const IrPrograma *ir,
 /* 1 si conviene usar colores al escribir en f (terminal y sin NO_COLOR). */
 int ro_usar_color(FILE *f);
 
+/* Texto de una instruccion de la IR (como ir_imprimir, sin "; linea N"). */
+void ro_texto_instr(const IrInstr *x, char *b, size_t n);
+
 #endif

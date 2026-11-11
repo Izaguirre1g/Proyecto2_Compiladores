@@ -63,7 +63,7 @@ static void seccion(FILE *f, const char *titulo, int color) {
 }
 
 /* Texto de una instruccion (como ir_imprimir, sin "; linea N"). */
-static void formatear(const IrInstr *x, char *b, size_t n) {
+void ro_texto_instr(const IrInstr *x, char *b, size_t n) {
     switch (x->op) {
     case IR_FUNC:       snprintf(b, n, "func %s", x->dst); break;
     case IR_END_FUNC:   snprintf(b, n, "endfunc %s", x->dst); break;
@@ -200,13 +200,13 @@ void ro_reporte(FILE *f, const char *archivo, const IrPrograma *ir,
         for (size_t i = bq->inicio; i < bq->fin; ++i) {
             /* Izquierda: la instruccion que ORIGINALMENTE estaba en i. */
             const IrInstr *orig = &ir->codigo[donde[i]];
-            formatear(orig, instr, sizeof instr);
+            ro_texto_instr(orig, instr, sizeof instr);
             int movida_izq = donde[i] != i;
             snprintf(texto, sizeof texto, "%c %04zu  %s", movida_izq ? '*' : ' ', i, instr);
             fputs("  ", f);
             celda(f, texto, COL, movida_izq ? AMA : NULL, color);
             /* Derecha: la instruccion que AHORA esta en i, con su numero original. */
-            formatear(&ir->codigo[i], instr, sizeof instr);
+            ro_texto_instr(&ir->codigo[i], instr, sizeof instr);
             int movida_der = res->origen[i] != i;
             snprintf(der, sizeof der, "%c %04zu  %s", movida_der ? '*' : ' ', res->origen[i], instr);
             fputs(" │ ", f);

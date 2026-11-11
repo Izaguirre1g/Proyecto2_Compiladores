@@ -12,6 +12,7 @@
 #include "clones.h"
 #include "ir.h"
 #include "loop_unrolling.h"
+#include "ro_json.h"
 #include "lu_reporte.h"
 #include "reordenamiento.h"
 #include "ro_reporte.h"
@@ -185,6 +186,7 @@ typedef struct {
     unsigned unroll_factor; /* k de --unroll=k (0: valor por defecto) */
     int reorder;            /* --reorder[=L]: reordenamiento seguro en bloques */
     unsigned reorder_lat;   /* L de --reorder=L (0: valor por defecto) */
+    int reorder_json;       /* --reorder-json[=L]: grafo de dependencias en JSON */
 } Compilacion;
 
 typedef struct {
@@ -212,6 +214,8 @@ static void usage(FILE *out) {
           "--reorder[=L] reordena cada bloque basico respetando RAW/WAR/WAW y muestra\n"
           "              la IR antes y despues (latencia L, por defecto 3); se puede\n"
           "              combinar con --unroll (primero desenrolla y luego reordena)\n"
+          "--reorder-json[=L]  exporta el grafo de dependencias de cada bloque (ruta\n"
+          "              critica y orden nuevo) como JSON por stdout; admite --unroll\n"
           "--diagnosticos  revisa el fuente y escribe sus errores como JSON por\n"
           "              stdout; no genera ningun archivo\n"
           "--clones [--json] [--minimo <nodos>] <archivo.bal>...\n"
@@ -237,6 +241,19 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
                     return -1;
                 }
                 c->unroll_factor = (unsigned)k;
+            }
+            continue;
+        }
+        if (!posicional && !strncmp(arg, "--reorder-json", 14) && (arg[14] == '\0' || arg[14] == '=')) {
+            c->ir = c->reorder_json = 1;
+            if (arg[14] == '=') {
+                char *fin = NULL;
+                unsigned long l = strtoul(arg + 15, &fin, 10);
+                if (!arg[15] || *fin || l < 1 || l > 16) {
+                    fputs("--reorder-json=L necesita una latencia entera entre 1 y 16\n", stderr);
+                    return -1;
+                }
+                c->reorder_lat = (unsigned)l;
             }
             continue;
         }
@@ -281,6 +298,10 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
         fputs("--ir, --unroll y --reorder se ejecutan de forma independiente (sin otras banderas)\n", stderr);
+        return -1;
+    }
+    if (c->reorder_json && c->reorder) {
+        fputs("--reorder-json ya incluye el reordenamiento: no se combina con --reorder\n", stderr);
         return -1;
     }
     if (c->ast_json && (c->detallado || c->ensamblador || c->simbolos ||
@@ -756,7 +777,18 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
     (void)tabla;
     IrPrograma ir = {0};
     int estado = ir_desde_ast(arbol, &ir, diag);
-    if (estado == 0 && op && (op->unroll || op->reorder)) {
+    if (estado == 0 && op && op->reorder_json) {
+        /* --reorder-json: solo JSON por stdout (el unrolling, si se pidio, va en silencio). */
+        LuOpciones lu;
+        lu_opciones_defecto(&lu);
+        if (op->unroll_factor) lu.factor = op->unroll_factor;
+        if (op->unroll) estado = lu_desenrollar(&ir, &lu, NULL, NULL);
+        RoOpciones ro;
+        ro_opciones_defecto(&ro);
+        if (op->reorder_lat) ro.latencia = op->reorder_lat;
+        if (estado == 0) estado = ro_exportar_json(stdout, op->entrada, &ir, ro.latencia,
+                                                   op->unroll ? lu.factor : 0);
+    } else if (estado == 0 && op && (op->unroll || op->reorder)) {
       if (op->unroll) {
         /* --unroll: foto de la IR, desenrollado, otra foto y reporte visual. */
         LuOpciones opciones;

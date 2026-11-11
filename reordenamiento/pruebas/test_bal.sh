@@ -32,4 +32,30 @@ if ./balc --reorder=0 "$dir/01_war.bal" >/dev/null 2>&1; then
     echo "  FALLO --reorder=0 deberia rechazarse"; fallos=$((fallos + 1))
 else echo "  ok   --reorder=0 se rechaza"; fi
 
+# --reorder-json: JSON valido, mismos ciclos que el reporte y orden que respeta el grafo.
+revisar_json() { # banderas, archivo, ciclos antes, ciclos despues
+    if ./balc $1 "$dir/$2" 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['formato'] == 'bal-reordenamiento' and d['latencia'] == 3
+r = d['resumen']
+assert (r['ciclos_antes'], r['ciclos_despues']) == ($3, $4), r
+for b in d['bloques']:
+    nodos = b['nodos']
+    assert sorted(b['orden']) == list(range(len(nodos)))
+    for e in b['aristas']:   # Cada dependencia se respeta en el orden nuevo
+        assert nodos[e['de']]['nueva_pos'] < nodos[e['a']]['nueva_pos']
+    assert b['ciclos_despues'] >= b['ruta_critica']['ciclos']  # Cota inferior
+    assert all(nodos[k]['critico'] for k in b['ruta_critica']['nodos'])
+"; then echo "  ok   $1 $2: $3 -> $4 ciclos"
+    else echo "  FALLO $1 $2"; fallos=$((fallos + 1)); fi
+}
+echo "[balc --reorder-json]"
+revisar_json "--reorder-json" 01_war.bal 16 13
+revisar_json "--reorder-json" 05_llamadas.bal 43 38
+revisar_json "--unroll --reorder-json" 06_ciclo_desenrollado.bal 161 128
+if ./balc --reorder --reorder-json "$dir/01_war.bal" >/dev/null 2>&1; then
+    echo "  FALLO --reorder con --reorder-json deberia rechazarse"; fallos=$((fallos + 1))
+else echo "  ok   --reorder con --reorder-json se rechaza"; fi
+
 [ "$fallos" -eq 0 ] && echo "OK: pruebas .bal de reordenamiento" || { echo "$fallos fallos"; exit 1; }
