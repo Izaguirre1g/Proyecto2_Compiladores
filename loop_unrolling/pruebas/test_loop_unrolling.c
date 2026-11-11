@@ -31,7 +31,7 @@ static void I(IrPrograma *ir, IrOp op, const char *d, const char *a, const char 
     ir->cantidad++;
 }
 /* Ciclo `cycle iter let ini until lim step paso { cuerpo }` tal como lo
- * genera src/ir.c. `cuerpo` recibe los nombres que debe usar. */
+ * genera src/Representacion_Intermedia/ir.c. `cuerpo` recibe los nombres que debe usar. */
 typedef void (*Cuerpo)(IrPrograma *, int);
 static int sig_t = 1, sig_l = 1;
 static char *T(void) { static char b[8][16]; static int r; snprintf(b[r & 7], 16, "$t%d", sig_t++); return b[r++ & 7]; }

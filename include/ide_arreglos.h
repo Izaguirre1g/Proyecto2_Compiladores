@@ -10,21 +10,29 @@
  * módulo hace eso, pero en vez de corregir en silencio, PROPONE el arreglo
  * y la persona decide si lo aplica.
  *
- * Arreglos que se proponen:
+ * Cada error tiene UN solo arreglo:
  *
  *   Error                                   Arreglo
  *   --------------------------------------  -------------------------------------
- *   falta un ';' al final de una línea      insertar ';' después del último token
- *   falta ')' antes de '{'                  insertar ')' antes del '{'
+ *   un error del parser (Bison)             el que predice la tabla LL(1) (ver abajo)
  *   un '{' que nunca se cerró               insertar '}' al final del archivo
  *   un '(' o '[' que nunca se cerró         insertar ')' o ']' al final de esa línea
  *   un cierre que sobra                     borrar ese cierre
  *   un cierre equivocado en la misma línea  cambiarlo por el correcto: (a] -> (a)
  *
- * Por qué el ';' va "después del último token" y no donde se marca el error:
- * el parser (Bison, LALR) detecta el error al leer el token SIGUIENTE, que
- * muchas veces está en la línea de abajo. Por eso el arreglo pone el ';'
- * pegado al token anterior.
+ * Errores del parser y la tabla LL(1) (src/LL1/): en un parser predictivo
+ * cada celda M[A, a] tiene a lo sumo una producción, así que en el punto
+ * del error se puede seguir la tabla sin elegir nada y saber qué token
+ * esperaba el parser. Ese token (o dos, como "stop;") es el arreglo:
+ *   x : 5          (falta ';')   ->  agregar ';' al final de la línea
+ *   whether (x {   (falta ')')   ->  agregar ')' antes de '{'
+ * Solo si la tabla no obliga a un token único (por ejemplo, falta un
+ * valor), se prueban correcciones locales (insertar, cambiar o borrar un
+ * token), se valida cada una con el LL(1) y se propone la mejor.
+ *
+ * El token que falta se pone pegado al token anterior y no donde se marca
+ * el error, porque el parser detecta el error al leer el token SIGUIENTE,
+ * que muchas veces está en la línea de abajo.
  *
  * Este módulo no usa GTK: la ventana solo muestra el arreglo y lo aplica.
  */

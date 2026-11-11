@@ -57,6 +57,26 @@ typedef struct {
 int ide_sugerencias(const char *texto, size_t largo, const char *prefijo,
                     IdeSugerencias *lista);
 
+/*
+ * Igual que ide_sugerencias, pero usando la PREDICCIÓN de la tabla LL(1)
+ * (src/LL1/): solo se sugiere lo que la gramática permite en ese lugar.
+ *
+ *   hasta: dónde empieza la palabra que se está escribiendo, en bytes
+ *          desde el inicio del texto. Se analiza el código hasta ahí.
+ *
+ * Por ejemplo, después de "whether (x == 1) { ... }" se sugieren "alif" y
+ * "also", pero no "aka" ni "add"; y después de "x : 5 " se sugieren los
+ * operadores ("gauss", "pitagoras"...), no "whether".
+ *
+ * Los nombres del archivo solo se sugieren si en ese lugar puede ir un
+ * nombre. Si el código antes de la palabra ya tiene un error de sintaxis,
+ * no se puede predecir y se sugiere todo, como ide_sugerencias.
+ *
+ * Devuelve 0 si todo salió bien, o -1 si no hubo memoria suficiente.
+ */
+int ide_sugerencias_predictivas(const char *texto, size_t largo, size_t hasta,
+                                const char *prefijo, IdeSugerencias *lista);
+
 /* Libera la memoria de la lista y la deja vacía otra vez. */
 void ide_liberar_sugerencias(IdeSugerencias *lista);
 

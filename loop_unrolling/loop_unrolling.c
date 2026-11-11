@@ -4,7 +4,7 @@
  *
  * Como Funciona
  * ---------------------------
- * Recibe la IR de tres direcciones que genera src/ir.c (un arreglo de
+ * Recibe la IR de tres direcciones que genera src/Representacion_Intermedia/ir.c (un arreglo de
  * instrucciones IrInstr) y "desenrolla" los ciclos: copia el cuerpo del
  * ciclo varias veces para ejecutar menos comparaciones y saltos. Ademas
  * deja bloques basicos mas largos, que luego aprovechan el reordenamiento
@@ -164,7 +164,7 @@ static void reemplazar(IrPrograma *ir, Codigo *c) {
 }
 
 /* Crea un nombre que no exista todavia: "$tN" (tipo 't') o "$LN" (tipo 'L').
- * Usa los contadores del propio IrPrograma, asi nunca choca con los de src/ir.c. */
+ * Usa los contadores del propio IrPrograma, asi nunca choca con los de src/Representacion_Intermedia/ir.c. */
 static char *nombre_nuevo(IrPrograma *ir, char tipo) {
     unsigned *contador = tipo == 't' ? &ir->temporales : &ir->etiquetas; /* Cual contador */
     if (*contador == UINT_MAX) return NULL;                              /* Se acabaron los numeros */
@@ -176,7 +176,7 @@ static char *nombre_nuevo(IrPrograma *ir, char tipo) {
 /* ===================================================================== */
 /* 3. RECONOCIMIENTO DEL CICLO CANONICO                                   */
 /* ===================================================================== */
-/* Un ciclo "canonico" es el que genera `cycle` en src/ir.c:
+/* Un ciclo "canonico" es el que genera `cycle` en src/Representacion_Intermedia/ir.c:
  *
  *     $Lx:                       <- cabecera
  *     $tc = i < limite           (o <=)
