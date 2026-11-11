@@ -19,4 +19,7 @@
  * liberar después. */
 void ide_mostrar_ensamblador(GtkWindow *padre, const IdeEnsamblador *asm_ide, const char *nombre);
 
+/* TRUE si la ventana está abierta (para actualizarla cuando cambia el código). */
+gboolean ide_ensamblador_abierta(void);
+
 #endif

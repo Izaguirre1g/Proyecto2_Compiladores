@@ -39,6 +39,9 @@
  *      parte (por ejemplo, se fue la copia del resultado pero la llamada se
  *      queda) se marcan en gris. La pestaña "Código muerto" lista cada línea,
  *      y "Ver IR y variables vivas" abre el detalle (ide_dce_ventana.c).
+ *      "Aplicar al código" cambia el código por el código sin el código
+ *      muerto (ide_dce_codigo.c): el backend genera el ensamblador desde el
+ *      código, así que el ensamblador y el binario salen de él.
  *   9. Ensamblador: el botón "Ensamblador" genera el ensamblador VLIW del
  *      código del editor, el mismo de "balc -s", y lo muestra con su
  *      codificación binaria (ide_ensamblador.c e ide_ensamblador_ventana.c).
@@ -88,6 +91,7 @@ typedef struct {
     GtkListBox *lista_dce;         /* Lista de la pestaña "Código muerto". */
     GtkLabel *resumen_dce;         /* "5 de 29 instrucciones eliminadas...". */
     GtkWidget *boton_detalle_dce;  /* "Ver IR y variables vivas". */
+    GtkWidget *boton_aplicar_dce;  /* "Aplicar al código": el código sin el código muerto. */
     GtkNotebook *pestanas;         /* Pestañas de abajo: Errores, Clones y Código muerto. */
     GtkLabel *barra_estado;        /* "Línea X, columna Y · N errores". */
     GtkWidget *ventana_sugerencias;   /* Cuadro flotante con las sugerencias. */
@@ -409,6 +413,7 @@ static void liberar_arreglos(Ide *ide)
 
 static void al_pulsar_corregir(GtkWidget *boton, gpointer datos);
 static void limpiar_dce(Ide *ide, const char *mensaje);
+static void al_pulsar_ensamblador(GtkWidget *boton, gpointer datos);
 static void aplicar_colores(Ide *ide);
 
 /* Lo que dice la pestaña "Código muerto" antes de usar el botón. */
@@ -1333,6 +1338,7 @@ static void limpiar_dce(Ide *ide, const char *mensaje)
     vaciar_lista(ide->lista_dce);
     gtk_label_set_text(ide->resumen_dce, mensaje);
     gtk_widget_set_sensitive(ide->boton_detalle_dce, FALSE);
+    gtk_widget_set_sensitive(ide->boton_aplicar_dce, FALSE);
     ide_dce_liberar(&ide->dce);
     ide->dce_mostrado = FALSE;
 }
@@ -1386,7 +1392,13 @@ static void marcar_linea(Ide *ide, size_t linea, GtkTextTag *marca)
  */
 static void agregar_fila_dce(Ide *ide, const IdeDceLinea *l)
 {
-    gchar *titulo = l->completa
+    /* El tipo de código muerto: inalcanzable (tipo 2) o no usado (tipo 1). */
+    gchar *titulo = (l->inalcanzable && l->completa)
+        ? g_strdup_printf("Línea %zu · inalcanzable: nunca se ejecuta", l->linea)
+        : l->inalcanzable
+        ? g_strdup_printf("Línea %zu · en parte inalcanzable (%zu de %zu instrucciones)",
+                          l->linea, l->eliminadas, l->total)
+        : l->completa
         ? g_strdup_printf("Línea %zu · eliminada completa", l->linea)
         : g_strdup_printf("Línea %zu · se eliminó una parte (%zu de %zu instrucciones)",
                           l->linea, l->eliminadas, l->total);
@@ -1480,6 +1492,13 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
         g_string_append_printf(resumen, "%zu de %zu instrucciones de la IR eliminadas, en %zu pasada%s",
                                r->cantidad_eliminadas, r->instrucciones_antes, r->pasadas,
                                r->pasadas == 1 ? "" : "s");
+        /* De qué tipo: no usadas (tipo 1) e inalcanzables (tipo 2). */
+        if (r->inalcanzables > 0) {
+            g_string_append_printf(resumen, " (%zu no usada%s, %zu inalcanzable%s)",
+                                   r->cantidad_eliminadas - r->inalcanzables,
+                                   r->cantidad_eliminadas - r->inalcanzables == 1 ? "" : "s",
+                                   r->inalcanzables, r->inalcanzables == 1 ? "" : "s");
+        }
     }
     if (r->llamadas_conservadas > 0) {
         g_string_append_printf(resumen, " · %zu llamada%s conservada%s por tener efectos",
@@ -1493,11 +1512,77 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
                                r->riesgosas_conservadas == 1 ? "" : "s",
                                r->riesgosas_conservadas == 1 ? "" : "n");
     }
+    /* Y qué pasa con el ensamblador si se aplica el código nuevo. */
+    if (ide->dce.codigo_nuevo != NULL) {
+        if (ide->dce.hay_ensamblador == 1) {
+            g_string_append_printf(resumen, "\nAl aplicarlo al código, el ensamblador pasa de "
+                                            "%zu a %zu bundles.",
+                                   ide->dce.bundles_antes, ide->dce.bundles_despues);
+        } else if (ide->dce.hay_ensamblador == 2) {
+            g_string_append_printf(resumen, "\nEl código original no se puede compilar (%s); "
+                                            "al aplicarle el DCE sí: %zu bundles.",
+                                   ide->dce.motivo_ensamblador, ide->dce.bundles_despues);
+        } else if (ide->dce.motivo_ensamblador != NULL) {
+            g_string_append_printf(resumen, "\nSe puede aplicar al código, pero el ensamblador "
+                                            "no se puede generar: %s.", ide->dce.motivo_ensamblador);
+        }
+    }
     gtk_label_set_text(ide->resumen_dce, resumen->str);
     g_string_free(resumen, TRUE);
 
     gtk_widget_set_sensitive(ide->boton_detalle_dce, TRUE);
+    gtk_widget_set_sensitive(ide->boton_aplicar_dce, ide->dce.codigo_nuevo != NULL);
     ide->dce_mostrado = TRUE;
+}
+
+/*
+ * Botón "Aplicar al código": cambia el código del editor por el código nuevo
+ * sin el código muerto (ide_dce_codigo.c). El backend genera el ensamblador
+ * desde el código fuente, así que desde aquí el ensamblador y el binario
+ * salen sin el código muerto: si la ventana del ensamblador está abierta se
+ * actualiza sola, y al guardar, balc genera el .bin nuevo.
+ */
+static void al_pulsar_aplicar_dce(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    if (!ide->dce_mostrado || ide->dce.codigo_nuevo == NULL) return;
+
+    /* Copiar lo necesario: al cambiar el texto, el resultado del DCE se libera. */
+    gchar *nuevo = g_strdup(ide->dce.codigo_nuevo);
+    size_t borradas = ide->dce.sentencias_borradas, cambiadas = ide->dce.sentencias_cambiadas;
+    int hay_asm = ide->dce.hay_ensamblador;
+    size_t antes = ide->dce.bundles_antes, despues = ide->dce.bundles_despues;
+
+    /* Reemplazar el texto en una sola acción. */
+    GtkTextIter inicio, fin;
+    gtk_text_buffer_get_bounds(ide->buffer, &inicio, &fin);
+    gtk_text_buffer_begin_user_action(ide->buffer);
+    gtk_text_buffer_delete(ide->buffer, &inicio, &fin);
+    gtk_text_buffer_insert(ide->buffer, &inicio, nuevo, -1);
+    gtk_text_buffer_end_user_action(ide->buffer);
+    gtk_text_buffer_get_start_iter(ide->buffer, &inicio);
+    gtk_text_buffer_place_cursor(ide->buffer, &inicio);
+    g_free(nuevo);
+
+    /* Contar qué se hizo (el cambio de texto ya borró las marcas). */
+    gchar *cuenta = g_strdup_printf("Se aplicó el DCE al código: %zu sentencia%s borrada%s y "
+                                    "%zu reescrita%s.",
+                                    borradas, borradas == 1 ? "" : "s", borradas == 1 ? "" : "s",
+                                    cambiadas, cambiadas == 1 ? "" : "s");
+    gchar *mensaje = (hay_asm == 1)
+        ? g_strdup_printf("%s El ensamblador pasó de %zu a %zu bundles (botón Ensamblador). "
+                          "Guarda el archivo para que balc genere el .bin nuevo.", cuenta, antes, despues)
+        : (hay_asm == 2)
+        ? g_strdup_printf("%s Ahora el código sí se puede compilar: %zu bundles (botón "
+                          "Ensamblador). Guarda el archivo para que balc genere el .bin.", cuenta, despues)
+        : g_strdup(cuenta);
+    g_free(cuenta);
+    gtk_label_set_text(ide->resumen_dce, mensaje);
+    g_free(mensaje);
+
+    /* Si la ventana del ensamblador está abierta, mostrar el del código nuevo. */
+    if (ide_ensamblador_abierta()) al_pulsar_ensamblador(NULL, ide);
 }
 
 /* Botón "Ver IR y variables vivas": el detalle del último DCE. */
@@ -1913,6 +1998,12 @@ static void construir_ventana(Ide *ide)
     ide->boton_detalle_dce = detalle_dce;
     gtk_widget_set_sensitive(detalle_dce, FALSE);
     g_signal_connect(detalle_dce, "clicked", G_CALLBACK(al_pulsar_detalle_dce), ide);
+    GtkWidget *aplicar_dce = gtk_button_new_with_label("Aplicar al código");
+    ide->boton_aplicar_dce = aplicar_dce;
+    gtk_widget_set_sensitive(aplicar_dce, FALSE);
+    gtk_widget_set_tooltip_text(aplicar_dce, "Cambia el código por el código sin el código muerto: "
+                                             "el ensamblador y el binario salen de él.");
+    g_signal_connect(aplicar_dce, "clicked", G_CALLBACK(al_pulsar_aplicar_dce), ide);
 
     GtkWidget *encabezado_dce = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_start(encabezado_dce, 6);
@@ -1920,6 +2011,7 @@ static void construir_ventana(Ide *ide)
     gtk_widget_set_margin_top(encabezado_dce, 4);
     gtk_widget_set_margin_bottom(encabezado_dce, 4);
     gtk_box_pack_start(GTK_BOX(encabezado_dce), resumen_dce, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(encabezado_dce), aplicar_dce, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(encabezado_dce), detalle_dce, FALSE, FALSE, 0);
 
     GtkWidget *desplazar_dce = gtk_scrolled_window_new(NULL, NULL);

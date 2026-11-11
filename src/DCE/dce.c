@@ -2,12 +2,13 @@
  * Eliminación de código muerto (DCE) con análisis de variables vivas.
  * La explicación completa está en include/dce.h.
  *
- * El archivo tiene cuatro partes:
+ * El archivo tiene cinco partes:
  *   1. Qué usa, qué define y qué efectos tiene cada instrucción de la IR.
  *   2. La lista de variables del programa (para numerarlas).
  *   3. El análisis de variables vivas: use, def, IN y OUT (diapositiva 25).
- *   4. La eliminación: recorrer cada bloque hacia atrás quitando las
- *      asignaciones a variables que no están vivas (diapositiva 28).
+ *   4. Tipo 1: recorrer cada bloque hacia atrás quitando las asignaciones
+ *      a variables que no están vivas (diapositiva 28).
+ *   5. Tipo 2: código inalcanzable (constantes y grafo de flujo).
  */
 #include "dce.h"
 
@@ -148,14 +149,28 @@ static int se_puede_eliminar(const IrInstr *x)
  * Solo hace falta para las que se pueden eliminar. */
 static void describir(const IrInstr *x, char *texto, size_t largo)
 {
+    /* Las del tipo 2 pueden ser cualquier instrucción (todo lo que hay en
+     * un bloque inalcanzable), así que se cubren todas. */
     switch (x->op) {
-        case IR_COPY:      snprintf(texto, largo, "%s = %s", x->dst, x->a); break;
-        case IR_BIN:       snprintf(texto, largo, "%s = %s %s %s", x->dst, x->a, x->operador, x->b); break;
-        case IR_UNARY:     snprintf(texto, largo, "%s = %s %s", x->dst, x->operador, x->a); break;
-        case IR_INDEX_REF: snprintf(texto, largo, "%s = ref %s[%s]", x->dst, x->a, x->b); break;
-        case IR_LOAD:      snprintf(texto, largo, "%s = load %s", x->dst, x->a); break;
-        case IR_SIZE:      snprintf(texto, largo, "%s = size %s", x->dst, x->a); break;
-        default:           snprintf(texto, largo, "(instruccion %d)", (int)x->op); break;
+        case IR_COPY:       snprintf(texto, largo, "%s = %s", x->dst, x->a); break;
+        case IR_BIN:        snprintf(texto, largo, "%s = %s %s %s", x->dst, x->a, x->operador, x->b); break;
+        case IR_UNARY:      snprintf(texto, largo, "%s = %s %s", x->dst, x->operador, x->a); break;
+        case IR_INDEX_REF:  snprintf(texto, largo, "%s = ref %s[%s]", x->dst, x->a, x->b); break;
+        case IR_LOAD:       snprintf(texto, largo, "%s = load %s", x->dst, x->a); break;
+        case IR_SIZE:       snprintf(texto, largo, "%s = size %s", x->dst, x->a); break;
+        case IR_JUMP:       snprintf(texto, largo, "goto %s", x->dst); break;
+        case IR_JFALSE:     snprintf(texto, largo, "ifFalse %s goto %s", x->a, x->dst); break;
+        case IR_JTRUE:      snprintf(texto, largo, "ifTrue %s goto %s", x->a, x->dst); break;
+        case IR_ARG:        snprintf(texto, largo, "arg %s", x->a); break;
+        case IR_CALL:       snprintf(texto, largo, "%s = call %s, %s", x->dst, x->a, x->b); break;
+        case IR_RETURN:     snprintf(texto, largo, x->a ? "return %s" : "return", x->a); break;
+        case IR_STORE:      snprintf(texto, largo, "store %s, %s", x->dst, x->a); break;
+        case IR_ARRAY_DECL: snprintf(texto, largo, "array %s, dimensiones %s", x->dst, x->a); break;
+        case IR_ARRAY_DIM:  snprintf(texto, largo, "dim %s[%s] = %s", x->dst, x->a, x->b); break;
+        case IR_LIST_DECL:  snprintf(texto, largo, "list %s", x->dst); break;
+        case IR_LIST_ADD:   snprintf(texto, largo, "add %s, %s", x->dst, x->a); break;
+        case IR_LIST_REMOVE:snprintf(texto, largo, "remove %s, %s", x->dst, x->a); break;
+        default:            snprintf(texto, largo, "(instruccion %d)", (int)x->op); break;
     }
 }
 
@@ -257,7 +272,87 @@ void dce_liberar_vivas(DceVivas *v)
     memset(v, 0, sizeof *v);
 }
 
+/*
+ * Las variables de main que son el RESULTADO del programa: las que se leen
+ * en algún lugar de main (sin los temporales $tN), en el programa tal como
+ * está en esta pasada.
+ */
+typedef struct {
+    char **nombres;   /* Ordenados alfabéticamente (para buscar con bsearch). */
+    size_t cantidad;
+} ResultadoMain;
+
+static void liberar_resultado_main(ResultadoMain *m)
+{
+    for (size_t i = 0; i < m->cantidad; ++i) free(m->nombres[i]);
+    free(m->nombres);
+    memset(m, 0, sizeof *m);
+}
+
+/* Junta las variables leídas en main. 0 bien, 2 sin memoria. */
+static int resultado_de_main(const IrPrograma *ir, ResultadoMain *m)
+{
+    memset(m, 0, sizeof *m);
+    char **lista = NULL;
+    size_t cantidad = 0, capacidad = 0;
+    int en_main = 0;
+    for (size_t i = 0; i < ir->cantidad; ++i) {
+        const IrInstr *x = &ir->codigo[i];
+        if (x->op == IR_FUNC) en_main = x->dst && strcmp(x->dst, "main") == 0;
+        if (!en_main) continue;
+        const char *u[3];
+        int n = usos(x, u);
+        for (int k = 0; k < n; ++k) {
+            if (u[k][0] == '$') continue;  /* Temporal: no es una variable del programa. */
+            if (agregar_nombre(&lista, &cantidad, &capacidad, u[k]) != 0) {
+                free(lista);
+                return 2;
+            }
+        }
+    }
+    if (cantidad > 0) qsort(lista, cantidad, sizeof *lista, comparar_nombres);
+    m->nombres = calloc(cantidad ? cantidad : 1, sizeof *m->nombres);
+    if (m->nombres == NULL) {
+        free(lista);
+        return 2;
+    }
+    for (size_t i = 0; i < cantidad; ++i) {
+        if (m->cantidad > 0 && strcmp(m->nombres[m->cantidad - 1], lista[i]) == 0) continue;
+        size_t largo = strlen(lista[i]) + 1;
+        char *copia = malloc(largo);
+        if (copia == NULL) {
+            free(lista);
+            liberar_resultado_main(m);
+            return 2;
+        }
+        memcpy(copia, lista[i], largo);
+        m->nombres[m->cantidad++] = copia;
+    }
+    free(lista);
+    return 0;
+}
+
+/* ¿Es "nombre" parte del resultado de main? */
+static int es_resultado(const ResultadoMain *m, const char *nombre)
+{
+    return m->cantidad > 0 &&
+           bsearch(&nombre, m->nombres, m->cantidad, sizeof *m->nombres, comparar_nombres) != NULL;
+}
+
+static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado);
+
 int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
+{
+    if (ir == NULL || v == NULL) return 2;
+    ResultadoMain m;
+    if (resultado_de_main(ir, &m) != 0) return 2;
+    int estado = calcular_vivas(ir, v, &m);
+    liberar_resultado_main(&m);
+    return estado;
+}
+
+/* Variables vivas, con el resultado de main ya calculado (ver Paso 1b). */
+static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado)
 {
     if (ir == NULL || v == NULL) return 2;
     memset(v, 0, sizeof *v);
@@ -314,17 +409,26 @@ int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
      * Pero en este proyecto el RESULTADO de un programa es la memoria final
      * de las variables de main: BAL no tiene print, y el simulador (y las
      * pruebas del equipo, por ejemplo tests/test_resolucion_saltos.c con
-     * factorial.bal) leen ahí el valor final, como "resultado = 120". Por la
-     * regla de oro (diapositiva 12, la salida observable no puede cambiar),
-     * las variables de main están VIVAS al terminar main:
-     *     OUT[SALIDA de main] = { variables de main }
-     * Así, en factorial.bal, "resultado : 1" (rama n <= 1) NO es código
-     * muerto: es el valor final que se lee. En main sí sigue siendo muerta
-     * una asignación que se REEMPLAZA antes de leerse (x : 1; x : 2;).
+     * factorial.bal) leen ahí el valor final, como "resultado = 120".
+     *
+     * ¿Qué variables de main son el resultado? Las que el programa USA: las
+     * que se leen en algún lugar de main. Una variable que solo se escribe y
+     * nunca se lee no aporta nada al cálculo: es código muerto.
+     *     OUT[SALIDA de main] = { variables de main que se leen en main }
+     * Así, en factorial.bal:
+     *   - "resultado : 1" (rama n <= 1) NO es código muerto: resultado se
+     *     lee (resultado pitagoras i), así que es parte del resultado;
+     *   - "t * declare_int : 4" SÍ es código muerto: t nunca se lee.
+     * En main también muere una asignación que se REEMPLAZA antes de leerse
+     * (x : 1; x : 2;), aunque x sí se lea después.
+     * Se recalcula en cada pasada (diapositiva 28: eliminar código muerto
+     * puede generar nuevo código muerto): si la única lectura de r está en
+     * código muerto (por ejemplo "suma : r gauss s;" con suma sin leer), r
+     * tampoco se usa de verdad y también muere.
      *
      * Los temporales ($tN) no son variables del programa: nunca cuentan.
      */
-    unsigned char *de_main = calloc(nv ? nv : 1, 1);     /* Variables de main. */
+    unsigned char *de_main = calloc(nv ? nv : 1, 1);     /* Variables de main que se leen. */
     unsigned char *final_main = calloc(nb ? nb : 1, 1);  /* Bloques donde termina main. */
     if (de_main == NULL || final_main == NULL) {
         free(de_main);
@@ -338,10 +442,9 @@ int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
         if (primera->op == IR_FUNC) en_main = primera->dst && strcmp(primera->dst, "main") == 0;
         if (!en_main) continue;
         if (ir->bloques[b].cantidad_sucesores == 0) final_main[b] = 1;
-        for (size_t j = 0; j < nv; ++j) {
-            if (v->define[b * nv + j] && v->variables[j][0] != '$') de_main[j] = 1;
-        }
     }
+    /* Las variables que se leen en main (calculadas con el programa original). */
+    for (size_t j = 0; j < nv; ++j) de_main[j] = (unsigned char)es_resultado(resultado, v->variables[j]);
 
     /*
      * Paso 2: algoritmo iterativo hasta el punto fijo (diapositiva 27).
@@ -425,9 +528,22 @@ int dce_imprimir_vivas(const DceVivas *v, FILE *f)
 /* 4. Eliminación de código muerto (diapositiva 28)                    */
 /* ================================================================== */
 
-/* Guarda en el resultado una instrucción eliminada. 0 bien, 2 sin memoria. */
-static int anotar(DceResultado *r, const IrInstr *x)
+/* Vuelve a calcular los bloques básicos y el grafo de flujo (después de
+ * quitar instrucciones o de volver fijo un salto). 0 bien, 2 sin memoria. */
+static int rehacer_bloques(IrPrograma *ir)
 {
+    for (size_t b = 0; b < ir->cantidad_bloques; ++b) free(ir->bloques[b].sucesores);
+    free(ir->bloques);
+    ir->bloques = NULL;
+    ir->cantidad_bloques = 0;
+    return ir_bloques_basicos(ir);
+}
+
+/* Guarda en el resultado una instrucción eliminada. 0 bien, 2 sin memoria. */
+static int anotar(DceResultado *r, const IrInstr *x, DceTipo tipo)
+{
+    /* Las etiquetas no son código: se quitan sin anotarlas. */
+    if (x->op == IR_LABEL) return 0;
     if (r->cantidad_eliminadas == r->capacidad) {
         size_t nueva = r->capacidad ? r->capacidad * 2 : 16;
         DceEliminada *mas = realloc(r->eliminadas, nueva * sizeof *mas);
@@ -437,7 +553,9 @@ static int anotar(DceResultado *r, const IrInstr *x)
     }
     DceEliminada *e = &r->eliminadas[r->cantidad_eliminadas++];
     e->linea = x->linea;
+    e->tipo = tipo;
     describir(x, e->texto, sizeof e->texto);
+    if (tipo == DCE_INALCANZABLE) r->inalcanzables++;
     return 0;
 }
 
@@ -496,13 +614,14 @@ static size_t marcar_muertas(const IrPrograma *ir, const DceVivas *v, unsigned c
 }
 
 /* Quita de la IR las instrucciones marcadas y vuelve a armar los bloques. */
-static int quitar_marcadas(IrPrograma *ir, const unsigned char *borrar, DceResultado *r)
+static int quitar_marcadas(IrPrograma *ir, const unsigned char *borrar, DceResultado *r,
+                           DceTipo tipo)
 {
     size_t quedan = 0;
     for (size_t i = 0; i < ir->cantidad; ++i) {
         IrInstr *x = &ir->codigo[i];
         if (borrar[i]) {
-            if (anotar(r, x) != 0) return 2;
+            if (anotar(r, x, tipo) != 0) return 2;
             free(x->dst);
             free(x->a);
             free(x->b);
@@ -514,13 +633,267 @@ static int quitar_marcadas(IrPrograma *ir, const unsigned char *borrar, DceResul
     ir->cantidad = quedan;
 
     /* Los índices de las instrucciones cambiaron: los bloques se calculan
-     * de nuevo con la función de la IR. Como nunca se quitan etiquetas ni
-     * saltos, el grafo de flujo sigue siendo el mismo. */
-    for (size_t b = 0; b < ir->cantidad_bloques; ++b) free(ir->bloques[b].sucesores);
-    free(ir->bloques);
-    ir->bloques = NULL;
-    ir->cantidad_bloques = 0;
-    return ir_bloques_basicos(ir);
+     * de nuevo con la función de la IR. */
+    return rehacer_bloques(ir);
+}
+
+/* ================================================================== */
+/* 5. Tipo 2: código inalcanzable                                      */
+/* ================================================================== */
+
+/*
+ * Propagación y plegado de constantes (diapositiva 20), solo lo necesario
+ * para saber si la condición de un salto se conoce al compilar.
+ *
+ * Una variable (o temporal) es CONSTANTE si en su función tiene UNA sola
+ * definición y esa definición da un valor conocido:
+ *     debug = declare_false          (una copia de una constante)
+ *     $t3 = 1 > 2                    (una operación con operandos constantes)
+ *     $t4 = debug && $t3             (operandos que ya son constantes)
+ * Con una sola definición, la variable vale eso en todo lugar donde se usa
+ * (en BAL una variable se usa después de declararla). Si tiene dos o más
+ * definiciones (por ejemplo i : i gauss 1 en un ciclo) no es constante.
+ */
+typedef struct {
+    const char *nombre;
+    int definiciones;
+    int conocido;
+    long long valor;
+} Constante;
+
+/* La entrada de "nombre" en la tabla, o NULL. */
+static Constante *buscar_constante(Constante *tabla, size_t cantidad, const char *nombre)
+{
+    for (size_t i = 0; i < cantidad; ++i) {
+        if (strcmp(tabla[i].nombre, nombre) == 0) return &tabla[i];
+    }
+    return NULL;
+}
+
+/* El valor de un operando si se conoce al compilar: un número, declare_true
+ * (1), declare_false (0) o una variable constante. 1 si se conoce. */
+static int valor_de(const char *operando, Constante *tabla, size_t cantidad, long long *valor)
+{
+    if (operando == NULL) return 0;
+    if (es_numero(operando, valor)) return 1;
+    if (strcmp(operando, "declare_true") == 0) { *valor = 1; return 1; }
+    if (strcmp(operando, "declare_false") == 0) { *valor = 0; return 1; }
+    Constante *c = buscar_constante(tabla, cantidad, operando);
+    if (c != NULL && c->definiciones == 1 && c->conocido) {
+        *valor = c->valor;
+        return 1;
+    }
+    return 0;
+}
+
+/* Calcula "a operador b" al compilar, como lo haría la máquina (enteros de
+ * 32 bits). 1 si se pudo; 0 si el operador no se calcula aquí o la
+ * operación fallaría (división entre 0, exponente negativo). */
+static int plegar(const char *op, long long a, long long b, long long *r)
+{
+    if (op == NULL) return 0;
+    if (!strcmp(op, "gauss")) *r = (int32_t)(a + b);
+    else if (!strcmp(op, "neumann")) *r = (int32_t)(a - b);
+    else if (!strcmp(op, "pitagoras")) *r = (int32_t)(a * b);
+    else if (!strcmp(op, "euclides")) { if (b == 0) return 0; *r = (int32_t)(a / b); }
+    else if (!strcmp(op, "euler")) { if (b == 0) return 0; *r = (int32_t)(a % b); }
+    else if (!strcmp(op, "descartes")) {
+        if (b < 0 || b > 62) return 0;
+        long long p = 1;
+        for (long long k = 0; k < b; ++k) p = (int32_t)(p * a);
+        *r = p;
+    }
+    else if (!strcmp(op, "<")) *r = a < b;
+    else if (!strcmp(op, ">")) *r = a > b;
+    else if (!strcmp(op, "<=")) *r = a <= b;
+    else if (!strcmp(op, ">=")) *r = a >= b;
+    else if (!strcmp(op, "==")) *r = a == b;
+    else if (!strcmp(op, "=/=")) *r = a != b;
+    else if (!strcmp(op, "&&")) *r = (a != 0) && (b != 0);
+    else if (!strcmp(op, "||")) *r = (a != 0) || (b != 0);
+    else if (!strcmp(op, "^")) *r = (a != 0) != (b != 0);
+    else return 0;
+    return 1;
+}
+
+/*
+ * Resuelve los saltos condicionales cuya condición es constante, función
+ * por función. Si un "ifFalse c goto L":
+ *   - SIEMPRE salta (c es falso): se vuelve "goto L", un salto fijo. La rama
+ *     que venía después queda sin camino: inalcanzable.
+ *   - NUNCA salta (c es verdadero): se elimina; L puede quedar inalcanzable.
+ * (Igual con "ifTrue", al revés.) Un salto vuelto fijo se marca con
+ * operador "fijo", para reconocerlo después.
+ * Devuelve cuántos saltos resolvió, o SIZE_MAX sin memoria.
+ */
+static size_t resolver_condiciones(IrPrograma *ir, DceResultado *r)
+{
+    size_t resueltos = 0;
+    unsigned char *borrar = calloc(ir->cantidad ? ir->cantidad : 1, 1);
+    if (borrar == NULL) return SIZE_MAX;
+
+    for (size_t inicio = 0; inicio < ir->cantidad; ++inicio) {
+        if (ir->codigo[inicio].op != IR_FUNC) continue;
+        size_t fin = inicio + 1;
+        while (fin < ir->cantidad && ir->codigo[fin].op != IR_END_FUNC) fin++;
+
+        /* La tabla de esta función: cuántas veces se define cada nombre. */
+        size_t cantidad = 0;
+        Constante *tabla = calloc(fin - inicio + 1, sizeof *tabla);
+        if (tabla == NULL) {
+            free(borrar);
+            return SIZE_MAX;
+        }
+        for (size_t i = inicio; i < fin; ++i) {
+            const char *d = definicion(&ir->codigo[i]);
+            if (d == NULL) continue;
+            Constante *c = buscar_constante(tabla, cantidad, d);
+            if (c == NULL) {
+                c = &tabla[cantidad++];
+                c->nombre = d;
+            }
+            c->definiciones++;
+        }
+
+        /* Propagar y plegar hasta que nada cambie (punto fijo). */
+        int cambio = 1;
+        while (cambio) {
+            cambio = 0;
+            for (size_t i = inicio; i < fin; ++i) {
+                const IrInstr *x = &ir->codigo[i];
+                const char *d = definicion(x);
+                Constante *c = d ? buscar_constante(tabla, cantidad, d) : NULL;
+                if (c == NULL || c->definiciones != 1 || c->conocido) continue;
+                long long a = 0, b = 0, v = 0;
+                int sabe = 0;
+                if (x->op == IR_COPY) {
+                    sabe = valor_de(x->a, tabla, cantidad, &v);
+                } else if (x->op == IR_BIN) {
+                    sabe = valor_de(x->a, tabla, cantidad, &a) && valor_de(x->b, tabla, cantidad, &b) &&
+                           plegar(x->operador, a, b, &v);
+                } else if (x->op == IR_UNARY && valor_de(x->a, tabla, cantidad, &a) && x->operador) {
+                    if (!strcmp(x->operador, "~")) { v = (a == 0); sabe = 1; }
+                    else if (!strcmp(x->operador, "neumann")) { v = (int32_t)(-a); sabe = 1; }
+                    else if (!strcmp(x->operador, "bool")) { v = (a != 0); sabe = 1; }
+                }
+                if (sabe) {
+                    c->conocido = 1;
+                    c->valor = v;
+                    cambio = 1;
+                }
+            }
+        }
+
+        /* Los saltos condicionales con condición constante. */
+        for (size_t i = inicio; i < fin; ++i) {
+            IrInstr *x = &ir->codigo[i];
+            long long v = 0;
+            if ((x->op != IR_JFALSE && x->op != IR_JTRUE) || !valor_de(x->a, tabla, cantidad, &v)) continue;
+            int salta = (x->op == IR_JFALSE) ? (v == 0) : (v != 0);
+            resueltos++;
+            if (salta) {
+                /* Siempre salta: "goto L" fijo. La condición ya no se usa. */
+                char *fijo = malloc(5);
+                if (fijo == NULL) {
+                    free(tabla);
+                    free(borrar);
+                    return SIZE_MAX;
+                }
+                strcpy(fijo, "fijo");
+                free(x->a);
+                free(x->operador);
+                x->a = NULL;
+                x->operador = fijo;
+                x->op = IR_JUMP;
+            } else {
+                borrar[i] = 1;  /* Nunca salta: el salto sobra. */
+            }
+        }
+        free(tabla);
+        inicio = fin;
+    }
+
+    r->condiciones_constantes += resueltos;
+    int estado = 0;
+    int hay_borrar = 0;
+    for (size_t i = 0; i < ir->cantidad; ++i) hay_borrar |= borrar[i];
+    if (hay_borrar) estado = quitar_marcadas(ir, borrar, r, DCE_INALCANZABLE);
+    else if (resueltos > 0) estado = rehacer_bloques(ir);
+    free(borrar);
+    return estado == 0 ? resueltos : SIZE_MAX;
+}
+
+/*
+ * Quita los bloques INALCANZABLES: se recorre el grafo de flujo desde el
+ * bloque donde empieza cada función (diapositiva 15) siguiendo los
+ * sucesores; los bloques que no se visitan nunca se ejecutan. De ellos se
+ * quita todo, menos el inicio y el fin de la función ("func" y "endfunc").
+ * También se quita un salto fijo (de resolver_condiciones) que va a la
+ * etiqueta que sigue justo después: ya no salta nada.
+ * Devuelve cuántas instrucciones quitó, o SIZE_MAX sin memoria.
+ */
+static size_t quitar_inalcanzables(IrPrograma *ir, DceResultado *r)
+{
+    size_t nb = ir->cantidad_bloques;
+    unsigned char *visto = calloc(nb ? nb : 1, 1);
+    size_t *pendientes = malloc((nb ? nb : 1) * sizeof *pendientes);
+    unsigned char *borrar = calloc(ir->cantidad ? ir->cantidad : 1, 1);
+    if (visto == NULL || pendientes == NULL || borrar == NULL) {
+        free(visto);
+        free(pendientes);
+        free(borrar);
+        return SIZE_MAX;
+    }
+
+    /* Recorrido desde el inicio de cada función. */
+    size_t tope = 0;
+    for (size_t b = 0; b < nb; ++b) {
+        if (ir->codigo[ir->bloques[b].inicio].op == IR_FUNC) {
+            visto[b] = 1;
+            pendientes[tope++] = b;
+        }
+    }
+    while (tope > 0) {
+        const IrBloque *bloque = &ir->bloques[pendientes[--tope]];
+        for (size_t s = 0; s < bloque->cantidad_sucesores; ++s) {
+            size_t sig = bloque->sucesores[s];
+            if (!visto[sig]) {
+                visto[sig] = 1;
+                pendientes[tope++] = sig;
+            }
+        }
+    }
+
+    size_t quitadas = 0;
+    for (size_t b = 0; b < nb; ++b) {
+        if (visto[b]) continue;
+        for (size_t i = ir->bloques[b].inicio; i < ir->bloques[b].fin; ++i) {
+            IrOp op = ir->codigo[i].op;
+            if (op == IR_FUNC || op == IR_END_FUNC) continue;
+            borrar[i] = 1;
+            quitadas++;
+        }
+    }
+
+    /* Un salto fijo a la etiqueta que viene justo después (saltando solo
+     * etiquetas) no hace nada: la ejecución llega ahí de todas formas. */
+    for (size_t i = 0; i < ir->cantidad; ++i) {
+        const IrInstr *x = &ir->codigo[i];
+        if (borrar[i] || x->op != IR_JUMP || x->operador == NULL || strcmp(x->operador, "fijo") != 0) continue;
+        for (size_t k = i + 1; k < ir->cantidad && ir->codigo[k].op == IR_LABEL; ++k) {
+            if (!borrar[k] && ir->codigo[k].dst && x->dst && !strcmp(ir->codigo[k].dst, x->dst)) {
+                borrar[i] = 1;
+                quitadas++;
+                break;
+            }
+        }
+    }
+
+    int estado = quitadas > 0 ? quitar_marcadas(ir, borrar, r, DCE_INALCANZABLE) : 0;
+    free(visto);
+    free(pendientes);
+    free(borrar);
+    return estado == 0 ? quitadas : SIZE_MAX;
 }
 
 int dce_eliminar(IrPrograma *ir, DceResultado *r)
@@ -537,6 +910,13 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
      *      asignaciones pueden haber quedado muertas.
      */
     for (;;) {
+        /* Tipo 2: condiciones constantes y bloques inalcanzables. */
+        size_t resueltos = resolver_condiciones(ir, r);
+        if (resueltos == SIZE_MAX) return 2;
+        size_t inalcanzables = quitar_inalcanzables(ir, r);
+        if (inalcanzables == SIZE_MAX) return 2;
+
+        /* Tipo 1: variables vivas. */
         DceVivas vivas;
         if (dce_calcular_vivas(ir, &vivas) != 0) return 2;
         r->pasadas++;
@@ -551,10 +931,11 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
 
         int estado = 0;
         if (marcadas == SIZE_MAX) estado = 2;
-        else if (marcadas > 0) estado = quitar_marcadas(ir, borrar, r);
+        else if (marcadas > 0) estado = quitar_marcadas(ir, borrar, r, DCE_NO_USADA);
         free(borrar);
         if (estado != 0) return estado;
-        if (marcadas == 0) break;  /* Punto fijo: ya no hay código muerto. */
+        /* Punto fijo: ninguno de los dos tipos encontró nada. */
+        if (marcadas == 0 && resueltos == 0 && inalcanzables == 0) break;
     }
 
     r->instrucciones_despues = ir->cantidad;
@@ -568,7 +949,12 @@ int dce_imprimir_resultado(const DceResultado *r, FILE *f)
             r->cantidad_eliminadas, r->instrucciones_antes, r->instrucciones_despues, r->pasadas,
             r->pasadas == 1 ? "" : "s");
     for (size_t i = 0; i < r->cantidad_eliminadas; ++i) {
-        fprintf(f, "  - linea %zu: %s\n", r->eliminadas[i].linea, r->eliminadas[i].texto);
+        fprintf(f, "  - linea %zu: %s%s\n", r->eliminadas[i].linea, r->eliminadas[i].texto,
+                r->eliminadas[i].tipo == DCE_INALCANZABLE ? "   (inalcanzable)" : "");
+    }
+    if (r->inalcanzables > 0 || r->condiciones_constantes > 0) {
+        fprintf(f, "Tipo 2: %zu instrucciones inalcanzables; %zu condiciones constantes\n",
+                r->inalcanzables, r->condiciones_constantes);
     }
     if (r->llamadas_conservadas > 0) {
         fprintf(f, "Llamadas conservadas aunque su resultado no se usa (pueden tener efectos): %zu\n",

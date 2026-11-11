@@ -95,6 +95,14 @@ static int se_asigna(const IrPrograma *ir, const char *nombre)
     return 0;
 }
 
+/* Cuántas eliminadas son del tipo dado (tipo 1 o tipo 2). */
+static size_t contar_tipo(const DceResultado *r, DceTipo tipo)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < r->cantidad_eliminadas; ++i) n += r->eliminadas[i].tipo == tipo;
+    return n;
+}
+
 /* ¿Queda la copia "nombre = valor"? */
 static int queda_copia(const IrPrograma *ir, const char *nombre, const char *valor)
 {
@@ -329,9 +337,9 @@ static void prueba_ejercicio_4(void)
     VERIFICAR(!queda_binaria(&ir, "x", "pitagoras", "2"));
     VERIFICAR(queda_binaria(&ir, "d", "gauss", "a"));
     VERIFICAR(se_asigna(&ir, "x"));
-    /* "r = ejercicio(1, 2)": r es una variable de main (el resultado del
-     * programa), así que se queda, igual que la llamada. */
-    VERIFICAR(se_asigna(&ir, "r"));
+    /* "r = ejercicio(1, 2)": r es de main pero nunca se lee, así que no es
+     * parte del resultado: la copia a r se va. La llamada se queda. */
+    VERIFICAR(!se_asigna(&ir, "r"));
     VERIFICAR(contar(&ir, IR_CALL) == 1);
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
@@ -395,24 +403,81 @@ static void prueba_potencia(void)
  */
 static void prueba_variables_de_main(void)
 {
-    /* factorial.bal: "resultado : 1" de la rama n <= 1 decide el valor
-     * final de resultado: no es código muerto. No se elimina nada. */
+    /* factorial.bal: resultado se usa (resultado pitagoras i), así que
+     * ninguna de sus asignaciones es tipo 1. Pero n vale 5 (una sola
+     * asignación), así que "n <= 1" siempre es falso: la rama del whether
+     * con "resultado : 1" nunca se ejecuta (tipo 2, inalcanzable). */
     IrPrograma ir = {0};
     VERIFICAR(generar_ir_de_archivo("examples/factorial.bal", &ir) == 0);
-    size_t antes = ir.cantidad;
     DceResultado r = {0};
     VERIFICAR(dce_eliminar(&ir, &r) == 0);
-    VERIFICAR(r.cantidad_eliminadas == 0);
-    VERIFICAR(ir.cantidad == antes);
+    VERIFICAR(contar_tipo(&r, DCE_NO_USADA) == 1);      /* Solo "$t1 = n <= 1". */
+    VERIFICAR(!queda_binaria(&ir, "n", "<=", "1"));
+    VERIFICAR(contar_tipo(&r, DCE_INALCANZABLE) == 3);  /* resultado = 1 y dos goto. */
+    VERIFICAR(r.condiciones_constantes == 1);
+    VERIFICAR(queda_binaria(&ir, "resultado", "pitagoras", "i"));
     dce_liberar_resultado(&r);
     ir_liberar(&ir);
 
-    /* Pero un valor que se REEMPLAZA antes de leerse sí está muerto, también
-     * en main: "x : 1" nunca llega a la memoria final. */
+    /* Si n NO es constante (un parámetro), la rama sí puede ejecutarse:
+     * "resultado : 1" se queda. */
+    const char *con_parametro =
+        "create_funk #declare_int# fact(n * declare_int) {\n"
+        "    resultado * declare_int : 1;\n"
+        "    whether (n <= 1) {\n"
+        "        resultado : 1;\n"
+        "    }\n"
+        "    give resultado;\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    v * declare_int[1] : [0];\n"
+        "    v[0] : fact(5);\n"
+        "}\n";
+    IrPrograma ir_p = {0};
+    VERIFICAR(generar_ir(con_parametro, strlen(con_parametro), &ir_p) == 0);
+    DceResultado r_p = {0};
+    VERIFICAR(dce_eliminar(&ir_p, &r_p) == 0);
+    VERIFICAR(r_p.condiciones_constantes == 0 && r_p.inalcanzables == 0);
+    dce_liberar_resultado(&r_p);
+    ir_liberar(&ir_p);
+
+    /* El mismo factorial con "t * declare_int : 4;": t nunca se usa después
+     * de declararse, así que es código muerto. resultado sigue igual. */
+    const char *con_t =
+        "create_funk #declare_infinite_void# main() {\n"
+        "    n * declare_int : 5;\n"
+        "    resultado * declare_int : 1;\n"
+        "    i * declare_int : 2;\n"
+        "    t * declare_int : 4;\n"
+        "    whether (n <= 1) {\n"
+        "        resultado : 1;\n"
+        "    }\n"
+        "    also {\n"
+        "        whale (i <= n) {\n"
+        "            resultado : resultado pitagoras i;\n"
+        "            i : i gauss 1;\n"
+        "        } stop;\n"
+        "    }\n"
+        "}\n";
+    IrPrograma ir_t = {0};
+    VERIFICAR(generar_ir(con_t, strlen(con_t), &ir_t) == 0);
+    DceResultado r_t = {0};
+    VERIFICAR(dce_eliminar(&ir_t, &r_t) == 0);
+    VERIFICAR(!se_asigna(&ir_t, "t"));
+    /* Tipo 1: t y la condición constante "n <= 1" (ya no la lee nadie). */
+    VERIFICAR(contar_tipo(&r_t, DCE_NO_USADA) == 2);
+    VERIFICAR(queda_copia(&ir_t, "resultado", "1"));  /* La declaración "resultado = 1" sigue. */
+    dce_liberar_resultado(&r_t);
+    ir_liberar(&ir_t);
+
+    /* Un valor que se REEMPLAZA antes de leerse está muerto, también en main,
+     * aunque la variable sí se use después: "x : 1" nunca se lee. */
     const char *programa =
         "create_funk #declare_infinite_void# main() {\n"
+        "    v * declare_int[1] : [0];\n"
         "    x * declare_int : 1;\n"
         "    x : 2;\n"
+        "    v[0] : x;\n"
         "}\n";
     IrPrograma ir2 = {0};
     VERIFICAR(generar_ir(programa, strlen(programa), &ir2) == 0);
@@ -421,6 +486,113 @@ static void prueba_variables_de_main(void)
     VERIFICAR(!queda_copia(&ir2, "x", "1"));
     VERIFICAR(queda_copia(&ir2, "x", "2"));
     VERIFICAR(r2.cantidad_eliminadas == 1);
+    dce_liberar_resultado(&r2);
+    ir_liberar(&ir2);
+
+    /* Si la única lectura está en código muerto, tampoco cuenta (diapositiva
+     * 28: eliminar código muerto puede generar más): suma nunca se lee, y
+     * a y b solo se leían en suma. */
+    const char *cadena =
+        "create_funk #declare_infinite_void# main() {\n"
+        "    a * declare_int : 1;\n"
+        "    b * declare_int : 2;\n"
+        "    suma * declare_int : a gauss b;\n"
+        "}\n";
+    IrPrograma ir3 = {0};
+    VERIFICAR(generar_ir(cadena, strlen(cadena), &ir3) == 0);
+    DceResultado r3 = {0};
+    VERIFICAR(dce_eliminar(&ir3, &r3) == 0);
+    VERIFICAR(!se_asigna(&ir3, "suma") && !se_asigna(&ir3, "a") && !se_asigna(&ir3, "b"));
+    VERIFICAR(r3.pasadas == 3);
+    dce_liberar_resultado(&r3);
+    ir_liberar(&ir3);
+}
+
+/*
+ * Tipo 2: código inalcanzable (el ejemplo de la presentación y los dos
+ * casos: después de un salto incondicional, y una condición constante).
+ */
+static void prueba_inalcanzable(void)
+{
+    const char *programa =
+        "create_funk #declare_int# doble(x * declare_int) {\n"         /* 1 */
+        "    give x gauss x;\n"                                        /* 2 */
+        "    y * declare_int : 5;\n"                                   /* 3: después del give */
+        "}\n"                                                          /* 4 */
+        "create_funk #declare_int# prueba(n * declare_int) {\n"        /* 5 */
+        "    debug * declare_boolean : declare_false;\n"               /* 6 */
+        "    r * declare_int : n;\n"                                   /* 7 */
+        "    whether (debug) {\n"                                      /* 8 */
+        "        r : r gauss 100;\n"                                   /* 9: nunca se ejecuta */
+        "    }\n"                                                      /* 10 */
+        "    whale (1 > 2) {\n"                                        /* 11 */
+        "        r : r pitagoras 2;\n"                                 /* 12: nunca se ejecuta */
+        "    } stop;\n"                                                /* 13 */
+        "    cambia * declare_boolean : declare_false;\n"              /* 14 */
+        "    cambia : n > 0;\n"                                        /* 15: dos asignaciones */
+        "    whether (cambia) {\n"                                     /* 16 */
+        "        r : r gauss 7;\n"                                     /* 17: puede ejecutarse */
+        "    }\n"                                                      /* 18 */
+        "    give r;\n"                                                /* 19 */
+        "}\n"                                                          /* 20 */
+        "create_funk #declare_infinite_void# main() {\n"
+        "    v * declare_int[2] : [0, 0];\n"
+        "    v[0] : doble(2);\n"
+        "    v[1] : prueba(5);\n"
+        "}\n";
+    IrPrograma ir = {0};
+    VERIFICAR(generar_ir(programa, strlen(programa), &ir) == 0);
+    Conservadas antes = contar_conservadas(&ir);
+    DceResultado r = {0};
+    VERIFICAR(dce_eliminar(&ir, &r) == 0);
+
+    /* Después del give: inalcanzable. */
+    VERIFICAR(!queda_copia(&ir, "y", "5"));
+    /* whether (debug), con debug siempre falso: su cuerpo es inalcanzable,
+     * y después debug ya no se lee (tipo 1). */
+    VERIFICAR(!queda_binaria(&ir, "r", "gauss", "100"));
+    VERIFICAR(!queda_copia(&ir, "debug", "declare_false"));
+    /* whale (1 > 2): "1 > 2" se pliega a falso; el cuerpo es inalcanzable. */
+    VERIFICAR(!queda_binaria(&ir, "r", "pitagoras", "2"));
+    VERIFICAR(!queda_binaria(&ir, "1", ">", "2"));
+    /* cambia tiene dos asignaciones: NO es constante, su whether se queda. */
+    VERIFICAR(queda_binaria(&ir, "r", "gauss", "7"));
+    VERIFICAR(queda_binaria(&ir, "n", ">", "0"));
+    VERIFICAR(r.condiciones_constantes == 2);
+    VERIFICAR(r.inalcanzables > 0);
+    /* Cada eliminada inalcanzable viene de las líneas 3, 8-9 u 11-12. */
+    for (size_t i = 0; i < r.cantidad_eliminadas; ++i) {
+        if (r.eliminadas[i].tipo != DCE_INALCANZABLE) continue;
+        size_t l = r.eliminadas[i].linea;
+        VERIFICAR(l == 3 || l == 8 || l == 9 || l == 11 || l == 12);
+    }
+    /* Las llamadas siguen todas. */
+    VERIFICAR(contar(&ir, IR_CALL) == antes.llamadas);
+    dce_liberar_resultado(&r);
+    ir_liberar(&ir);
+
+    /* whether (declare_true) ... also: la rama also es inalcanzable. */
+    const char *siempre =
+        "create_funk #declare_int# f(n * declare_int) {\n"
+        "    r * declare_int : n;\n"
+        "    whether (declare_true) {\n"
+        "        r : r gauss 1;\n"
+        "    } also {\n"
+        "        r : r neumann 1;\n"
+        "    }\n"
+        "    give r;\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    v * declare_int[1] : [0];\n"
+        "    v[0] : f(3);\n"
+        "}\n";
+    IrPrograma ir2 = {0};
+    VERIFICAR(generar_ir(siempre, strlen(siempre), &ir2) == 0);
+    DceResultado r2 = {0};
+    VERIFICAR(dce_eliminar(&ir2, &r2) == 0);
+    VERIFICAR(queda_binaria(&ir2, "r", "gauss", "1"));
+    VERIFICAR(!queda_binaria(&ir2, "r", "neumann", "1"));
+    VERIFICAR(r2.condiciones_constantes == 1);
     dce_liberar_resultado(&r2);
     ir_liberar(&ir2);
 }
@@ -447,6 +619,7 @@ int main(void)
     prueba_sin_codigo_muerto();
     prueba_potencia();
     prueba_variables_de_main();
+    prueba_inalcanzable();
     prueba_argumentos();
 
     if (fallos > 0) {
