@@ -256,3 +256,20 @@ Aquí se instrumentan los procesos C construidos (B1/CB/puente S7), no Python.
 Se ejecuta también la suite aprobada B1 y las regresiones completas. LSan se
 intenta por separado; bajo ptrace se informa NO VERIFICADO. Las evidencias,
 reportes, manifiestos de protección y diff quedan fuera de los repositorios.
+
+## Observación de descendientes en las pruebas
+
+La cancelación POSIX conserva el contrato: se envía SIGKILL al grupo y se espera
+al proceso directo. La entrega al descendiente es asíncrona; un retorno de
+wait del padre no demuestra que el huérfano ya recibió su señal. La prueba
+registra PID y tiempo de arranque antes de cancelar y observa, con plazo
+monotónico de un segundo, desaparición, zombi o reemplazo de esa identidad.
+Nunca acepta R/S persistentes ni señala un PID reutilizado. Los intervalos
+de sondeo de hasta cinco milisegundos evitan espera ocupada; no reemplazan
+la condición de terminación ni amplían el timeout de ejecución del lote.
+
+Los presupuestos positivos y los timeouts adversariales anteriores permanecen
+intactos. Se añaden oráculos de entrega asíncrona, proceso activo al vencer
+el plazo, identidad reutilizada y pipes heredados después de terminar el padre.
+La recolección del huérfano corresponde al reaper; un zombi no ejecuta código.
+La repetibilidad y los resultados reales se registran fuera del repositorio.
