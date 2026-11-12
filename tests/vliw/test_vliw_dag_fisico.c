@@ -24,12 +24,69 @@ void *__wrap_calloc(size_t n,size_t s){if(activo && ++llamadas==fallar)return NU
 /* El crecimiento conserva aristas anteriores; fallar realloc no debe perderlas. */
 void *__wrap_realloc(void *p,size_t n){if(activo && ++llamadas==fallar)return NULL;return __real_realloc(p,n);}
 #endif
+/* Contrasta todos los campos publicados, sin interpretar el padding como dato.
+ * Una asignación de estructuras conserva valores, pero no garantiza bytes de
+ * relleno definidos. Recibe objetos prestados con campos definidos y no usa
+ * recursos; detecta una entrada o salida alterada por la llamada evaluada. */
+static bool mismos_metadatos(const VliwMetadatosParciales *a,const VliwMetadatosParciales *b)
+{
+    return a->operacion==b->operacion && a->familia==b->familia && a->slot==b->slot &&
+        a->lee==b->lee && a->escribe==b->escribe && a->efectos_minimos==b->efectos_minimos &&
+        a->salto==b->salto && a->requiere_auth==b->requiere_auth &&
+        a->requiere_init==b->requiere_init && a->pendientes==b->pendientes;
+}
+
 typedef struct {
     VliwCfgEntrada flujo;VliwDagEntrada e;VliwCfg *cfg;
     VliwCfgOperacion op[16];VliwMetadatosParciales meta[16];unsigned extra[16];
     VliwCfgFuncion fn[3];VliwCfgSimbolo s[16];VliwCfgTransferencia t[16];
     size_t fronteras[16],posibles[16];const char *texto[16];
 } Fixture;
+/* Comprueba los miembros del descriptor prestado, incluidas identidades de
+ * tablas y acreditaciones. Copiar o inicializar sus miembros no define su
+ * padding; la igualdad semántica evita depender de esa representación. No
+ * recorre tablas ni reserva memoria: las comprueba el llamador por separado. */
+static bool mismo_flujo(const VliwCfgEntrada *a,const VliwCfgEntrada *b)
+{
+    return a->operaciones==b->operaciones && a->cantidad_operaciones==b->cantidad_operaciones &&
+        a->funciones==b->funciones && a->cantidad_funciones==b->cantidad_funciones &&
+        a->simbolos==b->simbolos && a->cantidad_simbolos==b->cantidad_simbolos &&
+        a->transferencias==b->transferencias && a->cantidad_transferencias==b->cantidad_transferencias &&
+        a->fronteras==b->fronteras && a->cantidad_fronteras==b->cantidad_fronteras &&
+        a->regiones==b->regiones && a->cantidad_regiones==b->cantidad_regiones &&
+        a->generacion==b->generacion && a->generacion_referencias==b->generacion_referencias &&
+        a->pendientes==b->pendientes && a->fronteras_acreditadas==b->fronteras_acreditadas;
+}
+/* Verifica el fixture completo por miembros, no solo las operaciones activas.
+ * Sus estructuras anidadas reciben asignaciones y metadatos de S2, por lo que
+ * el memset inicial no garantiza que su relleno siga definido. Se conservan
+ * todas las comprobaciones de entradas, incluso las tablas no utilizadas;
+ * los arreglos escalares sí se comparan como bytes completamente inicializados.
+ * Recibe capturas prestadas, no reserva memoria y falla ante cualquier cambio. */
+static void verificar_fixture(const Fixture *a,const Fixture *b)
+{
+    EXIGIR(mismo_flujo(&a->flujo,&b->flujo));
+    EXIGIR(a->e.flujo==b->e.flujo && a->e.cfg==b->e.cfg && a->e.metadatos==b->e.metadatos &&
+        a->e.efectos_adicionales==b->e.efectos_adicionales && a->e.cantidad_metadatos==b->e.cantidad_metadatos &&
+        a->e.generacion==b->e.generacion && a->e.pendientes==b->e.pendientes &&
+        a->e.efectos_acreditados==b->e.efectos_acreditados && a->e.abi_acreditado==b->e.abi_acreditado);
+    EXIGIR(a->cfg==b->cfg);
+    for(size_t i=0;i<16;++i){
+        EXIGIR(a->op[i].id==b->op[i].id && a->op[i].palabra==b->op[i].palabra &&
+            a->op[i].slot==b->op[i].slot && a->op[i].salto==b->op[i].salto && a->op[i].control==b->op[i].control);
+        EXIGIR(mismos_metadatos(&a->meta[i],&b->meta[i]));
+        EXIGIR(a->s[i].id==b->s[i].id && a->s[i].funcion==b->s[i].funcion && a->s[i].posicion==b->s[i].posicion);
+        EXIGIR(a->t[i].operacion==b->t[i].operacion && a->t[i].tipo==b->t[i].tipo &&
+            a->t[i].tomado==b->t[i].tomado && a->t[i].continuacion==b->t[i].continuacion &&
+            a->t[i].posibles==b->t[i].posibles && a->t[i].cantidad_posibles==b->t[i].cantidad_posibles &&
+            a->t[i].completos==b->t[i].completos);
+        EXIGIR(a->texto[i]==b->texto[i]);
+    }
+    for(size_t i=0;i<3;++i)EXIGIR(a->fn[i].id==b->fn[i].id && a->fn[i].inicio==b->fn[i].inicio && a->fn[i].fin==b->fn[i].fin);
+    EXIGIR(!memcmp(a->extra,b->extra,sizeof a->extra));
+    EXIGIR(!memcmp(a->fronteras,b->fronteras,sizeof a->fronteras));
+    EXIGIR(!memcmp(a->posibles,b->posibles,sizeof a->posibles));
+}
 /* Prepara tablas propias con generación17 e identidades no consecutivas.
  * Por defecto las operaciones ALU son independientes y no tocan x0 como destino. */
 static void iniciar(Fixture *f,size_t n)
@@ -63,12 +120,16 @@ static void preparar(Fixture *f)
         EXIGIR(vliw_metadatos_extraer(f->op[i].palabra,(unsigned)f->op[i].slot,&f->meta[i],NULL)==SIM_DECODE_OK);
     EXIGIR(vliw_cfg_construir(&f->flujo,&f->cfg,NULL)==VLIW_CFG_OK);f->e.cfg=f->cfg;
 }
-/* Contrasta byte a byte la entrada y las tablas CFG anidadas. Los bloques y
- * sucesores no pertenecen al fixture fijo, por eso se copian expresamente. */
+/* Conserva la entrada completa y las tablas CFG anidadas antes de la llamada.
+ * Los destinos pueden tener padding por asignación de estructuras: sus cuatro
+ * campos se contrastan por separado. CFG raíz/bloques proceden de calloc y
+ * reciben asignaciones de miembros; memcpy captura sus bytes ya definidos,
+ * sin introducir relleno indeterminado mediante otra asignación de estructura.
+ * Las capturas son locales y no adquieren ni liberan recursos del constructor. */
 static VliwDag *ejecutar(Fixture *f,VliwDagEstado esperado)
 {
     Fixture antes;memcpy(&antes,f,sizeof antes);
-    VliwCfg c=*f->cfg;VliwBloque bloques[16];size_t mapa[16],suc[16][16];VliwDestino destinos[16];
+    VliwCfg c;memcpy(&c,f->cfg,sizeof c);VliwBloque bloques[16];size_t mapa[16],suc[16][16];VliwDestino destinos[16];
     size_t n=c.cantidad_operaciones,nb=c.cantidad_bloques,nt=c.cantidad_destinos;
     if(nb)memcpy(bloques,c.bloques,nb*sizeof *bloques);
     if(n)memcpy(mapa,c.bloque_por_operacion,n*sizeof *mapa);
@@ -79,10 +140,13 @@ static VliwDag *ejecutar(Fixture *f,VliwDagEstado esperado)
     VliwDagEstado e=vliw_dag_construir(&f->e,&g,&d);
     if(e!=esperado)fprintf(stderr,"escenario %zu: %d != %d; %s\n",escenarios,e,esperado,d.mensaje);
     EXIGIR(e==esperado);EXIGIR(d.estado==e);EXIGIR(d.mensaje && *d.mensaje);
-    EXIGIR(!memcmp(&antes,f,sizeof antes));EXIGIR(!memcmp(&c,f->cfg,sizeof c));
+    verificar_fixture(&antes,f);EXIGIR(!memcmp(&c,f->cfg,sizeof c));
     if(nb)EXIGIR(!memcmp(bloques,c.bloques,nb*sizeof *bloques));
     if(n)EXIGIR(!memcmp(mapa,c.bloque_por_operacion,n*sizeof *mapa));
-    if(nt)EXIGIR(!memcmp(destinos,c.destinos,nt*sizeof *destinos));
+    for(size_t t=0;t<nt;++t){
+        EXIGIR(destinos[t].instruccion==c.destinos[t].instruccion && destinos[t].tipo==c.destinos[t].tipo &&
+            destinos[t].tomado==c.destinos[t].tomado && destinos[t].caida==c.destinos[t].caida);
+    }
     for(size_t b=0;b<nb;++b)if(c.bloques[b].cantidad_sucesores)
         EXIGIR(!memcmp(suc[b],c.bloques[b].sucesores,c.bloques[b].cantidad_sucesores*sizeof(size_t)));
     EXIGIR((g!=NULL)==(e==VLIW_DAG_OK));++escenarios;return g;
@@ -442,7 +506,7 @@ static void recursos(void)
     e.efectos_adicionales=ef;e.cantidad_metadatos=N;e.generacion=17;
     e.efectos_acreditados=true;e.abi_acreditado=true;VliwDag *g=NULL;
     VliwCfgOperacion copia[N];VliwMetadatosParciales cm[N];memcpy(copia,op,sizeof op);memcpy(cm,m,sizeof m);
-    VliwCfg cc=*cfg;VliwBloque bb=*cfg->bloques;size_t mapa[N];memcpy(mapa,cfg->bloque_por_operacion,sizeof mapa);
+    VliwCfg cc;memcpy(&cc,cfg,sizeof cc);VliwBloque bb;memcpy(&bb,cfg->bloques,sizeof bb);size_t mapa[N];memcpy(mapa,cfg->bloque_por_operacion,sizeof mapa);
     llamadas=0;fallar=SIZE_MAX;activo=true;EXIGIR(vliw_dag_construir(&e,&g,NULL)==VLIW_DAG_OK);activo=false;
     size_t total=llamadas;EXIGIR(total>=10);vliw_dag_liberar(&g);++escenarios;
     VliwDagEntrada entrada_antes;VliwCfgEntrada flujo_antes;VliwCfgFuncion fn_antes;
@@ -450,10 +514,15 @@ static void recursos(void)
     for(size_t k=1;k<=total;++k){llamadas=0;fallar=k;activo=true;
         VliwDagEstado estado=vliw_dag_construir(&e,&g,NULL);activo=false;
         EXIGIR(estado==VLIW_DAG_MEMORIA);EXIGIR(!g);
-        EXIGIR(!memcmp(copia,op,sizeof op));EXIGIR(!memcmp(cm,m,sizeof m));
+        EXIGIR(!memcmp(copia,op,sizeof op));
+        // S2 publica valores válidos, no una representación sin padding. Cada
+        // elemento conserva todos sus campos tras ENOMEM; no se omite ninguna
+        // reserva para evitar el fallo ni se modifica el oráculo de recuperación.
+        for(size_t i=0;i<N;++i)EXIGIR(mismos_metadatos(&cm[i],&m[i]));
         EXIGIR(!memcmp(&cc,cfg,sizeof cc));EXIGIR(!memcmp(&bb,cfg->bloques,sizeof bb));
         EXIGIR(!memcmp(mapa,cfg->bloque_por_operacion,sizeof mapa));
-        EXIGIR(!memcmp(&entrada_antes,&e,sizeof e));EXIGIR(!memcmp(&flujo_antes,&flujo,sizeof flujo));
+        EXIGIR(!memcmp(&entrada_antes,&e,sizeof e));
+        EXIGIR(mismo_flujo(&flujo_antes,&flujo));
         EXIGIR(!memcmp(&fn_antes,&fn,sizeof fn));
         for(size_t i=0;i<N;++i)EXIGIR(ef[i]==0);
         ++escenarios;EXIGIR(vliw_dag_construir(&e,&g,NULL)==VLIW_DAG_OK);vliw_dag_liberar(&g);

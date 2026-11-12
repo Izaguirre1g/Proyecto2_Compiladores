@@ -156,7 +156,10 @@ static void prueba_control(void)
 
 /* Comprueba un rechazo esperado y que no publique siquiera parte de la salida.
  * El patrón anterior se compara como bytes: no se interpretan bool con una
- * representación artificial. Los diagnósticos quedan separados del resultado. */
+ * representación artificial. Aquí memset define también el relleno: cualquier
+ * byte modificado por un rechazo viola el contrato. Esta prueba es independiente
+ * de conservar los campos de una salida publicada correctamente, cuyo padding
+ * no tiene por qué estar definido. El diagnóstico ocupa otro almacenamiento. */
 static void verificar_error(uint32_t palabra,unsigned slot,SimDecodeEstado esperado)
 {
     VliwMetadatosParciales salida;memset(&salida,0xa5,sizeof salida);
@@ -194,6 +197,18 @@ static void prueba_rechazos(void)
     verificar_error(codificar("igualsi x4,x5,0",2)|1u,2,SIM_DECODE_CAMPOS);
 }
 
+/* Contrasta todos los campos publicados, sin interpretar el padding como dato.
+ * Una asignación de estructuras conserva valores, pero no garantiza bytes de
+ * relleno definidos. Recibe objetos prestados con campos definidos y no usa
+ * recursos; detecta una entrada o salida alterada por la llamada evaluada. */
+static bool mismos_metadatos(const VliwMetadatosParciales *a,const VliwMetadatosParciales *b)
+{
+    return a->operacion==b->operacion && a->familia==b->familia && a->slot==b->slot &&
+        a->lee==b->lee && a->escribe==b->escribe && a->efectos_minimos==b->efectos_minimos &&
+        a->salto==b->salto && a->requiere_auth==b->requiere_auth &&
+        a->requiere_init==b->requiere_init && a->pendientes==b->pendientes;
+}
+
 /* Reutiliza una salida válida, provoca error/NOP y vuelve a extraer. Los bits
  * inferiores libres de REG se ignoran según S2; no se endurece la ISA al exigir
  * una codificación canónica que el contrato existente no exige. */
@@ -201,11 +216,11 @@ static void prueba_publicacion(void)
 {
     uint32_t palabra=codificar("suma x4,x5,x6",0),antes=palabra;
     VliwMetadatosParciales m;EXIGIR(vliw_metadatos_extraer(palabra,0,&m,NULL)==SIM_DECODE_OK);
-    unsigned char anterior[sizeof m];memcpy(anterior,&m,sizeof m);
+    VliwMetadatosParciales anterior=m;
     EXIGIR(vliw_metadatos_extraer(0,0,&m,NULL)==SIM_DECODE_NOP);
-    EXIGIR(memcmp(anterior,&m,sizeof m)==0);++escenarios;
+    EXIGIR(mismos_metadatos(&anterior,&m));++escenarios;
     EXIGIR(vliw_metadatos_extraer(UINT32_MAX,0,&m,NULL)==SIM_DECODE_RESERVADA);
-    EXIGIR(memcmp(anterior,&m,sizeof m)==0);++escenarios;
+    EXIGIR(mismos_metadatos(&anterior,&m));++escenarios;
     EXIGIR(vliw_metadatos_extraer(palabra|63u,0,&m,NULL)==SIM_DECODE_OK);
     EXIGIR(m.lee==(R(5)|R(6)) && m.escribe==R(4));EXIGIR(palabra==antes);++escenarios;
     palabra=codificar("vcr 0",3);EXIGIR(vliw_metadatos_extraer(palabra,3,&m,NULL)==SIM_DECODE_OK);
