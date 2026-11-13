@@ -233,6 +233,22 @@ int main(void)
         diag_liberar(&lista);
     }
 
+    /* Prueba: un editor vacío, o con solo espacios y comentarios, no tiene
+     * errores (no hay nada escrito todavía). Un comentario sin cerrar sí. */
+    {
+        const char *vacios[] = {"", "\n", "   \n\t\n", "%% solo un comentario\n",
+                                "%%// comentario\nde bloque //%%\n"};
+        for (size_t i = 0; i < sizeof vacios / sizeof vacios[0]; ++i) {
+            VERIFICAR(ide_analizar_texto(vacios[i], strlen(vacios[i]), "tests/editor.bal", &lista) == 0);
+            VERIFICAR(lista.cantidad == 0);
+            diag_liberar(&lista);
+        }
+        const char *sin_cerrar = "%%// comentario sin cerrar\n";
+        VERIFICAR(ide_analizar_texto(sin_cerrar, strlen(sin_cerrar), "tests/editor.bal", &lista) == 0);
+        VERIFICAR(lista.cantidad > 0);
+        diag_liberar(&lista);
+    }
+
     if (fallos > 0) {
         fprintf(stderr, "test_ide_analisis: %d fallos\n", fallos);
         return 1;
