@@ -382,11 +382,31 @@ static void ordenar_errores(DiagLista *lista, size_t desde, const char *nombre)
     }
 }
 
+/*
+ * ¿El texto no tiene código? Es decir, solo espacios, saltos de línea y
+ * comentarios: el primer token que da el lexer ya es el final del archivo.
+ * Un comentario sin cerrar sí cuenta como algo (el lexer da un error).
+ */
+static int sin_codigo(const char *texto, size_t largo)
+{
+    Lexer lexer;
+    lexer_init(&lexer, texto, largo, "<editor>");
+    Token t = lexer_next(&lexer);
+    int vacio = t.type == TOKEN_EOF;
+    token_dispose(&t);
+    return vacio;
+}
+
 int ide_analizar_texto(const char *texto, size_t largo, const char *ruta,
                        DiagLista *lista)
 {
     const char *nombre_original = (ruta != NULL) ? ruta : IDE_SIN_NOMBRE;
     size_t primero_nuevo = lista->cantidad;  /* Desde aquí empiezan los errores de esta revisión. */
+
+    /* Paso 0: un editor vacío (o con solo comentarios) no tiene errores.
+     * El parser diría "el archivo termina antes de tiempo", pero todavía no
+     * se ha escrito nada: no hay nada que corregir ni que sugerir. */
+    if (sin_codigo(texto, largo)) return 0;
 
     /* Paso 1: guardar el texto del editor en el archivo temporal. */
     char *temporal = ide_ruta_temporal(ruta);
