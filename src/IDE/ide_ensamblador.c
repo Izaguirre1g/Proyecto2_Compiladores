@@ -9,6 +9,8 @@
  *      ensamblador (con el arranque que inicializa gp y sp y llama a main).
  *   4. Codificar cada bundle a binario, como hace balc antes de escribir
  *      el .bin: así también se comprueba que el ensamblador es válido.
+ *   5. Armar el .bin completo (formato BALB: cabecera + código + datos de
+ *      las constantes globales), igual que balc, pero en memoria.
  * No escribe ningún archivo .asm ni .bin.
  */
 #include "ide_ensamblador.h"
@@ -21,6 +23,7 @@
 #include "cli.h"
 #include "codificacion_binaria.h"
 #include "enlace_funciones.h"
+#include "formato_binario.h"
 #include "ide_analisis.h"
 #include "memory.h"
 #include "semantic_modules.h"
@@ -44,6 +47,8 @@ typedef struct {
     int llego;              /* 1 si el semántico aceptó el programa y llamó al visitante. */
     int sin_memoria;
     const char *explicacion; /* Si la asignación de memoria falló: por qué, en español. */
+    FbDatos *datos;         /* Valores iniciales de las globales, para el .bin (paso 5).
+                             * Se piden aquí porque el AST se libera al salir del visitante. */
 } Contexto;
 
 /*
@@ -102,6 +107,11 @@ static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
     }
     EfResumen resumen = {0};
     int estado = ef_enlazar(arbol, tabla, 0, &arranque, &funciones, temporal, diag, &resumen);
+    /* Los datos de las globales (como hace balc): sin ellos el .bin no se arma. */
+    if (estado == 0 && fb_preparar_datos(arbol, tabla, (uint32_t)mapa.globales.gp_base,
+                                         mapa.globales.bytes_globales, c->datos, diag) != 0) {
+        estado = 1;
+    }
     if (estado == 0) {
         s->ensamblador = leer_todo(temporal);
         if (s->ensamblador == NULL) {
@@ -120,9 +130,27 @@ static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
     return estado;
 }
 
-/* Codifica el ensamblador a binario y guarda el listado de los bundles.
+/* Lee los bytes de un archivo temporal (pueden incluir ceros) y deja su
+ * cantidad en "largo". NULL si falló. */
+static unsigned char *leer_bytes(FILE *f, size_t *largo)
+{
+    if (f == NULL || fflush(f) != 0 || fseek(f, 0, SEEK_END) != 0) return NULL;
+    long total = ftell(f);
+    if (total <= 0 || fseek(f, 0, SEEK_SET) != 0) return NULL;
+    unsigned char *bytes = malloc((size_t)total);
+    if (bytes == NULL) return NULL;
+    if (fread(bytes, 1, (size_t)total, f) != (size_t)total) {
+        free(bytes);
+        return NULL;
+    }
+    *largo = (size_t)total;
+    return bytes;
+}
+
+/* Codifica el ensamblador a binario, guarda el listado de los bundles
+ * (paso 4) y arma el .bin completo con los datos de las globales (paso 5).
  * Devuelve 0 bien, 1 si el ensamblador no es válido para la ISA, -1 sin memoria. */
-static int codificar(IdeEnsamblador *s, FILE *diag)
+static int codificar(IdeEnsamblador *s, const FbDatos *datos, FILE *diag)
 {
     CbPrograma programa = {0};
     if (cb_ensamblar(s->ensamblador, &programa, diag) != 0) return 1;
@@ -134,6 +162,16 @@ static int codificar(IdeEnsamblador *s, FILE *diag)
         estado = -1;
     }
     if (f != NULL) fclose(f);
+
+    /* Paso 5: el mismo contenedor BALB que escribe balc (fb_escribir). */
+    if (estado == 0) {
+        FILE *bin = tmpfile();
+        if (bin == NULL || fb_escribir(&programa, datos, bin) != 0 ||
+            (s->balb = leer_bytes(bin, &s->largo_balb)) == NULL) {
+            estado = -1;
+        }
+        if (bin != NULL) fclose(bin);
+    }
     cb_liberar(&programa);
     return estado;
 }
@@ -181,14 +219,15 @@ int ide_ensamblador_generar(const char *texto, size_t largo, const char *ruta, I
         return -1;
     }
 
-    /* Pasos 2 a 4. */
+    /* Pasos 2 a 5. FbDatos mide más de 16 KB: se pide con malloc y no en la pila. */
     int estado = -1;
-    FILE *diag = tmpfile();
+    FbDatos *datos = malloc(sizeof *datos);
+    FILE *diag = datos != NULL ? tmpfile() : NULL;
     if (diag != NULL) {
-        Contexto c = {s, 0, 0, NULL};
+        Contexto c = {s, 0, 0, NULL, datos};
         int resultado = sem_visitar_proyecto(temporal, diag, visitante, &c);
         if (resultado == 0 && c.llego) {
-            int codificado = codificar(s, diag);
+            int codificado = codificar(s, datos, diag);
             if (codificado == 0) {
                 s->estado = IDE_ASM_LISTO;
                 estado = 0;
@@ -222,6 +261,7 @@ int ide_ensamblador_generar(const char *texto, size_t largo, const char *ruta, I
         fclose(diag);
     }
 
+    free(datos);
     remove(temporal);
     free(temporal);
     if (estado != 0) ide_ensamblador_liberar(s);
@@ -234,5 +274,6 @@ void ide_ensamblador_liberar(IdeEnsamblador *s)
     free(s->motivo);
     free(s->ensamblador);
     free(s->binario);
+    free(s->balb);
     memset(s, 0, sizeof *s);
 }

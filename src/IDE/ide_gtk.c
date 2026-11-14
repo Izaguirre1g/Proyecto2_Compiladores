@@ -52,6 +52,11 @@
  *      código del editor con el módulo de Meibel (loop_unrolling/) y muestra
  *      la decisión de cada ciclo y la IR antes y después
  *      (ide_unrolling.c e ide_unrolling_ventana.c).
+ *  12. Métricas: el botón "Métricas" ejecuta el código del editor en el
+ *      simulador VLIW (src/Simulador_VLIW/) y muestra sus métricas con
+ *      gráficas: uso de cada slot, bundles con trabajo y solo NOP, y la
+ *      comparación antes y después del código muerto
+ *      (src/Metricas/metricas.c y metricas_ventana.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -68,6 +73,7 @@
 #include "ide_ensamblador.h"
 #include "ide_ensamblador_ventana.h"
 #include "ide_unrolling_ventana.h"
+#include "metricas_ventana.h"
 #include "ide_nucleo.h"
 #include "ide_tabla_ll1.h"
 
@@ -1852,6 +1858,17 @@ static void al_pulsar_unrolling(GtkWidget *boton, gpointer datos)
     g_free(texto);
 }
 
+/* Botón "Métricas": ejecuta el código del editor (aunque no esté guardado)
+ * en el simulador VLIW y muestra sus métricas con gráficas. */
+static void al_pulsar_metricas(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    gchar *texto = texto_del_editor(ide);
+    ide_mostrar_metricas(GTK_WINDOW(ide->ventana), texto, ide->ruta, nombre_actual(ide));
+    g_free(texto);
+}
+
 /* Botón "Tabla LL(1)": abre la ventana con la tabla (ide_tabla_ll1.c). */
 static void al_pulsar_tabla_ll1(GtkWidget *boton, gpointer datos)
 {
@@ -1893,6 +1910,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "Código _muerto", G_CALLBACK(al_pulsar_dce), ide);
     agregar_boton(barra, "_Ensamblador", G_CALLBACK(al_pulsar_ensamblador), ide);
     agregar_boton(barra, "Loop _unrolling", G_CALLBACK(al_pulsar_unrolling), ide);
+    agregar_boton(barra, "Mét_ricas", G_CALLBACK(al_pulsar_metricas), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */
