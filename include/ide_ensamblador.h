@@ -32,6 +32,10 @@ typedef struct {
     char *motivo;          /* Con IDE_ASM_SIN_BACKEND: lo que dijo el backend. */
     char *ensamblador;     /* El texto del .asm (bundles: 4 slots separados por '|'). */
     char *binario;         /* Cada bundle con su codificación (como "balc -p"). */
+    unsigned char *balb;   /* El .bin completo (BALB: cabecera, código y datos de las
+                            * globales), byte por byte igual al de "balc". Lo usa
+                            * el simulador para las métricas (src/Metricas/). */
+    size_t largo_balb;     /* Bytes de "balb" (puede tener ceros: no es texto). */
     size_t bundles;        /* Cantidad de bundles. */
     size_t funciones;      /* Funciones generadas. */
     size_t saltos;         /* Saltos resueltos. */
