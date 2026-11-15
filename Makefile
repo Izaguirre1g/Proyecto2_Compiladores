@@ -860,6 +860,8 @@ test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 -include Makefile.ir_defuse.mk
 # Issue #23: banco fisico de registros de IR/spilling.
 -include Makefile.ir_fisico.mk
+# Issue #3: latencias de registros, memoria y efectos de llamadas/globales.
+-include Makefile.ir_latencias.mk
 
 # Reservas de spilling basadas en offsets reales de simbolos por funcion.
 -include Makefile.spilling.memoria.mk
