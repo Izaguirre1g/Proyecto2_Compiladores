@@ -3,8 +3,8 @@
 
 .PHONY: test-spilling-backend clean-spilling-backend
 
-tests/test_ir_spilling_backend: tests/test_ir_spilling_backend.c src/ir_spilling_backend.c src/ir_spilling_marco.c src/funciones_marco.c include/ir_spilling_backend.h include/ir_spilling_marco.h include/funciones_marco.h include/ir.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir_spilling_backend.c src/ir_spilling_backend.c src/ir_spilling_marco.c src/funciones_marco.c -o $@
+tests/test_ir_spilling_backend: tests/test_ir_spilling_backend.c src/ir_spilling_backend.c src/ir_spilling_marco.c src/Generacion_Codigo/funciones_marco.c include/ir_spilling_backend.h include/ir_spilling_marco.h include/funciones_marco.h include/ir.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir_spilling_backend.c src/ir_spilling_backend.c src/ir_spilling_marco.c src/Generacion_Codigo/funciones_marco.c -o $@
 
 test-spilling-backend: tests/test_ir_spilling_backend
 	./tests/test_ir_spilling_backend

@@ -87,6 +87,8 @@ void ro_texto_instr(const IrInstr *x, char *b, size_t n) {
     case IR_LIST_ADD:   snprintf(b, n, "add %s, %s", x->dst, x->a); break;
     case IR_LIST_REMOVE:snprintf(b, n, "remove %s, %s", x->dst, x->a); break;
     case IR_SIZE:       snprintf(b, n, "%s = size %s", x->dst, x->a); break;
+    case IR_SPILL_LOAD: snprintf(b, n, "%s = spill_load %s", x->dst, x->a); break;
+    case IR_SPILL_STORE:snprintf(b, n, "spill_store %s, %s", x->dst, x->a); break;
     }
 }
 

@@ -298,6 +298,57 @@ El alcance, la conexión con símbolos y las limitaciones están en
 [docs/generacion_basica.md](docs/generacion_basica.md).
 `make test` incluye las pruebas nuevas. `-s` sigue reservado hasta integrar el backend.
 
+## Integración incremental IR + spilling + VLIW
+
+`make test-ir-vliw` compila y prueba el puente C `ir_vliw_desde_ir()` de
+`include/ir_vliw.h`. Usa el IR real, la pasada de spilling, offsets de pila,
+CB/S2, CFG/DAG y la cadena VLIW completa (S7/S8-A) en un subconjunto seguro de
+**una función sin llamadas ni variables del lenguaje**. Incluye bifurcaciones,
+etiquetas y backedges. Cada operación no soportada se rechaza sin producir
+binario parcial. Ver `docs/ir_vliw_integracion.md`.
+
+**No reemplaza** el flujo productivo `balc` ni acredita todavía un ejecutable
+BAL completo; `--ir` y `--ir-spilling` continúan siendo modos de inspección.
+
 ## Documentación del proyecto
 La documentación general de todo el proyecto se puede encontrar acá
 [Documentación](https://github.com/Izaguirre1g/Proyecto-Parte-1-Compiladores-e-Interpretes-Definici-n-de-Sintaxis-de-Lenguaje/blob/371cc01ac19cb05b255697d965b58717666bdbf7/docs/latex/Documentacion.pdf)
+
+## Vista previa del productor IR / spilling / VLIW
+
+Para inspeccionar los bundles generados por la nueva cadena física, sin
+cambiar el backend tradicional de `balc`, se puede ejecutar:
+
+```sh
+make
+./balc --vliw-ir=3 -s -p examples/vliw_ir_preview.bal
+make test-ir-vliw
+make test-ir-vliw-cli
+```
+
+La opción `--vliw-ir[=N]` acepta entre 3 y 8 registros temporales; `-v` muestra
+la IR reescrita, `-s` produce `.vliw.asm` y `.vliw.mem`, y `-p` lista los
+bundles y su codificación. Son **fragmentos para inspección**: no incluyen
+arranque/retorno/finalización ni son `.bin` ejecutables. Variables escalares
+BAL, funciones y otros casos todavía no implementados se rechazan sin salida.
+`balc` sin `--vliw-ir` sigue usando el backend del Proyecto I. Ver
+[docs/ir_vliw_integracion.md](docs/ir_vliw_integracion.md) para contratos,
+limitaciones y próximos pasos.
+
+## Contrato de memoria para register spilling (Proyecto II)
+
+Los home slots de parámetros y los offsets de variables locales se verifican
+contra las ubicaciones reales de `memory.c` antes de reservar los spills:
+`ir_spilling_backend_desde_tabla` (`include/ir_spilling_memoria.h`).
+Se usan marcos **por función**, no `mapa.marco_maximo_bytes` como si fuera
+el marco de cada función. El compilador no cambia el backend BAL por defecto;
+el productor VLIW todavía rechaza variables y llamadas fuera de su subset.
+
+```sh
+make test-spilling-memoria
+make test-spilling
+make test-ir-vliw
+```
+
+Contrato, offsets, advertencias de ABI y responsabilidades:
+[docs/contrato_memoria_spilling.md](docs/contrato_memoria_spilling.md).

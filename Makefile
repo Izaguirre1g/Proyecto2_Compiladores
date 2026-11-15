@@ -853,3 +853,9 @@ reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordena
 test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 	./reordenamiento/pruebas/test_reordenamiento
 	sh reordenamiento/pruebas/test_bal.sh
+
+# Productor físico IR/spilling en subconjunto validado, aislado del backend BAL.
+-include Makefile.ir_vliw.mk
+
+# Reservas de spilling basadas en offsets reales de simbolos por funcion.
+-include Makefile.spilling.memoria.mk

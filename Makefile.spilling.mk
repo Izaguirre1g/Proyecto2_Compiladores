@@ -4,8 +4,8 @@
 .PHONY: test-spilling clean-spilling
 
 # Compila la pasada de registros utilizando la misma IR del proyecto.
-tests/test_ir_spilling: tests/test_ir_spilling.c src/ir_spilling.c src/ir.c Analisis_Sintactico/ast.c include/ir_spilling.h include/ir.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir_spilling.c src/ir_spilling.c src/ir.c Analisis_Sintactico/ast.c -o $@
+tests/test_ir_spilling: tests/test_ir_spilling.c src/ir_spilling.c src/Representacion_Intermedia/ir.c src/Analisis_Sintactico/ast.c include/ir_spilling.h include/ir.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir_spilling.c src/ir_spilling.c src/Representacion_Intermedia/ir.c src/Analisis_Sintactico/ast.c -o $@
 
 # Prueba la reserva de espacio de pila y la emision de acceso a memoria.
 tests/test_ir_spilling_marco: tests/test_ir_spilling_marco.c src/ir_spilling_marco.c include/ir_spilling_marco.h include/ir.h
