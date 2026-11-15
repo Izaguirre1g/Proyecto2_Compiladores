@@ -146,12 +146,34 @@ static void prueba_argumentos_invalidos(void) {
     ir_liberar(&entrada);
 }
 
+/* Una IR con bloques corruptos no debe causar lecturas fuera de rango
+ * ni mutar el programa de salida; la llamada retorna codigo 2. */
+static void prueba_bloques_invalidos(void) {
+    IrPrograma entrada = {0}, salida = {0};
+    IrSpillingMetricas m = {0};
+    instruccion(&entrada, IR_FUNC, "main", NULL, NULL, NULL);
+    instruccion(&entrada, IR_END_FUNC, "main", NULL, NULL, NULL);
+    assert(ir_bloques_basicos(&entrada) == 0);
+    assert(entrada.cantidad_bloques > 0);
+    size_t inicio = entrada.bloques[0].inicio;
+    size_t fin = entrada.bloques[0].fin;
+    entrada.bloques[0].fin = entrada.cantidad + 1;
+    assert(ir_aplicar_spilling(&entrada, &salida, 3, &m) == 2);
+    assert(!salida.codigo && !salida.bloques);
+    entrada.bloques[0].inicio = inicio;
+    entrada.bloques[0].fin = fin;
+    assert(ir_aplicar_spilling(&entrada, &salida, 3, &m) == 0);
+    ir_liberar(&salida);
+    ir_liberar(&entrada);
+}
+
 /* Ejecuta los tres escenarios obligatorios y una prueba de rechazo. */
 int main(void) {
     prueba_presion_de_registros();
     prueba_bifurcacion_y_cfg();
     prueba_llamada_y_preservacion();
     prueba_argumentos_invalidos();
-    puts("OK: spilling - presion, CFG, llamadas y argumentos invalidos");
+    prueba_bloques_invalidos();
+    puts("OK: spilling - presion, CFG, llamadas y entradas invalidas");
     return 0;
 }

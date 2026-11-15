@@ -276,13 +276,30 @@ static void liberar_contexto(Contexto *ctx) {
     free(ctx->registros);
 }
 
+/* Validacion defensiva: los bloques deben cubrir la secuencia de IR
+ * sin huecos, solapamientos ni rangos fuera del codigo. Antes se confiaba
+ * en indices arbitrarios y se podia leer fuera del arreglo de instrucciones.
+ * Se valida antes de reservar memoria o modificar la salida. */
+static int bloques_validos(const IrPrograma *origen) {
+    if (!origen || !origen->bloques || !origen->cantidad_bloques ||
+        !origen->codigo || !origen->cantidad) return 0;
+    size_t siguiente = 0;
+    for (size_t i = 0; i < origen->cantidad_bloques; ++i) {
+        const IrBloque *b = &origen->bloques[i];
+        if (b->inicio != siguiente || b->fin <= b->inicio ||
+            b->fin > origen->cantidad) return 0;
+        siguiente = b->fin;
+    }
+    return siguiente == origen->cantidad;
+}
+
 /* Punto de entrada de la asignacion local conservadora de registros.
  * Cada bloque empieza con el cache vacio; los bordes se sincronizan con pila.
  * Se evita insertar almacenes despues de saltos y retornos incondicionales. */
 int ir_aplicar_spilling(const IrPrograma *origen, IrPrograma *salida,
                        size_t registros, IrSpillingMetricas *metricas) {
     if (!origen || !salida || !metricas || origen == salida ||
-        registros < 3 || registros > 32 || !origen->bloques ||
+        registros < 3 || registros > 32 || !bloques_validos(origen) ||
         salida->codigo || salida->bloques || salida->cantidad ||
         salida->cantidad_bloques) return 2;
     IrSpillingMetricas m = {0};
