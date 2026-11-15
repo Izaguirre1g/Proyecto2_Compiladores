@@ -34,8 +34,8 @@ make                               # requiere Flex, Bison y dependencias del Pro
 
 - No se bajan aún declaraciones globales, listas, matrices, índices, `seek/seize`, miembros `alias.miembro`, ni inicializadores de colecciones.
 - `cycle` con paso dinámico o negativo da diagnóstico y falla (no se inventa una traducción).
-- El generador no asigna registros, no hace spilling, DCE, loop unrolling ni empaquetado VLIW todavía.
-- La IR es una visualización/representación independiente: **el `.bin` normal sigue usando el generador previo**. La integración definitiva `IR -> optimizaciones -> registros -> VLIW` es el siguiente hito del equipo.
+- El generador original no asigna registros ni hace spilling. La pasada externa `ir_aplicar_spilling` y el puente experimental `ir_vliw_desde_ir` ya pueden emitir VLIW para el subconjunto acotado documentado en `docs/ir_vliw_integracion.md`; no sustituyen el backend de BAL.
+- La IR es una visualización/representación independiente: **el `.bin` normal sigue usando el generador previo**. La integración definitiva de **todo el lenguaje**, incluyendo símbolos, módulos, llamadas y ABI, sigue pendiente. El puente nuevo documenta y rechaza explícitamente lo que todavía no soporta.
 - Cadenas y caracteres conservan el texto del AST; el backend deberá codificar y preservar el tipo adecuado.
 
 ## Responsables de la integración

@@ -806,6 +806,9 @@ tests/test_ir: tests/test_ir.c $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h inclu
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir.c $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
 test-ir: tests/test_ir
 	./tests/test_ir
+-include Makefile.spilling.mk
+-include Makefile.spilling.backend.mk
+-include Makefile.spilling.cli.mk
 
 # Analisis predictivo LL(1) (LL1_SRC se define arriba, junto a las carpetas).
 # Programas con los que se compara el LL(1) contra Bison.
@@ -850,3 +853,9 @@ reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordena
 test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 	./reordenamiento/pruebas/test_reordenamiento
 	sh reordenamiento/pruebas/test_bal.sh
+
+# Productor físico IR/spilling en subconjunto validado, aislado del backend BAL.
+-include Makefile.ir_vliw.mk
+
+# Reservas de spilling basadas en offsets reales de simbolos por funcion.
+-include Makefile.spilling.memoria.mk

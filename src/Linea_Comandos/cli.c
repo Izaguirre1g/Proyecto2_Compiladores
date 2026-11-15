@@ -11,6 +11,8 @@
 #include "diagnosticos.h"
 #include "clones.h"
 #include "ir.h"
+#include "ir_spilling.h"
+#include "ir_vliw.h"
 #include "dce.h"
 #include "loop_unrolling.h"
 #include "ro_json.h"
@@ -180,6 +182,9 @@ typedef struct {
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
     int ir;                 /* --ir: IR de tres direcciones */
+    int ir_spilling;        /* --ir-spilling: IR con registros limitados */
+    int vliw_ir;            /* --vliw-ir: vista previa del productor fisico */
+    unsigned vliw_regs;    /* --vliw-ir=N: registros temporales (3..8) */
     int dce;                /* --dce: IR + variables vivas + eliminacion de codigo muerto */
     int unroll;             /* --unroll[=k]: IR antes/despues del loop unrolling */
     unsigned unroll_factor; /* k de --unroll=k (0: valor por defecto) */
@@ -208,6 +213,10 @@ static void usage(FILE *out) {
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
+          "--ir-spilling  muestra la IR con spilling usando 3 registros\n"
+          "--vliw-ir[=N] genera fragmento fisico desde IR/spilling (N=3..8; defecto 3)\n"
+          "              solo el subconjunto soportado; NO es binario BAL ejecutable\n"
+          "              -s guarda .vliw.asm y .vliw.mem; -p muestra bundles\n"
           "--dce         como --ir, y ademas calcula las variables vivas y elimina\n"
           "              el codigo muerto (muestra la IR antes y despues)\n"
           "--unroll[=k]  muestra la IR antes y despues del loop unrolling (factor k,\n"
@@ -232,6 +241,21 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
+        if (!posicional && !strcmp(arg, "--ir-spilling")) { c->ir_spilling = 1; continue; }
+        if (!posicional && (!strcmp(arg, "--vliw-ir") || !strncmp(arg, "--vliw-ir=", 10))) {
+            c->vliw_ir = 1;
+            c->vliw_regs = 3;
+            if (arg[9] == '=') {
+                char *fin = NULL;
+                unsigned long n = strtoul(arg + 10, &fin, 10);
+                if (!arg[10] || *fin || n < 3 || n > 8) {
+                    fputs("--vliw-ir=N necesita entre 3 y 8 registros\n", stderr);
+                    return -1;
+                }
+                c->vliw_regs = (unsigned)n;
+            }
+            continue;
+        }
         /* --dce trabaja sobre la IR: cuenta como --ir (y tiene sus mismas reglas). */
         if (!posicional && !strcmp(arg, "--dce")) { c->ir = 1; c->dce = 1; continue; }
         if (!posicional && !strncmp(arg, "--unroll", 8) && (arg[8] == '\0' || arg[8] == '=')) {
@@ -298,8 +322,23 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
-    if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
+    /* El producto VLIW de IR es un fragmento para inspeccion, no un .bin
+     * ejecutable. Prohibir salidas que impliquen enlazado o ABI completos. */
+    if (c->vliw_ir && (c->ir || c->ir_spilling || c->dce || c->unroll ||
+                       c->reorder || c->reorder_json || c->desde_ensamblador ||
+                       c->ast_json || c->diagnosticos || c->simbolos || c->salida)) {
+        fputs("--vliw-ir solo admite -v, -t, -s, -p y un fuente .bal; "
+              "no admite -o/-x ni otras pasadas\n", stderr);
+        return -1;
+    }
+    /* Los modos de visualizacion de IR son excluyentes. */
+    if (c->ir && c->ir_spilling) {
+        fputs("--ir y --ir-spilling no se pueden combinar\n", stderr);
+        return -1;
+    }
+    if ((c->ir || c->ir_spilling) && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
+        fputs("--ir y --ir-spilling se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         fputs("--ir, --dce, --unroll y --reorder se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         return -1;
     }
@@ -855,12 +894,133 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
     return estado;
 }
 
+/* Ruta explicita de inspeccion del productor fisico. Solo se aceptan
+ * fragmentos para los que ir_vliw_desde_ir acredita ISA, CFG/DAG y ABI acotada.
+ * A diferencia de compilar_proyecto, no se afirma enlazado ni ejecutabilidad. */
+static int visitante_vliw_ir(void *ctx, const Ast *arbol, SimTabla *tabla,
+                            FILE *diag)
+{
+    const Compilacion *op = ctx;
+    IrPrograma ir = {0};
+    IrVliwResultado resultado = {0};
+    MemProyectoMapa mapa = {0};
+    int estado = 1;
+    if (mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
+                             CLI_CAPACIDAD_MARCO, &mapa) != MEM_PROYECTO_OK) {
+        fputs("--vliw-ir: no se pudo calcular el marco de memoria\n", diag);
+        return 1;
+    }
+    /* La funcion aislada necesita reservar al menos RA en sp+0. Aun
+     * con marco real, variables/parametros se rechazan en el lowering. */
+    size_t marco = mapa.marco_maximo_bytes > 4 ? mapa.marco_maximo_bytes : 4;
+    estado = ir_desde_ast(arbol, &ir, diag);
+    if (estado) goto fin;
+    /* IR valida no implica que el productor fisico pueda traducirla.
+     * Mantener error por defecto hasta que todos los pasos VLIW terminen. */
+    estado = 1;
+    IrVliwConfiguracion cfg = {op->vliw_regs, marco};
+    IrVliwEstado rc = ir_vliw_desde_ir(&ir, &cfg, &resultado, diag);
+    if (rc != IR_VLIW_OK) {
+        fprintf(diag, "--vliw-ir: productor fisico rechazado (estado %d); "
+                      "no se genero codigo. El modo tradicional sigue intacto.\n",
+                (int)rc);
+        goto fin;
+    }
+    if (!resultado.cadena || !resultado.cadena->codificado) {
+        fputs("--vliw-ir: sin bundles codificados\n", diag);
+        goto fin;
+    }
+    if (op->detallado) {
+        puts("[IR despues del register spilling]");
+        if (ir_imprimir(&resultado.despues_spilling, stdout)) { estado=2; goto fin; }
+    }
+    printf("[VLIW IR] registros=%u, marco=%zu bytes, "
+           "spills=%zu, loads=%zu, stores=%zu, bundles=%zu\n",
+           op->vliw_regs, resultado.backend.marco.bytes_marco,
+           resultado.metricas.ranuras, resultado.metricas.cargas,
+           resultado.metricas.almacenes, resultado.cadena->codigo.cantidad);
+    puts("[ADVERTENCIA] Fragmento fisico: sin arranque, retorno ni fin BAL. "
+         "NO es un ejecutable autocontenido.");
+    if (op->paquetes) {
+        puts("[bundles VLIW / ensamblador]");
+        if (fputs(resultado.cadena->asm_texto, stdout) == EOF ||
+            cb_escribir_listado(&resultado.cadena->codigo, stdout)) {
+            estado=2;
+            goto fin;
+        }
+    }
+    if (op->ensamblador) {
+        char *asm_ruta = cambiar_extension(op->entrada, ".bal", ".vliw.asm");
+        char *mem_ruta = cambiar_extension(op->entrada, ".bal", ".vliw.mem");
+        if (!asm_ruta || !mem_ruta ||
+            !strcmp(asm_ruta, op->entrada) || !strcmp(mem_ruta, op->entrada)) {
+            fputs("--vliw-ir: nombres de salida invalidos\n", diag);
+            estado=2;
+        } else if (!escribir_archivo(asm_ruta, NULL, NULL,
+                                     resultado.cadena->asm_texto, NULL) ||
+                   !escribir_archivo(mem_ruta, &resultado.cadena->codigo,
+                                     cb_escribir_mem, NULL, NULL)) {
+            fputs("--vliw-ir: no se pudieron guardar los fragmentos\n", diag);
+            estado=2;
+        } else {
+            printf("[VLIW IR] fragmentos %s y %s (no ejecutables)\n",
+                   asm_ruta, mem_ruta);
+        }
+        free(asm_ruta);
+        free(mem_ruta);
+        if (estado == 2) goto fin;
+    }
+    estado = ferror(stdout) ? 2 : 0;
+fin:
+    ir_vliw_liberar(&resultado);
+    ir_liberar(&ir);
+    return estado;
+}
+
+/* Ejecuta la pasada de registros limitados solo para inspeccionar la IR.
+ * No reemplaza la ruta AST -> ensamblador del compilador principal. */
+static int visitante_ir_spilling(void *ctx, const Ast *arbol,
+                                SimTabla *tabla, FILE *diag)
+{
+    (void)ctx;
+    (void)tabla;
+    IrPrograma original = {0};
+    IrPrograma reescrita = {0};
+    IrSpillingMetricas metricas = {0};
+    int estado = ir_desde_ast(arbol, &original, diag);
+    if (estado == 0)
+        estado = ir_aplicar_spilling(&original, &reescrita, 3, &metricas);
+    if (estado == 0) {
+        puts("[IR con register spilling: 3 registros]");
+        estado = ir_imprimir(&reescrita, stdout);
+        if (estado == 0)
+            printf("[spilling] ranuras=%zu cargas=%zu almacenes=%zu desalojos=%zu\n",
+                   metricas.ranuras, metricas.cargas, metricas.almacenes,
+                   metricas.desalojos);
+    } else {
+        fputs("No se pudo generar la IR con spilling\n", diag);
+    }
+    ir_liberar(&reescrita);
+    ir_liberar(&original);
+    return estado;
+}
+
 int cli_run(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "--clones")) return buscar_clones(argc, argv);
     Compilacion op = {0};
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
+    if (op.vliw_ir) {
+        if (!termina_en(op.entrada, ".bal")) {
+            fputs("--vliw-ir necesita un archivo fuente .bal\n", stderr);
+            return 2;
+        }
+        if ((op.detallado || op.ast) && frontend(&op)) return 1;
+        return sem_visitar_proyecto(op.entrada, stderr, visitante_vliw_ir, &op);
+    }
+    if (op.ir_spilling)
+        return sem_visitar_proyecto(op.entrada, stderr, visitante_ir_spilling, NULL);
     if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
     return compilar(&op);
