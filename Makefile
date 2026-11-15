@@ -858,6 +858,8 @@ test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 -include Makefile.ir_vliw.mk
 # Issue #7: API comun de usos, definiciones y efectos sobre IR.
 -include Makefile.ir_defuse.mk
+# Issue #23: banco fisico de registros de IR/spilling.
+-include Makefile.ir_fisico.mk
 
 # Reservas de spilling basadas en offsets reales de simbolos por funcion.
 -include Makefile.spilling.memoria.mk

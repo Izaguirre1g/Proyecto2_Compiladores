@@ -1,4 +1,5 @@
 #include "ir_vliw.h"
+#include "ir_registros_fisicos.h"
 #include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -8,8 +9,7 @@
 
 /* Este productor solo acredita operaciones ALU/LSU que construye y valida
  * con el codificador real. Los registros auxiliares no se prestan al allocador. */
-enum { IRV_PRIMER_REG = 16, IRV_MAX_REG = 8, IRV_SCRATCH_A = 28,
-       IRV_SCRATCH_B = 29, IRV_MAX_IMM = 1023, IRV_MIN_IMM = -1024 };
+enum { IRV_MAX_IMM = 1023, IRV_MIN_IMM = -1024 };
 
 typedef struct {
     const char *nombre; /* prestado de IrPrograma transformado */
@@ -44,17 +44,7 @@ static void error(FILE *f, size_t linea, const char *fmt, ...) {
 }
 
 static int registro(const char *s, size_t limite, unsigned *out) {
-    if (!s || s[0] != '$' || s[1] != 'r' || !s[2]) return 0;
-    size_t indice = 0;
-    for (const char *p = s + 2; *p; ++p) {
-        if (*p < '0' || *p > '9') return 0;
-        unsigned dig = (unsigned)(*p - '0');
-        if (indice > (SIZE_MAX - dig) / 10) return 0;
-        indice = indice * 10 + dig;
-    }
-    if (indice >= limite) return 0;
-    *out = IRV_PRIMER_REG + (unsigned)indice;
-    return 1;
+    return ir_fisico_mapear(s, limite, out) == 0;
 }
 
 static int entero(const char *s, long *out) {
@@ -200,7 +190,7 @@ static int lowering(Productor *p, const IrPrograma *ir, size_t reg_limite,
             if (!agregar(p,2,"sye x0,0") || !salto(p,inst->dst,VLIW_DEST_DIRECTO)) return 0;
             break;
         case IR_JFALSE: case IR_JTRUE:
-            if (!operando(p,inst->a,reg_limite,IRV_SCRATCH_A,&a)) goto unsupported;
+            if (!operando(p,inst->a,reg_limite,IR_FISICO_AUXILIAR_A,&a)) goto unsupported;
             if (!agregar(p,2, inst->op == IR_JFALSE ? "igualsi x%u,x0,0" :
                          "igualno x%u,x0,0",a) ||
                 !salto(p,inst->dst,VLIW_DEST_CONDICIONAL)) return 0;
@@ -231,8 +221,8 @@ static int lowering(Productor *p, const IrPrograma *ir, size_t reg_limite,
             break;
         case IR_BIN: {
             if (!registro(inst->dst, reg_limite, &dst) ||
-                !operando(p, inst->a, reg_limite, IRV_SCRATCH_A, &a) ||
-                !operando(p, inst->b, reg_limite, IRV_SCRATCH_B, &b)) goto unsupported;
+                !operando(p, inst->a, reg_limite, IR_FISICO_AUXILIAR_A, &a) ||
+                !operando(p, inst->b, reg_limite, IR_FISICO_AUXILIAR_B, &b)) goto unsupported;
             const char *opcode = inst->operador && !strcmp(inst->operador, "gauss") ? "suma" :
                                  inst->operador && !strcmp(inst->operador, "neumann") ? "resta" : NULL;
             if (!opcode) goto unsupported;
@@ -242,7 +232,7 @@ static int lowering(Productor *p, const IrPrograma *ir, size_t reg_limite,
         case IR_UNARY:
             if (!inst->operador || strcmp(inst->operador, "neumann") ||
                 !registro(inst->dst, reg_limite, &dst) ||
-                !operando(p, inst->a, reg_limite, IRV_SCRATCH_A, &a)) goto unsupported;
+                !operando(p, inst->a, reg_limite, IR_FISICO_AUXILIAR_A, &a)) goto unsupported;
             if (!agregar(p, 0, "resta x%u,x0,x%u", dst, a)) return 0;
             break;
         default:
@@ -278,8 +268,8 @@ void ir_vliw_liberar(IrVliwResultado *r) {
 
 IrVliwEstado ir_vliw_desde_ir(const IrPrograma *original,
     const IrVliwConfiguracion *config, IrVliwResultado *salida, FILE *err) {
-    if (!original || !config || !salida || config->registros < 3 ||
-        config->registros > IRV_MAX_REG || config->bytes_ocupados < 4 ||
+    if (!original || !config || !salida || !ir_fisico_configuracion_valida(config->registros) ||
+        config->bytes_ocupados < 4 ||
         salida->cadena || salida->despues_spilling.codigo ||
         salida->despues_spilling.bloques || salida->despues_spilling.cantidad) return IR_VLIW_ARGUMENTO;
     IrVliwResultado nuevo = {0};
@@ -288,6 +278,15 @@ IrVliwEstado ir_vliw_desde_ir(const IrPrograma *original,
     IrVliwEstado estado = IR_VLIW_ARGUMENTO;
     if (ir_aplicar_spilling(original, &nuevo.despues_spilling,
                             config->registros, &nuevo.metricas)) goto fin;
+    size_t instruccion_invalida = SIZE_MAX;
+    if (ir_fisico_validar_programa(&nuevo.despues_spilling, config->registros,
+                                   &instruccion_invalida)) {
+        error(err, instruccion_invalida == SIZE_MAX ? 0 :
+              nuevo.despues_spilling.codigo[instruccion_invalida].linea,
+              "IR tras spilling contiene un registro sin asignar o una instruccion invalida");
+        estado = IR_VLIW_NO_SOPORTADO;
+        goto fin;
+    }
     if (ir_spilling_backend_preparar(config->bytes_ocupados, nuevo.metricas.ranuras,
                                      0, &nuevo.backend)) {
         error(err, 0, "marco/offsets de spilling no representables directamente");
