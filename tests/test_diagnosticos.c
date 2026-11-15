@@ -1,5 +1,5 @@
 /*
- * Pruebas del módulo de diagnósticos (src/diagnosticos.c).
+ * Pruebas del módulo de diagnósticos (src/Linea_Comandos/diagnosticos.c).
  *
  * Le damos líneas de error escritas exactamente como las escribe el
  * compilador, y revisamos que cada parte (fase, archivo, línea, columna

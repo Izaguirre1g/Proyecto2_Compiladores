@@ -1,5 +1,5 @@
 /*
- * Pruebas de la traducción de mensajes del parser (src/ide_mensajes.c).
+ * Pruebas de la traducción de mensajes del parser (src/IDE/ide_mensajes.c).
  *
  * Los mensajes de entrada son copias exactas de lo que escribe Bison con
  * los ejemplos reales del lenguaje BAL.

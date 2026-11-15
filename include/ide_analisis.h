@@ -41,4 +41,16 @@ int ide_analizar_texto(const char *texto, size_t largo, const char *ruta,
 /* El nombre que se usa en los errores cuando el archivo no tiene ruta. */
 #define IDE_SIN_NOMBRE "sin_nombre.bal"
 
+/*
+ * El archivo temporal oculto donde se guarda el texto del editor para
+ * analizarlo: la misma carpeta y el mismo nombre con ".ide_" delante
+ * ("ejemplos/.ide_factorial.bal"). Lo usan también otras partes del IDE
+ * que necesitan correr el compilador sobre el texto (ide_dce.c).
+ * Devuelve una cadena nueva (liberar con free) o NULL si faltó memoria.
+ */
+char *ide_ruta_temporal(const char *ruta);
+
+/* Escribe el texto completo en un archivo. Devuelve 0 si funcionó, -1 si no. */
+int ide_escribir_archivo(const char *ruta, const char *texto, size_t largo);
+
 #endif

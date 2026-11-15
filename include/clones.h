@@ -5,30 +5,38 @@
  * Detección de código clonado (copiado y pegado) entre archivos BAL.
  *
  * Un CLON es un pedazo de código que aparece más de una vez, en el mismo
- * archivo o en archivos distintos. Se buscan dos tipos:
+ * archivo o en archivos distintos. Para decidir si dos fragmentos son clones
+ * se sigue el CAMINO DE LA GRAMÁTICA: cada archivo se analiza con el
+ * analizador predictivo LL(1) (src/LL1/), que deja su árbol de derivación
+ * (qué producción se aplicó en cada paso). Dos fragmentos son clones si el
+ * analizador recorrió el MISMO camino: las mismas producciones, en el mismo
+ * orden. Se buscan dos tipos:
  *
- *   Tipo I:  código idéntico. Solo pueden cambiar los espacios, los saltos
- *            de línea, los comentarios y los paréntesis de más.
- *              x : a gauss 1;        y      x  :  (a gauss 1); %% copia
+ *   Tipo I:  mismo camino y mismos tokens. Solo pueden cambiar los espacios,
+ *            los saltos de línea y los comentarios, que el lexer descarta.
+ *              x : a gauss 1;        y      x  :  a gauss 1;   %% copia
  *
- *   Tipo II: misma estructura, pero con otros nombres o valores.
+ *   Tipo II: mismo camino; solo cambian los nombres y los valores
+ *            (los terminales id, num, cadena y car).
  *              x : a gauss 1;        y      total : suma gauss 5;
  *
- * Cómo se buscan (ideas de la presentación "Optimización de Código"):
+ * NO son clones dos fragmentos cuyo camino es otro, aunque se parezcan:
+ *   - "x : (a gauss 1);" frente a "x : a gauss 1;": los paréntesis usan la
+ *     producción  primario → ( expresion ) .
+ *   - un whale frente a un whether con el mismo cuerpo, "gauss" frente a
+ *     "neumann", declare_true frente a declare_false: son terminales o
+ *     producciones distintas.
  *
- *   1. Cada archivo se convierte en su AST. El AST ya no tiene espacios,
- *      comentarios ni paréntesis (diapositiva 4), así que el Tipo I sale
- *      solo con comparar árboles.
- *   2. Con un recorrido ascendente, post-orden (diapositiva 8), cada nodo
- *      recibe una HUELLA: un número calculado con su tipo, su texto y las
- *      huellas de sus hijos. Dos subárboles iguales tienen la misma huella,
- *      igual que en el DAG (diapositiva 17), donde dos cálculos iguales
- *      caen en el mismo nodo.
- *   3. Para el Tipo II, la huella ignora los nombres y los valores, así
- *      solo cuenta la FORMA del código.
- *   4. Solo se reportan funciones, bloques y sentencias de un tamaño mínimo,
- *      y solo el clon más grande: si dos funciones son copia, no se listan
- *      también todas sus sentencias.
+ * Cómo se compara rápido (ideas de la presentación "Optimización de Código"):
+ *   1. Con un recorrido ascendente, post-orden (diapositiva 8), cada nodo del
+ *      árbol de derivación recibe una HUELLA: un número calculado con su
+ *      símbolo, la producción aplicada y las huellas de sus hijos. Dos
+ *      subárboles iguales tienen la misma huella, igual que en el DAG
+ *      (diapositiva 17), donde dos cálculos iguales caen en el mismo nodo.
+ *   2. Para el Tipo II, la huella ignora el texto de los nombres y valores.
+ *   3. Solo se reportan funciones, bloques y sentencias de un tamaño mínimo
+ *      (en tokens), y solo el clon más grande: si dos funciones son copia, no
+ *      se listan también todas sus sentencias.
  */
 
 #include <stddef.h>
@@ -58,7 +66,7 @@ typedef struct {
 typedef struct {
     ClonTipo tipo;
     const char *que;            /* Qué se repite: "funcion", "ciclo whale"... (texto fijo). */
-    size_t nodos;               /* Tamaño del fragmento, en nodos del AST. */
+    size_t tokens;              /* Tamaño del fragmento, en tokens. */
     ClonFragmento *fragmentos;
     size_t cantidad;
 } Clon;
@@ -68,25 +76,26 @@ typedef struct {
     Clon *elementos;
     size_t cantidad;
     size_t capacidad;
-    size_t omitidos;            /* Archivos con errores de sintaxis (sin AST, no se revisan). */
+    size_t omitidos;            /* Archivos con errores de sintaxis (sin derivación, no se revisan). */
     char **nombres_omitidos;    /* Sus nombres (copias propias), "omitidos" en total. */
 } ClonLista;
 
-/* Tamaño mínimo, en nodos del AST, para que un fragmento cuente como clon.
- * Con menos, saldrían como "clones" cosas tan comunes como "i : i gauss 1;". */
-#define CLONES_MINIMO_NODOS 10
+/* Tamaño mínimo, en tokens, para que un fragmento cuente como clon.
+ * Con menos, saldrían como "clones" cosas tan comunes como "i : i gauss 1;"
+ * (6 tokens). */
+#define CLONES_MINIMO_TOKENS 10
 
 /*
  * Busca clones en un grupo de archivos.
  *
  *   fuentes, cantidad: los archivos a revisar (se comparan todos con todos,
  *                      y cada uno consigo mismo).
- *   minimo_nodos:      tamaño mínimo de un clon (normalmente CLONES_MINIMO_NODOS).
+ *   minimo_tokens:     tamaño mínimo de un clon, en tokens (normalmente CLONES_MINIMO_TOKENS).
  *   lista:             aquí se agregan los clones, del más grande al más pequeño.
  *
  * Devuelve 0 si funcionó, o -1 si no hubo memoria.
  */
-int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_nodos,
+int clones_buscar(const ClonFuente *fuentes, size_t cantidad, size_t minimo_tokens,
                   ClonLista *lista);
 
 /* Libera la memoria de la lista y la deja vacía otra vez. */
@@ -95,7 +104,7 @@ void clones_liberar(ClonLista *lista);
 /*
  * Escribe los clones para leerlos en la terminal, por ejemplo:
  *
- *   Clon 1: tipo I (codigo identico), funcion de 15 nodos, 2 copias
+ *   Clon 1: tipo I (codigo identico), funcion de 22 tokens, 2 copias
  *     examples/llamadas.bal: lineas 2 a 4
  *     examples/ejercicio3_puntajes.bal: lineas 2 a 4
  *
@@ -108,7 +117,7 @@ int clones_escribir_texto(const ClonLista *lista, size_t archivos, FILE *salida)
  * Escribe los clones como JSON, para que los lea el IDE:
  *
  *   {"archivos": 2, "omitidos": [], "clones": [
- *     {"tipo": 1, "que": "funcion", "nodos": 15, "fragmentos": [
+ *     {"tipo": 1, "que": "funcion", "tokens": 22, "fragmentos": [
  *       {"archivo": "a.bal", "linea": 2, "columna": 1, "linea_fin": 4, "columna_fin": 2}, ...]}]}
  *
  * Devuelve 0 si se pudo escribir, o -1 si falló la salida.

@@ -5,11 +5,11 @@
 El lexer implementa la primera fase del compilador y mantiene la misma interfaz pública
 que ya utilizaban la CLI y el parser: `lexer_init` y `lexer_next`. La diferencia es que
 el reconocimiento de patrones ya no se hace con una cadena de decisiones escrita a mano;
-las reglas léxicas se declaran en `src/lexer.l` y Flex genera el scanner.
+las reglas léxicas se declaran en `src/Analisis_Lexico/lexer.l` y Flex genera el scanner.
 
 Esto no reemplaza el análisis sintáctico. Flex reconoce tokens; Bison usa esos tokens para
 validar las derivaciones de la gramática y construir el AST. Por esa razón no se modifica
-`Analisis_Sintactico/gramatica.y` ni `Analisis_Sintactico/puente_lexer.c`.
+`src/Analisis_Sintactico/gramatica.y` ni `src/Analisis_Sintactico/puente_lexer.c`.
 
 ## Tokens reconocidos
 
@@ -37,8 +37,8 @@ Bison siga traduciendo exactamente los mismos `TOKEN_*`.
 
 ## Cómo funciona ahora
 
-`src/lexer.l` contiene expresiones regulares y estados exclusivos para comentarios de línea
-y de bloque. Flex decide qué regla coincide con la entrada. `src/lexer.c` queda como una capa
+`src/Analisis_Lexico/lexer.l` contiene expresiones regulares y estados exclusivos para comentarios de línea
+y de bloque. Flex decide qué regla coincide con la entrada. `src/Analisis_Lexico/lexer.c` queda como una capa
 pequeña de compatibilidad: conserva el estado de línea, columna y offset, copia el lexema al
 `Token` y mantiene el comportamiento de la API anterior.
 
@@ -53,7 +53,7 @@ recuperable y las posiciones continúan contando caracteres, no bytes.
 
 ## Compatibilidad con el parser
 
-No se cambia `include/lexer.h`, `include/token.h`, `src/token.c`, la gramática de Bison ni el
+No se cambia `include/lexer.h`, `include/token.h`, `src/Analisis_Lexico/token.c`, la gramática de Bison ni el
 puente léxico-sintáctico. El contrato que ve el parser sigue siendo:
 
 ```c
@@ -76,7 +76,7 @@ make clean
 make test
 ```
 
-El Makefile genera `src/lexer_flex.c` desde `src/lexer.l`. La batería existente de
+El Makefile genera `src/Analisis_Lexico/lexer_flex.c` desde `src/Analisis_Lexico/lexer.l`. La batería existente de
 `tests/test_lexer.c` se conserva sin cambios; por lo tanto se siguen verificando las mismas
 reservadas, operadores, delimitadores, comentarios, literales, posiciones, errores, UTF-8,
 NUL y el ejemplo de factorial.
