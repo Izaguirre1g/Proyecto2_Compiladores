@@ -1,0 +1,639 @@
+diff --git a/Makefile b/Makefile
+index 011f8b3..922bccf 100644
+--- a/Makefile
++++ b/Makefile
+@@ -849,7 +849,7 @@ test-loop-unrolling: loop_unrolling/pruebas/test_loop_unrolling balc
+ reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+       reordenamiento/reordenamiento.h $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
+ 	$(CC) $(CPPFLAGS) $(CFLAGS) reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+-	      $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
++	      $(IR)/ir.c $(SINTACTICO)/ast.c $(IR_DEFUSE_SRC) -o $@
+ test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
+ 	./reordenamiento/pruebas/test_reordenamiento
+ 	sh reordenamiento/pruebas/test_bal.sh
+diff --git a/Makefile.ir_defuse.mk b/Makefile.ir_defuse.mk
+index e59b470..6bf6d1d 100644
+--- a/Makefile.ir_defuse.mk
++++ b/Makefile.ir_defuse.mk
+@@ -14,4 +14,24 @@ test-ir-defuse: tests/test_ir_defuse
+ test: test-ir-defuse
+ clean: clean-ir-defuse
+ clean-ir-defuse:
+-	rm -f tests/test_ir_defuse
++	rm -f tests/test_ir_defuse tests/test_ir_defuse_consumidores
++
++# Consumidores del contrato: DCE, IDE (incluidas metricas) y reordenamiento.
++# Las recetas heredadas usan DCE_SRC/IDE_DCE_SRC al ejecutar, no al parsear.
++DCE_SRC += $(IR_DEFUSE_SRC)
++IDE_DCE_SRC += $(IR_DEFUSE_SRC)
++tests/test_dce tests/test_ide_dce tests/test_metricas balc-ide: $(IR_DEFUSE_SRC) include/ir_defuse.h
++reordenamiento/pruebas/test_reordenamiento: $(IR_DEFUSE_SRC) include/ir_defuse.h
++
++# Prueba sin parser/Flex/Bison de ambos consumidores sobre IR real.
++.PHONY: test-ir-defuse-consumidores
++tests/test_ir_defuse_consumidores: tests/test_ir_defuse_consumidores.c \
++        $(IR_DEFUSE_SRC) src/DCE/dce.c reordenamiento/reordenamiento.c \
++        src/Representacion_Intermedia/ir.c src/Analisis_Sintactico/ast.c \
++        include/ir_defuse.h include/ir.h include/dce.h reordenamiento/reordenamiento.h
++	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir_defuse_consumidores.c \
++	    $(IR_DEFUSE_SRC) src/DCE/dce.c reordenamiento/reordenamiento.c \
++	    src/Representacion_Intermedia/ir.c src/Analisis_Sintactico/ast.c -o $@
++test-ir-defuse-consumidores: tests/test_ir_defuse_consumidores
++	./tests/test_ir_defuse_consumidores
++test-ir-defuse: test-ir-defuse-consumidores
+diff --git a/docs/ir_defuse.md b/docs/ir_defuse.md
+index 6c05bf7..4dbc125 100644
+--- a/docs/ir_defuse.md
++++ b/docs/ir_defuse.md
+@@ -59,9 +59,29 @@ make test-ir-vliw
+ 
+ ## Limites de la entrega
+ 
+-Se publica el contrato y sus pruebas, **sin migrar** por ahora las funciones
+-privadas de DCE, reordenamiento y spilling: esa migracion debe comprobar
+-paridad de efectos, liveness y dependencias. El analisis simbolico no demuestra
++La API ya es consumida por **DCE** (`dce_calcular_vivas`, eliminacion y
++propagacion de constantes) y **reordenamiento** (DAG RAW/WAR/WAW, memoria y
++barreras). Las ranuras de spilling se modelan conservadoramente como
++`@memoria` en el DAG: **no se afirma independencia entre direcciones**.
++`IR_CALL` se trata como lectura y escritura de memoria desconocida y conserva
++su barrera original. Ambas pasadas rechazan una instruccion no admitida en
++lugar de inventar dependencias.
++
++La transformacion de registros en `src/ir_spilling.c` mantiene su propio
++contrato de campos para reescribir operandos; esta API es una consulta,
++no sustituye esa reescritura. Para validar el acoplamiento:
++
++```sh
++make test-ir-defuse
++make test-dce test-reordenamiento test-ide-dce
++make test-spilling test-ir-vliw
++```
++
++Las pruebas `test_ir_defuse_consumidores.c` son independientes del parser y
++verifican vivacidad, recursos del DAG, llamadas, spills y entradas invalidas.
++El resto de pruebas completas requieren las herramientas del entorno BAL.
++
++El analisis simbolico no demuestra El analisis simbolico no demuestra
+ latencias de ISA ni sustituye CFG/DAG fisico, validacion ABI o tratamiento
+ de aliasing en el consumidor VLIW. Las reglas RAW N+3 son responsabilidad
+ separada del backend fisico.
+diff --git a/reordenamiento/pruebas/test_reordenamiento.c b/reordenamiento/pruebas/test_reordenamiento.c
+index f1980ee..fece044 100644
+--- a/reordenamiento/pruebas/test_reordenamiento.c
++++ b/reordenamiento/pruebas/test_reordenamiento.c
+@@ -99,7 +99,7 @@ static void ejecutar(const IrPrograma *ir, Estado *e) {
+         case IR_ARG: e->args[e->nargs++] = val(e, x->a); break;
+         case IR_CALL: {
+             unsigned long long s = 1;
+-            anotar(e, "%s", 0); /* separador (el valor no se usa) */
++            anotar(e, "call(", 0); /* separador literal, sin formato de puntero */
+             for (size_t i = 0; i < e->nargs; ++i) { s += e->args[i]; anotar(e, "%llu,", e->args[i]); }
+             anotar(e, ";", 0);
+             e->nargs = 0;
+@@ -308,8 +308,8 @@ static void programa_azar(IrPrograma *ir, unsigned long s) {
+         I(ir, IR_COPY, VARS[i], v, NULL, NULL);
+     }
+     bloque_azar(ir);
+-    I(ir, IR_BIN, "$tc", VARS[azar(5)], VARS[azar(5)], "<");
+-    I(ir, IR_JFALSE, "$L1", "$tc", NULL, NULL);
++    I(ir, IR_BIN, "$t0", VARS[azar(5)], VARS[azar(5)], "<");
++    I(ir, IR_JFALSE, "$L1", "$t0", NULL, NULL);
+     bloque_azar(ir);
+     I(ir, IR_JUMP, "$L2", NULL, NULL, NULL);
+     I(ir, IR_LABEL, "$L1", NULL, NULL, NULL);
+diff --git a/reordenamiento/reordenamiento.c b/reordenamiento/reordenamiento.c
+index 8be4b53..35d6adc 100644
+--- a/reordenamiento/reordenamiento.c
++++ b/reordenamiento/reordenamiento.c
+@@ -32,6 +32,8 @@
+  * ===================================================================== */
+ 
+ #include "reordenamiento.h"   /* RoOpciones, RoResumen, IrPrograma */
++#include "ir_defuse.h"
++#include <stdint.h>          /* SIZE_MAX */
+ #include <stdlib.h>           /* malloc, calloc, realloc, free */
+ #include <string.h>           /* strcmp, memcpy */
+ 
+@@ -56,27 +58,20 @@ static void leer(Usos *u, const char *s) { if (s) u->lee[u->nlee++] = s; }
+ /* Agrega un nombre a la lista de escrituras (ignora NULL). */
+ static void escribir(Usos *u, const char *s) { if (s) u->escribe[u->nesc++] = s; }
+ 
+-/* Llena *u segun la operacion. Los numeros ("5") tambien quedan como
+- * "lecturas", pero nadie los escribe, asi que no crean dependencias. */
+-static void usos(const IrInstr *x, Usos *u) {
++/* Traduce los conjuntos simbolicos de la API IR a los recursos del DAG.
++ * @memoria es un recurso conservador unico: no inferimos no-alias entre
++ * variables, arreglos, llamadas o ranuras de spilling. Devuelve 2 si la
++ * instruccion es invalida (evita planificar sin dependencias completas). */
++static int usos(const IrInstr *x, Usos *u) {
+     *u = (Usos){0};
+-    switch (x->op) {
+-    case IR_COPY:  case IR_UNARY: leer(u, x->a); escribir(u, x->dst); break; /* dst = a  /  dst = op a */
+-    case IR_BIN:   leer(u, x->a); leer(u, x->b); escribir(u, x->dst); break; /* dst = a op b */
+-    case IR_JFALSE: case IR_JTRUE: case IR_RETURN: leer(u, x->a); break;     /* Leen la condicion o el valor */
+-    case IR_ARG:   leer(u, x->a); u->barrera = 1; break;                     /* Argumento de una llamada */
+-    case IR_CALL:  escribir(u, x->dst); u->barrera = 1; break;               /* x->a es la funcion, no una variable */
+-    case IR_INDEX_REF: leer(u, x->a); leer(u, x->b); escribir(u, x->dst); break; /* Calcula una direccion */
+-    case IR_LOAD:  leer(u, x->a); leer(u, MEM); escribir(u, x->dst); break;  /* Lee de memoria */
+-    case IR_STORE: leer(u, x->dst); leer(u, x->a); escribir(u, MEM); break;  /* Escribe en memoria */
+-    case IR_SIZE:  leer(u, x->a); leer(u, MEM); escribir(u, x->dst); break;  /* El tamano depende de la memoria */
+-    case IR_LIST_ADD: case IR_LIST_REMOVE:                                    /* Cambian una lista */
+-        leer(u, x->dst); leer(u, x->a); leer(u, MEM); escribir(u, MEM); break;
+-    case IR_ARRAY_DIM: leer(u, x->dst); leer(u, x->a); leer(u, x->b); escribir(u, MEM); break;
+-    case IR_ARRAY_DECL: leer(u, x->a); escribir(u, x->dst); escribir(u, MEM); break;
+-    case IR_LIST_DECL: escribir(u, x->dst); escribir(u, MEM); break;
+-    default: break;                     /* label, goto, func, endfunc, param: nada */
+-    }
++    IrDefUse du;
++    if (ir_consultar_def_usos(x, &du) != 0) return 2;
++    for (size_t i = 0; i < du.cantidad_usos; ++i) leer(u, du.usos[i]);
++    for (size_t i = 0; i < du.cantidad_definiciones; ++i) escribir(u, du.definiciones[i]);
++    if (du.lee_memoria) leer(u, MEM);
++    if (du.escribe_memoria) escribir(u, MEM);
++    u->barrera = du.barrera;
++    return 0;
+ }
+ 
+ /* Igualdad de nombres (NULL nunca es igual). */
+@@ -122,8 +117,9 @@ static size_t ciclos_orden(const IrInstr *const *v, size_t n, unsigned lat, size
+     size_t cant = 0, t = 0;                              /* Entradas en la tabla / ciclo actual */
+     for (size_t i = 0; i < n; ++i) {
+         if (emision) emision[i] = RO_SIN_CICLO;
++        Usos u;
++        if (usos(v[i], &u) != 0) { free(tabla); return SIZE_MAX; }
+         if (!ocupa_ciclo(v[i]->op)) continue;            /* Las marcas no gastan ciclos */
+-        Usos u; usos(v[i], &u);
+         size_t inicio = t;                               /* Lo antes que podria emitirse */
+         for (size_t r = 0; r < u.nlee; ++r)              /* Espera a cada valor que lee */
+             for (size_t k = 0; k < cant; ++k)
+@@ -178,10 +174,12 @@ static void arista(Grafo *g, size_t i, size_t j, unsigned l, unsigned t, const c
+  * Si la ultima es un terminador, todas las demas deben ir antes (control).
+  * Solo se agregan dependencias DIRECTAS (con la escritura mas cercana);
+  * las demas quedan cubiertas por transitividad. */
+-static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat, int hay_terminador) {
++static int construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat, int hay_terminador) {
+     Usos *u = malloc(m * sizeof *u);                  /* Usos de cada instruccion */
+-    if (!u) return;
+-    for (size_t i = 0; i < m; ++i) usos(v[i], &u[i]);
++    if (!u) return 2;
++    for (size_t i = 0; i < m; ++i) {
++        if (usos(v[i], &u[i]) != 0) { free(u); return 2; }
++    }
+     long barrera = -1;                                /* Ultima arg/call vista */
+     for (size_t j = 0; j < m; ++j) {
+         /* RAW: j lee r -> depende de la escritura mas cercana de r. */
+@@ -225,6 +223,7 @@ static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat,
+     if (hay_terminador)
+         for (size_t i = 0; i + 1 < m; ++i) { arista(g, i, m - 1, 1, RO_DEP_CONTROL, NULL); g->control++; }
+     free(u);
++    return 0;
+ }
+ 
+ /* ===================================================================== */
+@@ -352,13 +351,15 @@ static int analizar(const IrPrograma *ir, size_t ini, size_t fin, unsigned lat,
+         free(v); free(nuevo); analisis_liberar(a); *a = (Analisis){0}; return 2;
+     }
+     for (size_t k = 0; k < m; ++k) { v[k] = &ir->codigo[p + k]; a->orden[k] = k; }
+-    construir(&a->g, v, m, lat, a->hay_term);             /* Paso 2: el DAG */
++    if (construir(&a->g, v, m, lat, a->hay_term)) {
++        free(v); free(nuevo); analisis_liberar(a); *a = (Analisis){0}; return 2;
++    }                                                     /* Paso 2: el DAG */
+     if (m >= 2 + (size_t)a->hay_term) {                   /* Hay algo que reordenar */
+         if (calendarizar(&a->g, a->orden) && respeta(&a->g, a->orden)) { /* Paso 3 */
+             for (size_t k = ini; k < p; ++k) nuevo[k - ini] = &ir->codigo[k];   /* Parte fija */
+             for (size_t k = 0; k < m; ++k) nuevo[p - ini + k] = v[a->orden[k]]; /* Region nueva */
+             a->ciclos_nuevo = ciclos_orden(nuevo, fin - ini, lat, NULL);       /* Paso 4 */
+-            a->valido = 1;
++            if (a->ciclos_nuevo != SIZE_MAX) a->valido = 1;
+         } else {
+             for (size_t k = 0; k < m; ++k) a->orden[k] = k; /* Sin orden nuevo: el original */
+         }
+@@ -412,6 +413,7 @@ int ro_reordenar(IrPrograma *ir, const RoOpciones *opc, RoResumen *res) {
+         RoBloque *d = &r.detalle[b];
+         d->inicio = ini; d->fin = fin;
+         d->ciclos_antes = d->ciclos_despues = ro_ciclos(ir, ini, fin, o.latencia);
++        if (d->ciclos_antes == SIZE_MAX) { estado = 2; break; }
+         Analisis a;
+         if (analizar(ir, ini, fin, o.latencia, 0, &a)) { estado = 2; break; } /* Pasos 1 a 4 */
+         if (a.m >= 2 + (size_t)a.hay_term) sumar(d, &r, &a.g); /* Solo bloques con algo que mover */
+@@ -439,12 +441,6 @@ int ro_reordenar(IrPrograma *ir, const RoOpciones *opc, RoResumen *res) {
+     return estado;
+ }
+ 
+-/* 1 si s es un nombre de variable (no una constante como "5" o "-2"). */
+-static int es_variable(const char *s) {
+-    unsigned char c = (unsigned char)s[0];
+-    return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80;
+-}
+-
+ void ro_grafo_liberar(RoGrafoBloque *g) {
+     if (!g) return;
+     free(g->nodos); free(g->aristas); free(g->orden); free(g->ruta);
+@@ -459,6 +455,7 @@ int ro_analizar_bloque(const IrPrograma *ir, size_t b, unsigned latencia, RoGraf
+     size_t ini = ir->bloques[b].inicio, fin = ir->bloques[b].fin, n = fin - ini;
+     out->inicio = ini; out->fin = fin;
+     out->ciclos_antes = out->ciclos_despues = ro_ciclos(ir, ini, fin, lat);
++    if (out->ciclos_antes == SIZE_MAX) { ro_grafo_liberar(out); return 2; }
+     Analisis a;
+     if (analizar(ir, ini, fin, lat, 1, &a)) return 2;
+     size_t m = a.m;
+@@ -498,8 +495,10 @@ int ro_analizar_bloque(const IrPrograma *ir, size_t b, unsigned latencia, RoGraf
+         x->pos = a.p + k;
+         x->altura = altura[k];
+         x->ciclo_antes = em_antes[a.p - ini + k];
+-        Usos u; usos(&ir->codigo[a.p + k], &u);
+-        for (size_t r = 0; r < u.nlee; ++r) if (es_variable(u.lee[r])) x->lee[x->nlee++] = u.lee[r];
++        Usos u;
++        if (usos(&ir->codigo[a.p + k], &u) != 0) { estado = 2; goto fin; }
++        for (size_t r = 0; r < u.nlee; ++r)
++            if (ir_es_nombre_valor(u.lee[r])) x->lee[x->nlee++] = u.lee[r];
+         for (size_t w = 0; w < u.nesc; ++w) x->escribe[x->nesc++] = u.escribe[w];
+     }
+     for (size_t k = 0; k < m; ++k) {                      /* Donde quedo cada nodo */
+diff --git a/src/DCE/dce.c b/src/DCE/dce.c
+index 8938292..94ff998 100644
+--- a/src/DCE/dce.c
++++ b/src/DCE/dce.c
+@@ -11,6 +11,7 @@
+  *   5. Tipo 2: código inalcanzable (constantes y grafo de flujo).
+  */
+ #include "dce.h"
++#include "ir_defuse.h"
+ 
+ #include <stdint.h>
+ #include <stdlib.h>
+@@ -20,21 +21,6 @@
+ /* 1. Usos, definiciones y efectos de cada instrucción                */
+ /* ================================================================== */
+ 
+-/*
+- * ¿Es este operando una VARIABLE? Los operandos de la IR son cadenas, y
+- * pueden ser:
+- *   - variables del programa (x, total) o temporales ($t3): SÍ;
+- *   - números (5, -2), textos ("hola"), caracteres ('a') y los valores
+- *     declare_true / declare_false: NO, son constantes.
+- */
+-static int es_variable(const char *s)
+-{
+-    if (s == NULL || s[0] == '\0') return 0;
+-    if (strcmp(s, "declare_true") == 0 || strcmp(s, "declare_false") == 0) return 0;
+-    return s[0] == '$' || s[0] == '_' || (s[0] >= 'a' && s[0] <= 'z') ||
+-           (s[0] >= 'A' && s[0] <= 'Z');
+-}
+-
+ /* ¿Es "s" un número entero escrito tal cual (con signo opcional)?
+  * Si lo es, deja su valor en "valor". */
+ static int es_numero(const char *s, long long *valor)
+@@ -47,61 +33,11 @@ static int es_numero(const char *s, long long *valor)
+     return 1;
+ }
+ 
+-/*
+- * La variable que la instrucción ASIGNA (su "def"), o NULL si no asigna
+- * ninguna. En la IR el destino está en "dst":
+- *     x = a          (copia)          $t1 = a gauss b   (binaria)
+- *     $t2 = ~ a      (unaria)         $t3 = ref v[i]    (referencia)
+- *     $t4 = load $t3 (lectura)        $t5 = size xs     (tamaño)
+- *     $t6 = call f, 2 (llamada)       param_decl n      (parámetro)
+- * En store, add y remove el "dst" NO se asigna: es el lugar de memoria donde
+- * se escribe, así que cuenta como un USO (ver usos()).
+- */
+-static const char *definicion(const IrInstr *x)
+-{
+-    switch (x->op) {
+-        case IR_COPY: case IR_BIN: case IR_UNARY: case IR_INDEX_REF:
+-        case IR_LOAD: case IR_SIZE: case IR_CALL: case IR_PARAM_DECL:
+-            return x->dst;
+-        default:
+-            return NULL;
+-    }
+-}
+-
+-/*
+- * Las variables que la instrucción LEE (su "use"). Deja hasta 3 en "u" y
+- * devuelve cuántas. Las constantes no cuentan.
+- * Ojo: en "call f, 2" ni "f" (el nombre de la función) ni "2" (la cantidad
+- * de argumentos) son variables; los argumentos ya se leyeron en los "arg".
+- */
+-static int usos(const IrInstr *x, const char *u[3])
++/* La semantica de operandos y efectos pertenece a la API comun de IR.
++ * Ninguna de estas pasadas interpreta por su cuenta los campos dst/a/b. */
++static int consultar(const IrInstr *x, IrDefUse *du)
+ {
+-    const char *posibles[3] = {NULL, NULL, NULL};
+-    switch (x->op) {
+-        case IR_COPY: case IR_UNARY: case IR_LOAD: case IR_SIZE:
+-        case IR_JFALSE: case IR_JTRUE: case IR_ARG: case IR_RETURN:
+-            posibles[0] = x->a;
+-            break;
+-        case IR_BIN: case IR_INDEX_REF:
+-            posibles[0] = x->a;
+-            posibles[1] = x->b;
+-            break;
+-        case IR_STORE: case IR_LIST_ADD: case IR_LIST_REMOVE:
+-            posibles[0] = x->dst;  /* Dónde se escribe. */
+-            posibles[1] = x->a;    /* Qué se escribe. */
+-            break;
+-        case IR_ARRAY_DIM:
+-            posibles[0] = x->dst;  /* El arreglo. */
+-            posibles[1] = x->b;    /* El tamaño de la dimensión. */
+-            break;
+-        default:
+-            break;
+-    }
+-    int cuantos = 0;
+-    for (int i = 0; i < 3; ++i) {
+-        if (es_variable(posibles[i])) u[cuantos++] = posibles[i];
+-    }
+-    return cuantos;
++    return ir_consultar_def_usos(x, du) == 0 ? 0 : 2;
+ }
+ 
+ /*
+@@ -209,13 +145,14 @@ static int armar_variables(const IrPrograma *ir, DceVivas *v)
+ 
+     for (size_t i = 0; i < ir->cantidad; ++i) {
+         const IrInstr *x = &ir->codigo[i];
+-        const char *u[3];
+-        int n = usos(x, u);
+-        for (int k = 0; k < n; ++k) {
+-            if (agregar_nombre(&lista, &cantidad, &capacidad, u[k]) != 0) goto sin_memoria;
++        IrDefUse du;
++        if (consultar(x, &du)) goto sin_memoria;
++        for (size_t k = 0; k < du.cantidad_usos; ++k) {
++            if (agregar_nombre(&lista, &cantidad, &capacidad, du.usos[k]) != 0) goto sin_memoria;
++        }
++        for (size_t k = 0; k < du.cantidad_definiciones; ++k) {
++            if (agregar_nombre(&lista, &cantidad, &capacidad, du.definiciones[k]) != 0) goto sin_memoria;
+         }
+-        const char *d = definicion(x);
+-        if (es_variable(d) && agregar_nombre(&lista, &cantidad, &capacidad, d) != 0) goto sin_memoria;
+     }
+ 
+     /* Ordenar y quitar repetidos. */
+@@ -300,11 +237,11 @@ static int resultado_de_main(const IrPrograma *ir, ResultadoMain *m)
+         const IrInstr *x = &ir->codigo[i];
+         if (x->op == IR_FUNC) en_main = x->dst && strcmp(x->dst, "main") == 0;
+         if (!en_main) continue;
+-        const char *u[3];
+-        int n = usos(x, u);
+-        for (int k = 0; k < n; ++k) {
+-            if (u[k][0] == '$') continue;  /* Temporal: no es una variable del programa. */
+-            if (agregar_nombre(&lista, &cantidad, &capacidad, u[k]) != 0) {
++        IrDefUse du;
++        if (consultar(x, &du)) { free(lista); return 2; }
++        for (size_t k = 0; k < du.cantidad_usos; ++k) {
++            if (du.usos[k][0] == '$') continue; /* Los registros no son resultado de BAL. */
++            if (agregar_nombre(&lista, &cantidad, &capacidad, du.usos[k]) != 0) {
+                 free(lista);
+                 return 2;
+             }
+@@ -387,14 +324,16 @@ static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain
+     for (size_t b = 0; b < nb; ++b) {
+         unsigned char *usa = v->usa + b * nv, *define = v->define + b * nv;
+         for (size_t i = ir->bloques[b].inicio; i < ir->bloques[b].fin; ++i) {
+-            const char *u[3];
+-            int n = usos(&ir->codigo[i], u);
+-            for (int k = 0; k < n; ++k) {
+-                size_t j = numero_de(v, u[k]);
++            IrDefUse du;
++            if (consultar(&ir->codigo[i], &du)) { dce_liberar_vivas(v); return 2; }
++            for (size_t k = 0; k < du.cantidad_usos; ++k) {
++                size_t j = numero_de(v, du.usos[k]);
+                 if (j != SIZE_MAX && !define[j]) usa[j] = 1;
+             }
+-            size_t d = numero_de(v, definicion(&ir->codigo[i]));
+-            if (d != SIZE_MAX) define[d] = 1;
++            for (size_t k = 0; k < du.cantidad_definiciones; ++k) {
++                size_t d = numero_de(v, du.definiciones[k]);
++                if (d != SIZE_MAX) define[d] = 1;
++            }
+         }
+     }
+ 
+@@ -588,7 +527,9 @@ static size_t marcar_muertas(const IrPrograma *ir, const DceVivas *v, unsigned c
+         if (nv) memcpy(vivas, v->salida + b * nv, nv);
+         for (size_t i = ir->bloques[b].fin; i-- > ir->bloques[b].inicio;) {
+             const IrInstr *x = &ir->codigo[i];
+-            size_t d = numero_de(v, definicion(x));
++            IrDefUse du;
++            if (consultar(x, &du)) { free(vivas); return SIZE_MAX; }
++            size_t d = du.cantidad_definiciones ? numero_de(v, du.definiciones[0]) : SIZE_MAX;
+             int muerta = d != SIZE_MAX && !vivas[d];
+ 
+             if (muerta && se_puede_eliminar(x)) {
+@@ -601,10 +542,8 @@ static size_t marcar_muertas(const IrPrograma *ir, const DceVivas *v, unsigned c
+             if (muerta && puede_fallar(x)) r->riesgosas_conservadas++;
+ 
+             if (d != SIZE_MAX) vivas[d] = 0;
+-            const char *u[3];
+-            int n = usos(x, u);
+-            for (int k = 0; k < n; ++k) {
+-                size_t j = numero_de(v, u[k]);
++            for (size_t k = 0; k < du.cantidad_usos; ++k) {
++                size_t j = numero_de(v, du.usos[k]);
+                 if (j != SIZE_MAX) vivas[j] = 1;
+             }
+         }
+@@ -749,7 +688,11 @@ static size_t resolver_condiciones(IrPrograma *ir, DceResultado *r)
+             return SIZE_MAX;
+         }
+         for (size_t i = inicio; i < fin; ++i) {
+-            const char *d = definicion(&ir->codigo[i]);
++            IrDefUse du;
++            if (consultar(&ir->codigo[i], &du)) {
++                free(tabla); free(borrar); return SIZE_MAX;
++            }
++            const char *d = du.cantidad_definiciones ? du.definiciones[0] : NULL;
+             /* Solo temporales: las variables no se propagan (ver arriba). */
+             if (d == NULL || d[0] != '$') continue;
+             Constante *c = buscar_constante(tabla, cantidad, d);
+@@ -766,7 +709,11 @@ static size_t resolver_condiciones(IrPrograma *ir, DceResultado *r)
+             cambio = 0;
+             for (size_t i = inicio; i < fin; ++i) {
+                 const IrInstr *x = &ir->codigo[i];
+-                const char *d = definicion(x);
++                IrDefUse du;
++                if (consultar(x, &du)) {
++                    free(tabla); free(borrar); return SIZE_MAX;
++                }
++                const char *d = du.cantidad_definiciones ? du.definiciones[0] : NULL;
+                 Constante *c = d ? buscar_constante(tabla, cantidad, d) : NULL;
+                 if (c == NULL || c->definiciones != 1 || c->conocido) continue;
+                 long long a = 0, b = 0, v = 0;
+diff --git a/tests/test_ir_defuse_consumidores.c b/tests/test_ir_defuse_consumidores.c
+new file mode 100644
+index 0000000..78d3400
+--- /dev/null
++++ b/tests/test_ir_defuse_consumidores.c
+@@ -0,0 +1,169 @@
++/* Issue #7: uso real de la API IR en DCE y reordenamiento, sin Flex/Bison. */
++#include "ir_defuse.h"
++#include "dce.h"
++#include "reordenamiento.h"
++
++#include <assert.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define I(OP,D,A,B) { (OP), (char *)(D), (char *)(A), (char *)(B), NULL, 1 }
++
++static int contiene(const DceVivas *v, const char *nombre)
++{
++    for (size_t i = 0; i < v->cantidad_variables; ++i)
++        if (!strcmp(v->variables[i], nombre)) return 1;
++    return 0;
++}
++
++static void vivacidad_en_spills(void)
++{
++    IrInstr codigo[] = {
++        I(IR_FUNC, "aux", NULL, NULL),
++        I(IR_SPILL_STORE, "$spill1", "$r0", NULL), /* uso antes de definir */
++        I(IR_SPILL_LOAD, "$r0", "$spill0", NULL),
++        I(IR_BIN, "$t1", "$r0", "p"),
++        I(IR_RETURN, NULL, "$t1", NULL),
++        I(IR_END_FUNC, "aux", NULL, NULL)
++    };
++    IrBloque bloque = {.inicio = 0, .fin = 6};
++    IrPrograma ir = {.codigo = codigo, .cantidad = 6,
++                     .bloques = &bloque, .cantidad_bloques = 1};
++    DceVivas v = {0};
++    assert(dce_calcular_vivas(&ir, &v) == 0);
++    assert(contiene(&v, "$r0") && contiene(&v, "$t1") && contiene(&v, "p"));
++    assert(!contiene(&v, "$spill0") && !contiene(&v, "$spill1"));
++    assert(dce_esta_viva(&v, 0, "$r0", 0));
++    assert(dce_esta_viva(&v, 0, "p", 0));
++    assert(!dce_esta_viva(&v, 0, "$t1", 0));
++    dce_liberar_vivas(&v);
++}
++
++static void colecciones_y_invalidos(void)
++{
++    IrInstr codigo[] = {
++        I(IR_FUNC, "aux", NULL, NULL),
++        I(IR_ARRAY_DECL, "mat", "2", NULL),
++        I(IR_ARRAY_DIM, "mat", "0", "longitud"),
++        I(IR_LIST_DECL, "lista", NULL, NULL),
++        I(IR_LIST_ADD, "lista", "valor", NULL),
++        I(IR_RETURN, NULL, "valor", NULL),
++        I(IR_END_FUNC, "aux", NULL, NULL)
++    };
++    IrBloque bloque = {.inicio = 0, .fin = 7};
++    IrPrograma ir = {.codigo = codigo, .cantidad = 7,
++                     .bloques = &bloque, .cantidad_bloques = 1};
++    DceVivas v = {0};
++    assert(dce_calcular_vivas(&ir, &v) == 0);
++    assert(contiene(&v, "mat") && contiene(&v, "lista"));
++    assert(contiene(&v, "valor") && contiene(&v, "longitud"));
++    assert(dce_esta_viva(&v, 0, "longitud", 0));
++    assert(dce_esta_viva(&v, 0, "valor", 0));
++    assert(!dce_esta_viva(&v, 0, "mat", 0)); /* se define antes de usar */
++    dce_liberar_vivas(&v);
++
++    /* Un operando invalido no se interpreta como ausencia de uso. */
++    codigo[2] = (IrInstr)I(IR_SPILL_LOAD, "$r0", "$t9", NULL);
++    assert(dce_calcular_vivas(&ir, &v) == 2);
++}
++
++/* El DCE debe conservar CALL y la escritura de spilling aunque su
++ * resultado no este vivo, y quitar la copia escalar inutil. */
++static char *duplicar(const char *s)
++{
++    if (!s) return NULL;
++    size_t n = strlen(s) + 1;
++    char *p = malloc(n);
++    assert(p);
++    memcpy(p, s, n);
++    return p;
++}
++
++static void eliminacion_con_efectos(void)
++{
++    const IrInstr origen[] = {
++        I(IR_FUNC, "aux", NULL, NULL),
++        I(IR_COPY, "basura", "9", NULL),
++        I(IR_COPY, "v", "1", NULL),
++        I(IR_ARG, NULL, "v", NULL),
++        I(IR_CALL, "$t2", "externa", "1"),
++        I(IR_SPILL_LOAD, "$r0", "$spill0", NULL),
++        I(IR_SPILL_STORE, "$spill1", "$r0", NULL),
++        I(IR_RETURN, NULL, "v", NULL),
++        I(IR_END_FUNC, "aux", NULL, NULL)
++    };
++    const size_t n = sizeof origen / sizeof *origen;
++    IrPrograma ir = {0};
++    ir.codigo = calloc(n, sizeof *ir.codigo);
++    assert(ir.codigo);
++    ir.cantidad = ir.capacidad = n;
++    for (size_t i = 0; i < n; ++i) {
++        ir.codigo[i] = origen[i];
++        ir.codigo[i].dst = duplicar(origen[i].dst);
++        ir.codigo[i].a = duplicar(origen[i].a);
++        ir.codigo[i].b = duplicar(origen[i].b);
++    }
++    assert(ir_bloques_basicos(&ir) == 0);
++    DceResultado r = {0};
++    assert(dce_eliminar(&ir, &r) == 0);
++    bool basura = false, llamada = false, guardado = false, cargado = false;
++    for (size_t i = 0; i < ir.cantidad; ++i) {
++        IrInstr *x = &ir.codigo[i];
++        if (x->op == IR_COPY && x->dst && !strcmp(x->dst, "basura")) basura = true;
++        if (x->op == IR_CALL) llamada = true;
++        if (x->op == IR_SPILL_STORE) guardado = true;
++        if (x->op == IR_SPILL_LOAD) cargado = true;
++    }
++    assert(!basura && llamada && guardado && cargado);
++    dce_liberar_resultado(&r);
++    ir_liberar(&ir);
++}
++
++static int hay_dependencia(const RoGrafoBloque *g, size_t de, size_t a, unsigned tipo)
++{
++    for (size_t i = 0; i < g->cantidad_aristas; ++i)
++        if (g->aristas[i].de == de && g->aristas[i].a == a &&
++            (g->aristas[i].tipos & tipo)) return 1;
++    return 0;
++}
++
++static void dag_spills_memoria_llamada(void)
++{
++    IrInstr codigo[] = {
++        I(IR_FUNC, "aux", NULL, NULL),
++        I(IR_SPILL_STORE, "$spill0", "$r0", NULL),
++        I(IR_SPILL_LOAD, "$r1", "$spill0", NULL),
++        I(IR_BIN, "$t1", "$r1", "3"),
++        I(IR_ARG, NULL, "$t1", NULL),
++        I(IR_CALL, "$t2", "f", "1"),
++        I(IR_LOAD, "$t3", "dir", NULL),
++        I(IR_END_FUNC, "aux", NULL, NULL)
++    };
++    IrBloque bloque = {.inicio = 0, .fin = 8};
++    IrPrograma ir = {.codigo = codigo, .cantidad = 8,
++                     .bloques = &bloque, .cantidad_bloques = 1};
++    RoGrafoBloque g = {0};
++    assert(ro_analizar_bloque(&ir, 0, 3, &g) == 0);
++    assert(g.primero == 1 && g.cantidad_nodos == 7);
++    assert(hay_dependencia(&g, 0, 1, RO_DEP_MEMORIA)); /* store -> load */
++    assert(hay_dependencia(&g, 1, 2, RO_DEP_RAW));     /* $r1 -> $t1 */
++    assert(hay_dependencia(&g, 3, 4, RO_DEP_EFECTO)); /* arg -> call */
++    assert(hay_dependencia(&g, 4, 5, RO_DEP_MEMORIA));/* call -> load */
++    assert(g.nodos[0].nlee == 1 && !strcmp(g.nodos[0].lee[0], "$r0"));
++    assert(g.nodos[1].nlee == 0); /* no se confunde $spill0 con registro */
++    ro_grafo_liberar(&g);
++
++    codigo[1] = (IrInstr)I(IR_SPILL_STORE, "$spill0", "entrada_incorrecta", NULL);
++    assert(ro_analizar_bloque(&ir, 0, 3, &g) == 2);
++}
++
++int main(void)
++{
++    vivacidad_en_spills();
++    colecciones_y_invalidos();
++    eliminacion_con_efectos();
++    dag_spills_memoria_llamada();
++    puts("OK: consumidores USE/DEF DCE + reordenamiento, spilling, memoria, llamadas y errores");
++    return 0;
++}

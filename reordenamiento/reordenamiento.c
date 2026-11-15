@@ -32,6 +32,8 @@
  * ===================================================================== */
 
 #include "reordenamiento.h"   /* RoOpciones, RoResumen, IrPrograma */
+#include "ir_defuse.h"
+#include <stdint.h>          /* SIZE_MAX */
 #include <stdlib.h>           /* malloc, calloc, realloc, free */
 #include <string.h>           /* strcmp, memcpy */
 
@@ -56,27 +58,20 @@ static void leer(Usos *u, const char *s) { if (s) u->lee[u->nlee++] = s; }
 /* Agrega un nombre a la lista de escrituras (ignora NULL). */
 static void escribir(Usos *u, const char *s) { if (s) u->escribe[u->nesc++] = s; }
 
-/* Llena *u segun la operacion. Los numeros ("5") tambien quedan como
- * "lecturas", pero nadie los escribe, asi que no crean dependencias. */
-static void usos(const IrInstr *x, Usos *u) {
+/* Traduce los conjuntos simbolicos de la API IR a los recursos del DAG.
+ * @memoria es un recurso conservador unico: no inferimos no-alias entre
+ * variables, arreglos, llamadas o ranuras de spilling. Devuelve 2 si la
+ * instruccion es invalida (evita planificar sin dependencias completas). */
+static int usos(const IrInstr *x, Usos *u) {
     *u = (Usos){0};
-    switch (x->op) {
-    case IR_COPY:  case IR_UNARY: leer(u, x->a); escribir(u, x->dst); break; /* dst = a  /  dst = op a */
-    case IR_BIN:   leer(u, x->a); leer(u, x->b); escribir(u, x->dst); break; /* dst = a op b */
-    case IR_JFALSE: case IR_JTRUE: case IR_RETURN: leer(u, x->a); break;     /* Leen la condicion o el valor */
-    case IR_ARG:   leer(u, x->a); u->barrera = 1; break;                     /* Argumento de una llamada */
-    case IR_CALL:  escribir(u, x->dst); u->barrera = 1; break;               /* x->a es la funcion, no una variable */
-    case IR_INDEX_REF: leer(u, x->a); leer(u, x->b); escribir(u, x->dst); break; /* Calcula una direccion */
-    case IR_LOAD:  leer(u, x->a); leer(u, MEM); escribir(u, x->dst); break;  /* Lee de memoria */
-    case IR_STORE: leer(u, x->dst); leer(u, x->a); escribir(u, MEM); break;  /* Escribe en memoria */
-    case IR_SIZE:  leer(u, x->a); leer(u, MEM); escribir(u, x->dst); break;  /* El tamano depende de la memoria */
-    case IR_LIST_ADD: case IR_LIST_REMOVE:                                    /* Cambian una lista */
-        leer(u, x->dst); leer(u, x->a); leer(u, MEM); escribir(u, MEM); break;
-    case IR_ARRAY_DIM: leer(u, x->dst); leer(u, x->a); leer(u, x->b); escribir(u, MEM); break;
-    case IR_ARRAY_DECL: leer(u, x->a); escribir(u, x->dst); escribir(u, MEM); break;
-    case IR_LIST_DECL: escribir(u, x->dst); escribir(u, MEM); break;
-    default: break;                     /* label, goto, func, endfunc, param: nada */
-    }
+    IrDefUse du;
+    if (ir_consultar_def_usos(x, &du) != 0) return 2;
+    for (size_t i = 0; i < du.cantidad_usos; ++i) leer(u, du.usos[i]);
+    for (size_t i = 0; i < du.cantidad_definiciones; ++i) escribir(u, du.definiciones[i]);
+    if (du.lee_memoria) leer(u, MEM);
+    if (du.escribe_memoria) escribir(u, MEM);
+    u->barrera = du.barrera;
+    return 0;
 }
 
 /* Igualdad de nombres (NULL nunca es igual). */
@@ -122,8 +117,9 @@ static size_t ciclos_orden(const IrInstr *const *v, size_t n, unsigned lat, size
     size_t cant = 0, t = 0;                              /* Entradas en la tabla / ciclo actual */
     for (size_t i = 0; i < n; ++i) {
         if (emision) emision[i] = RO_SIN_CICLO;
+        Usos u;
+        if (usos(v[i], &u) != 0) { free(tabla); return SIZE_MAX; }
         if (!ocupa_ciclo(v[i]->op)) continue;            /* Las marcas no gastan ciclos */
-        Usos u; usos(v[i], &u);
         size_t inicio = t;                               /* Lo antes que podria emitirse */
         for (size_t r = 0; r < u.nlee; ++r)              /* Espera a cada valor que lee */
             for (size_t k = 0; k < cant; ++k)
@@ -178,10 +174,12 @@ static void arista(Grafo *g, size_t i, size_t j, unsigned l, unsigned t, const c
  * Si la ultima es un terminador, todas las demas deben ir antes (control).
  * Solo se agregan dependencias DIRECTAS (con la escritura mas cercana);
  * las demas quedan cubiertas por transitividad. */
-static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat, int hay_terminador) {
+static int construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat, int hay_terminador) {
     Usos *u = malloc(m * sizeof *u);                  /* Usos de cada instruccion */
-    if (!u) return;
-    for (size_t i = 0; i < m; ++i) usos(v[i], &u[i]);
+    if (!u) return 2;
+    for (size_t i = 0; i < m; ++i) {
+        if (usos(v[i], &u[i]) != 0) { free(u); return 2; }
+    }
     long barrera = -1;                                /* Ultima arg/call vista */
     for (size_t j = 0; j < m; ++j) {
         /* RAW: j lee r -> depende de la escritura mas cercana de r. */
@@ -225,6 +223,7 @@ static void construir(Grafo *g, const IrInstr *const *v, size_t m, unsigned lat,
     if (hay_terminador)
         for (size_t i = 0; i + 1 < m; ++i) { arista(g, i, m - 1, 1, RO_DEP_CONTROL, NULL); g->control++; }
     free(u);
+    return 0;
 }
 
 /* ===================================================================== */
@@ -352,13 +351,15 @@ static int analizar(const IrPrograma *ir, size_t ini, size_t fin, unsigned lat,
         free(v); free(nuevo); analisis_liberar(a); *a = (Analisis){0}; return 2;
     }
     for (size_t k = 0; k < m; ++k) { v[k] = &ir->codigo[p + k]; a->orden[k] = k; }
-    construir(&a->g, v, m, lat, a->hay_term);             /* Paso 2: el DAG */
+    if (construir(&a->g, v, m, lat, a->hay_term)) {
+        free(v); free(nuevo); analisis_liberar(a); *a = (Analisis){0}; return 2;
+    }                                                     /* Paso 2: el DAG */
     if (m >= 2 + (size_t)a->hay_term) {                   /* Hay algo que reordenar */
         if (calendarizar(&a->g, a->orden) && respeta(&a->g, a->orden)) { /* Paso 3 */
             for (size_t k = ini; k < p; ++k) nuevo[k - ini] = &ir->codigo[k];   /* Parte fija */
             for (size_t k = 0; k < m; ++k) nuevo[p - ini + k] = v[a->orden[k]]; /* Region nueva */
             a->ciclos_nuevo = ciclos_orden(nuevo, fin - ini, lat, NULL);       /* Paso 4 */
-            a->valido = 1;
+            if (a->ciclos_nuevo != SIZE_MAX) a->valido = 1;
         } else {
             for (size_t k = 0; k < m; ++k) a->orden[k] = k; /* Sin orden nuevo: el original */
         }
@@ -412,6 +413,7 @@ int ro_reordenar(IrPrograma *ir, const RoOpciones *opc, RoResumen *res) {
         RoBloque *d = &r.detalle[b];
         d->inicio = ini; d->fin = fin;
         d->ciclos_antes = d->ciclos_despues = ro_ciclos(ir, ini, fin, o.latencia);
+        if (d->ciclos_antes == SIZE_MAX) { estado = 2; break; }
         Analisis a;
         if (analizar(ir, ini, fin, o.latencia, 0, &a)) { estado = 2; break; } /* Pasos 1 a 4 */
         if (a.m >= 2 + (size_t)a.hay_term) sumar(d, &r, &a.g); /* Solo bloques con algo que mover */
@@ -439,12 +441,6 @@ int ro_reordenar(IrPrograma *ir, const RoOpciones *opc, RoResumen *res) {
     return estado;
 }
 
-/* 1 si s es un nombre de variable (no una constante como "5" o "-2"). */
-static int es_variable(const char *s) {
-    unsigned char c = (unsigned char)s[0];
-    return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80;
-}
-
 void ro_grafo_liberar(RoGrafoBloque *g) {
     if (!g) return;
     free(g->nodos); free(g->aristas); free(g->orden); free(g->ruta);
@@ -459,6 +455,7 @@ int ro_analizar_bloque(const IrPrograma *ir, size_t b, unsigned latencia, RoGraf
     size_t ini = ir->bloques[b].inicio, fin = ir->bloques[b].fin, n = fin - ini;
     out->inicio = ini; out->fin = fin;
     out->ciclos_antes = out->ciclos_despues = ro_ciclos(ir, ini, fin, lat);
+    if (out->ciclos_antes == SIZE_MAX) { ro_grafo_liberar(out); return 2; }
     Analisis a;
     if (analizar(ir, ini, fin, lat, 1, &a)) return 2;
     size_t m = a.m;
@@ -498,8 +495,10 @@ int ro_analizar_bloque(const IrPrograma *ir, size_t b, unsigned latencia, RoGraf
         x->pos = a.p + k;
         x->altura = altura[k];
         x->ciclo_antes = em_antes[a.p - ini + k];
-        Usos u; usos(&ir->codigo[a.p + k], &u);
-        for (size_t r = 0; r < u.nlee; ++r) if (es_variable(u.lee[r])) x->lee[x->nlee++] = u.lee[r];
+        Usos u;
+        if (usos(&ir->codigo[a.p + k], &u) != 0) { estado = 2; goto fin; }
+        for (size_t r = 0; r < u.nlee; ++r)
+            if (ir_es_nombre_valor(u.lee[r])) x->lee[x->nlee++] = u.lee[r];
         for (size_t w = 0; w < u.nesc; ++w) x->escribe[x->nesc++] = u.escribe[w];
     }
     for (size_t k = 0; k < m; ++k) {                      /* Donde quedo cada nodo */
