@@ -100,3 +100,7 @@ guardas, presión y fallos de capacidad además del tiempo simulado.
 BLOQUEADO: implementar opciones -O productivas hasta tener esos contratos.
 IMPLEMENTADO aquí: análisis, matriz y frontera consumidora; no lowering paralelo,
 asignación improvisada, nueva ISA, CLI o backend alternativo.
+
+## Evolución posterior: O2 productivo
+
+La ruta optativa completa y sus límites se documentan en [integracion-productiva-o2.md](integracion-productiva-o2.md). Los estados anteriores de este documento son antecedentes; no se reescriben como resultados de la campaña nueva.
