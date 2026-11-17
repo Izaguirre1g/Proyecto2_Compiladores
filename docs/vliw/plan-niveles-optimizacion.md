@@ -1,5 +1,16 @@
 # Propuesta de niveles de optimización
 
+## Actualización de cierre posterior al PR #69
+
+La [guía consolidada](entrega-final-javier.md) describe el estado vigente:
+`-O0` conserva el backend tradicional; `-O1` aplica DCE mediante BAL reescrito
+y recompilación tradicional, con rechazos explícitos. `-O2` continúa sin ruta
+productiva general y no hace fallback. La evaluación actual distingue pares
+semánticos, categorías pendientes y B1 inconcluso. Las secciones siguientes
+conservan el contexto histórico de sus campañas; sus cifras no son resultados
+nuevos de esta entrega. No se completa el productor BAL general ni su ABI.
+
+
 ## Estado vigente: PR #66 y PR #68
 
 Spilling y el productor parcial `ir_vliw_desde_ir` están integrados. PR #68

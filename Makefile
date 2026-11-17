@@ -865,3 +865,9 @@ test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 
 # Reservas de spilling basadas en offsets reales de simbolos por funcion.
 -include Makefile.spilling.memoria.mk
+
+# Niveles oficiales acotados: reutilizar el DCE/reescritor IDE sin GTK.
+# Se agregan solo fuentes que balc aún no enlaza; no se duplican algoritmos.
+VLIW_OPT_SRC := tools/vliw/optimizacion_cli.c $(filter-out $(SRC),$(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC))
+SRC += $(VLIW_OPT_SRC)
+balc: $(VLIW_OPT_SRC) tools/vliw/optimizacion_cli.h include/ide_dce.h
