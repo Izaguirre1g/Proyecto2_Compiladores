@@ -1,3 +1,7 @@
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+
 #include "formato_binario.h"
 #include "cli.h"
 #include "lexer.h"
@@ -22,6 +26,9 @@
 #include "../../tools/vliw/optimizacion_cli.h"
 #include "ir_vliw_programa.h"
 
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1025,6 +1032,103 @@ static int visitante_ir_spilling(void *ctx, const Ast *arbol,
     return estado;
 }
 
+/* Identidad de una ruta antes de publicar: la ruta resuelta permite comparar
+ * salidas nuevas; dispositivo/inodo reconoce también enlaces duros existentes.
+ * Cada ruta pertenece a esta validación y se libera o transfiere al llamador. */
+typedef struct {
+    char *ruta;
+    struct stat archivo;
+    int existe;
+} DestinoO2;
+
+/* Resuelve el padre de una salida inexistente sin exigir realpath del archivo.
+ * Los destinos existentes deben ser archivos regulares: un enlace colgante,
+ * directorio o dispositivo no es un artefacto publicable. No crea archivos.
+ * En éxito, el llamador posee destino->ruta; en error no conserva reservas. */
+static int resolver_destino_o2(const char *ruta, int salida, DestinoO2 *destino)
+{
+    if (!ruta || !*ruta) return 0;
+    struct stat enlace;
+    if (lstat(ruta, &enlace) == 0) {
+        if (stat(ruta, &destino->archivo) != 0 ||
+            !S_ISREG(destino->archivo.st_mode)) return 0;
+        destino->existe = 1;
+        destino->ruta = realpath(ruta, NULL);
+        if (!destino->ruta) return 0;
+    } else {
+        if (errno != ENOENT || !salida) return 0;
+        char *copia = strdup(ruta);
+        if (!copia) return 0;
+        char *barra = strrchr(copia, '/');
+        const char *nombre = barra ? barra + 1 : copia;
+        char *padre;
+        if (!*nombre) { free(copia); return 0; }
+        if (barra) {
+            *barra = '\0';
+            padre = realpath(barra == copia ? "/" : copia, NULL);
+        } else padre = realpath(".", NULL);
+        if (!padre) { free(copia); return 0; }
+        size_t a = strlen(padre), b = strlen(nombre);
+        if (a > SIZE_MAX - b - 2) { free(padre); free(copia); return 0; }
+        destino->ruta = malloc(a + b + 2);
+        if (destino->ruta) snprintf(destino->ruta, a + b + 2, "%s/%s", padre, nombre);
+        free(padre); free(copia);
+        if (!destino->ruta) return 0;
+    }
+    if (salida) {
+        /* Resolver el enlace final evita volver a seguirlo al publicar. El padre
+         * debe existir y admitir escritura/búsqueda; los errores posteriores de
+         * E/S siguen siendo posibles, sin prometer una transacción multiarquivo. */
+        char *padre = strdup(destino->ruta);
+        if (!padre) { free(destino->ruta); destino->ruta = NULL; return 0; }
+        char *barra = strrchr(padre, '/');
+        *barra = '\0';
+        int valido = access(*padre ? padre : "/", W_OK | X_OK) == 0 &&
+            (!destino->existe || access(destino->ruta, W_OK) == 0);
+        free(padre);
+        if (!valido) { free(destino->ruta); destino->ruta = NULL; return 0; }
+    }
+    return 1;
+}
+
+/* Contrasta todas las salidas y la fuente antes de cualquier fopen de salida.
+ * Solo tras éxito transfiere las rutas canónicas al visitante; ante rechazo
+ * deja sus cadenas intactas y libera lo adquirido. Los padres deben permanecer
+ * estables durante la compilación: este preflight no bloquea el filesystem. */
+static int validar_destinos_o2(const char *fuente, char **rutas, size_t cantidad, FILE *diag)
+{
+    DestinoO2 destinos[8] = {{0}};
+    int valido = 0;
+    if (cantidad != 7 || !resolver_destino_o2(fuente, 0, &destinos[0])) {
+        fputs("O2: ruta fuente inválida para validar destinos\n", diag);
+        goto fin;
+    }
+    for (size_t i = 0; i < cantidad; ++i) {
+        if (!resolver_destino_o2(rutas[i], 1, &destinos[i + 1])) {
+            fprintf(diag, "O2: destino inválido: %s\n", rutas[i] ? rutas[i] : "(sin memoria)");
+            goto fin;
+        }
+        for (size_t j = 0; j <= i; ++j) {
+            const DestinoO2 *a = &destinos[j], *b = &destinos[i + 1];
+            if (!strcmp(a->ruta, b->ruta) ||
+                (a->existe && b->existe && a->archivo.st_dev == b->archivo.st_dev &&
+                 a->archivo.st_ino == b->archivo.st_ino)) {
+                fprintf(diag, "O2: colisión de destinos: %s y %s\n", j ? rutas[j - 1] : fuente, rutas[i]);
+                goto fin;
+            }
+        }
+    }
+    /* Ninguna salida ha sido abierta. Publicamos solo la colección completa
+     * de nombres comprobados y liberamos las cadenas originales del visitante. */
+    for (size_t i = 0; i < cantidad; ++i) {
+        free(rutas[i]); rutas[i] = destinos[i + 1].ruta; destinos[i + 1].ruta = NULL;
+    }
+    valido = 1;
+fin:
+    for (size_t i = 0; i < 8; ++i) free(destinos[i].ruta);
+    return valido;
+}
+
 /* O2 consume la IR transformada, no el AST original como backend de respaldo.
  * El resultado C es atómico; los archivos se crean solo después del enlace y
  * de todas las validaciones. Los módulos se rechazan antes de publicar. */
@@ -1046,7 +1150,10 @@ static int visitante_o2(void *ctx,const Ast *ast,SimTabla *tabla,FILE *diag)
     char *antes=cambiar_extension(op->entrada,".bal",".o2-antes.ir");
     char *despues=cambiar_extension(op->entrada,".bal",".o2-despues.ir");
     char *spill=cambiar_extension(op->entrada,".bal",".o2-spilling.ir");
-    if(!asm_ruta||!bin||!mem||!meta||!antes||!despues||!spill||!strcmp(bin,mem)||!strcmp(bin,op->entrada)||!strcmp(mem,op->entrada))estado=2;
+    char *salidas[7]={asm_ruta,bin,mem,meta,antes,despues,spill};
+    if(!validar_destinos_o2(op->entrada,salidas,7,diag))estado=2;
+    asm_ruta=salidas[0];bin=salidas[1];mem=salidas[2];meta=salidas[3];
+    antes=salidas[4];despues=salidas[5];spill=salidas[6];
     FbDatos datos={0};datos.base=CLI_GP_BASE;
     if(!estado && (!escribir_archivo(asm_ruta,NULL,NULL,r.cadena->asm_texto,NULL)||!escribir_archivo(bin,&r.cadena->codigo,NULL,NULL,&datos)||!escribir_archivo(mem,&r.cadena->codigo,cb_escribir_mem,NULL,NULL)||!escribir_archivo(meta,NULL,NULL,r.reporte_json,NULL)))estado=2;
     const char *rutas[3]={antes,despues,spill};const IrPrograma *irs[3]={&r.original,&r.optimizada,&r.spilling};
