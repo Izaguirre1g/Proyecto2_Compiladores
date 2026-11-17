@@ -1,5 +1,35 @@
 # Contrato de entrega al consumidor VLIW
 
+## Estado vigente después de los PR #66 y #68
+
+Referencia auditada: Compiladores `9cf06e2`; Arquitectura `5e6e45f`.
+El productor parcial **está incorporado**: `ir_vliw_desde_ir` aplica spilling,
+prepara el marco, baja el subconjunto admitido, codifica con CB y utiliza la
+cadena física existente. La rama de spilling ya se integró. Las referencias a
+su ausencia en el antecedente inferior describen exclusivamente el estado previo.
+
+El PR #68 comparte USE/DEF con DCE/reordenamiento, publica el mapeo físico y
+valida registros después del spilling. Su contrato simbólico de latencias no
+sustituye el DAG físico global ni demuestra independencia de memoria.
+
+IMPLEMENTADO: una función, COPY, suma/resta, negación, etiquetas, saltos directos,
+condicionales, backedges y spills. `$r0..7` se asigna a x16..23; x28/x29 son
+auxiliares. El consumidor conserva S2/CFG/DAG/proyección/I1-A1/S7/S8-A/S8-C.
+
+PENDIENTE: lowering de variables BAL por nombre, llamadas, retornos, parámetros,
+operaciones fuera del subconjunto, símbolos materiales y enlace general.
+El resultado sigue siendo un fragmento: no inicializa por sí solo todo el
+entorno ni certifica fin de main. ABI local de fragmento y ABI entre funciones
+son garantías distintas. No marcar acreditaciones externas por haber obtenido
+un plan válido. No inferir soporte de CALL/RETURN desde SYE o un epílogo.
+
+La validación independiente y las precondiciones del arnés se describen en
+[integracion-ir-arquitectura.md](integracion-ir-arquitectura.md).
+
+## Antecedente histórico anterior a PR #66 — no describe develop actual
+
+### Contrato de entrega al consumidor VLIW
+
 ## Frontera disponible y responsables
 
 IMPLEMENTADO: el consumidor de Javier recibe `VliwCadenaEntrada` definida en
