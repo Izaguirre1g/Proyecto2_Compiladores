@@ -34,4 +34,8 @@ int ir_spilling_offset(const IrSpillingMarco *marco,
 int ir_spilling_emitir_acceso(FILE *salida, const IrSpillingMarco *marco,
                               const IrInstr *instruccion, unsigned registro_fisico);
 
+/* Opt-in para lowering con cálculo de dirección. No autoriza utilizar el
+ * offset como inmediato LSU; respeta capacidad, alineación y overflow. */
+int ir_spilling_calcular_marco_expandido(size_t bytes, size_t ranuras, IrSpillingMarco *salida);
+int ir_spilling_offset_expandido(const IrSpillingMarco *marco, const char *ranura, size_t *offset);
 #endif

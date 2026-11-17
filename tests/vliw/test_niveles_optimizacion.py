@@ -70,9 +70,16 @@ class NivelesTests(unittest.TestCase):
         self.assertLess((db/'caso.mem').stat().st_size,(da/'caso.mem').stat().st_size)
         self.assertTrue((db/'caso.simbolos.md').is_file())
 
-    # El nivel agresivo no debe degradarse a O1 ni publicar un fragmento.
-    def test_03_o2_rechazado(self):
-        p,d=self.ejecutar(['-O2']);self.assertEqual(p.returncode,2);self.assertIn('sin fallback',p.stderr);self.assertFalse((d/'caso.bin').exists())
+    # O2 debe producir una imagen completa desde IR transformada; el reporte
+    # identifica spilling y enlace, y una segunda compilación debe ser estable.
+    def test_03_o2_productivo(self):
+        p,d=self.ejecutar(['-O2','-s']);q,e=self.ejecutar(['-O2','-s'])
+        self.assertEqual((p.returncode,q.returncode),(0,0),p.stderr)
+        meta=json.loads((d/'caso.o2.json').read_text())
+        self.assertEqual(meta['nivel'],'O2');self.assertGreater(meta['spills'],0)
+        self.assertGreaterEqual(meta['generaciones'],2)
+        for ext in ('bin','mem','asm'):
+            self.assertEqual((d/('caso.'+ext)).read_bytes(),(e/('caso.'+ext)).read_bytes())
 
     def test_04_opciones_invalidas(self):
         for opts in (['-O'],['-O3'],['-O01'],['-O1','-O0'],['-O1','-O1']):
@@ -121,5 +128,14 @@ class NivelesTests(unittest.TestCase):
     def test_12_backend_no_acreditado(self):
         p,d=self.ejecutar(['-O1'],FUENTE.replace('99','999999999999999999999999'))
         self.assertNotEqual(p.returncode,0);self.assertFalse((d/'caso.bin').exists())
+
+    # O1 debe validar con el backend ampliado tanto el programa original como
+    # el reescrito; las llamadas con efectos permanecen en el ejecutable.
+    def test_13_referencias_o0_o1(self):
+        fuente=(ROOT/'examples/dce/dce_llamadas.bal').read_text()
+        a,da=self.ejecutar(['-O0','-s'],fuente);b,db=self.ejecutar(['-O1','-s'],fuente)
+        self.assertEqual((a.returncode,b.returncode),(0,0),a.stderr+b.stderr)
+        self.assertIn('[O1] DCE:',b.stderr)
+        self.assertNotEqual((da/'caso.mem').read_bytes(),(db/'caso.mem').read_bytes())
 
 if __name__=='__main__':unittest.main()

@@ -324,7 +324,7 @@ static int direccion_elemento(Generador *g, const AstNodo *n, unsigned r, GbArre
         return fallar(g, base ? base : n, "arreglo sin referencia semántica");
     if (a->dimensiones != cantidad)
         return fallar(g, n, "se requiere un indice por dimension del arreglo");
-    if ((a->base != 2 && a->base != 3) || a->desplazamiento < -1024 ||
+    if ((a->base != 2 && a->base != 3 && a->base != GB_ARREGLO_REFERENCIA_SP) || a->desplazamiento < -1024 ||
         a->desplazamiento > 1023 || a->desplazamiento % 4)
         return fallar(g, n, "base o desplazamiento del arreglo no soportado");
     if (r + 1 > 7) return fallar(g, n, "temporales agotados (x4-x7) al indexar");
@@ -337,6 +337,14 @@ static int direccion_elemento(Generador *g, const AstNodo *n, unsigned r, GbArre
         if (!expresion(g, indice, destino, &tipo)) return 0;
         if (tipo != GB_ENTERO) return fallar(g, indice, "el indice debe ser declare_int");
         if (k > 0) fprintf(g->salida, "suma x%u, x%u, x%u\n", r, r, r + 1);
+    }
+    /* Una referencia de parámetro contiene un puntero, no sus elementos.
+     * Leemos el home después de evaluar el índice y consumimos el offset
+     * del descriptor; el acceso final se hace relativo al puntero calculado. */
+    if(a->base==GB_ARREGLO_REFERENCIA_SP) {
+        if(cantidad!=1)return fallar(g,n,"referencia multidimensional sin ABI");
+        fprintf(g->salida,"cizqi x%u,x%u,2\ncargai x%u,x2,%d\nsuma x%u,x%u,x%u\n",r,r,r+1,a->desplazamiento,r,r,r+1);
+        a->desplazamiento=0;return 1;
     }
     fprintf(g->salida, "cizqi x%u, x%u, 2\n"
                        "suma x%u, x%u, x%u\n", r, r, r, r, a->base);
@@ -450,4 +458,17 @@ int gb_generar_arreglos(const AstNodo *nodo, GbResolver resolver,
     }
     fclose(g.salida);
     return ok ? 0 : 1;
+}
+
+/* No se vuelve a implementar multiplicación/división/potencia en el backend
+ * IR. Los operandos están en registros caller-saved que no ofrece spilling. */
+int gb_expandir_aritmetica(const char *op,FILE *salida,FILE *diag)
+{
+    if (!op || !salida) return 1;
+    Generador g={.salida=salida,.diagnosticos=diag};
+    int ok=0;
+    if (!strcmp(op,"pitagoras")) ok=multiplicar(&g,NULL,4);
+    else if (!strcmp(op,"euclides") || !strcmp(op,"euler")) ok=dividir(&g,NULL,4,!strcmp(op,"euler"));
+    else if (!strcmp(op,"descartes")) ok=potencia(&g,NULL,4);
+    return !ok || ferror(salida);
 }

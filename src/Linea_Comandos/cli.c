@@ -20,6 +20,7 @@
 #include "reordenamiento.h"
 #include "ro_reporte.h"
 #include "../../tools/vliw/optimizacion_cli.h"
+#include "ir_vliw_programa.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -183,7 +184,7 @@ typedef struct {
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
     const char *fuente_optimizada; /* Préstamo de la copia privada de -O1. */
-    int nivel, nivel_explicito; /* Sin opción: ruta histórica; -O2 se rechaza. */
+    int nivel, nivel_explicito; /* Sin opción: ruta histórica; O2 utiliza IR. */
     int ir;                 /* --ir: IR de tres direcciones */
     int ir_spilling;        /* --ir-spilling: IR con registros limitados */
     int vliw_ir;            /* --vliw-ir: vista previa del productor fisico */
@@ -210,7 +211,7 @@ static void usage(FILE *out) {
           "-o <archivo>  nombre del binario de salida (por defecto, el del fuente con .bin)\n"
           "-O0           referencia tradicional, sin pasadas opcionales\n"
           "-O1           DCE real con BAL reescrito y backend tradicional (un archivo)\n"
-          "-O2           reservado: rechaza hasta acreditar backend de pasadas agresivas\n"
+          "-O2           IR optimizada, spilling y cadena VLIW de programa completo\n"
           "-v            muestra cada fase del compilador y las decisiones importantes\n"
           "-s            genera tambien el ensamblador (.asm)\n"
           "-t            imprime el arbol sintactico (AST)\n"
@@ -340,9 +341,6 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     if (c->nivel_explicito && (c->ir || c->ir_spilling || c->vliw_ir || c->ast_json ||
         c->diagnosticos || c->desde_ensamblador)) {
         fputs("-O requiere compilación BAL normal; incompatible con vistas o -x\n",stderr);return -1;
-    }
-    if (c->nivel==2) {
-        fputs("-O2 no implementado: falta ruta productiva acreditada para unrolling/reordenamiento; sin fallback\n",stderr);return -1;
     }
     /* El producto VLIW de IR es un fragmento para inspeccion, no un .bin
      * ejecutable. Prohibir salidas que impliquen enlazado o ABI completos. */
@@ -536,7 +534,7 @@ static int compilar_proyecto(void *ctx, const Ast *arbol, SimTabla *tabla, FILE 
     const Compilacion *op = b->opciones;
     if (op->detallado) puts("[fase 3] semántico: declaraciones, tipos, ámbitos y llamadas válidos");
     MemProyectoMapa mapa = {0};
-    MemProyectoResultado r = mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
+    MemProyectoResultado r = mem_asignar_proyecto_referencias(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
                                                   CLI_CAPACIDAD_MARCO, &mapa);
     if (r != MEM_PROYECTO_OK) {
         fprintf(diagnosticos, "asignacion de memoria no disponible (codigo %d)\n", (int)r);
@@ -553,7 +551,7 @@ static int compilar_proyecto(void *ctx, const Ast *arbol, SimTabla *tabla, FILE 
     rr_inicializar(&funciones);
     FILE *temporal = tmpfile();
     if (!temporal) { perror("tmpfile"); return 2; }
-    int ok = ef_enlazar(arbol, tabla, 0, &arranque, &funciones, temporal,
+    int ok = ef_enlazar_referencias(arbol, tabla, 0, &arranque, &funciones, temporal,
                         diagnosticos, &b->resumen) == 0;
     if (ok) ok = fb_preparar_datos(arbol, tabla, (uint32_t)mapa.globales.gp_base,
                                    mapa.globales.bytes_globales, &b->datos, diagnosticos) == 0;
@@ -1027,6 +1025,41 @@ static int visitante_ir_spilling(void *ctx, const Ast *arbol,
     return estado;
 }
 
+/* O2 consume la IR transformada, no el AST original como backend de respaldo.
+ * El resultado C es atómico; los archivos se crean solo después del enlace y
+ * de todas las validaciones. Los módulos se rechazan antes de publicar. */
+static int visitante_o2(void *ctx,const Ast *ast,SimTabla *tabla,FILE *diag)
+{
+    const Compilacion *op=ctx;MemProyectoMapa mapa={0};IrVliwPrograma r={0};
+    int estado=1;
+    for(const AstNodo *n=ast->raiz->primer_hijo;n;n=n->siguiente)
+        if(n->tipo==AST_IMPORTACION) {fputs("O2: módulos sin enlace IR acreditado\n",diag);return 1;}
+    if(mem_asignar_proyecto_referencias(tabla,CLI_GP_BASE,CLI_FIN_GLOBALES,CLI_TOPE_PILA-CLI_FIN_GLOBALES,&mapa)!=MEM_PROYECTO_OK) {
+        fputs("O2: memoria/ABI no soportados para esta unidad\n",diag);return 1;
+    }
+    estado=ir_vliw_programa(ast,tabla,3,&r,diag);
+    if(estado) {ir_vliw_programa_liberar(&r);return estado;}
+    char *asm_ruta=cambiar_extension(op->entrada,".bal",".asm");
+    char *bin=op->salida?cambiar_extension(op->salida,"",""):cambiar_extension(op->entrada,".bal",".bin");
+    char *mem=bin?cambiar_extension(bin,".bin",".mem"):NULL;
+    char *meta=cambiar_extension(op->entrada,".bal",".o2.json");
+    char *antes=cambiar_extension(op->entrada,".bal",".o2-antes.ir");
+    char *despues=cambiar_extension(op->entrada,".bal",".o2-despues.ir");
+    char *spill=cambiar_extension(op->entrada,".bal",".o2-spilling.ir");
+    if(!asm_ruta||!bin||!mem||!meta||!antes||!despues||!spill||!strcmp(bin,mem)||!strcmp(bin,op->entrada)||!strcmp(mem,op->entrada))estado=2;
+    FbDatos datos={0};datos.base=CLI_GP_BASE;
+    if(!estado && (!escribir_archivo(asm_ruta,NULL,NULL,r.cadena->asm_texto,NULL)||!escribir_archivo(bin,&r.cadena->codigo,NULL,NULL,&datos)||!escribir_archivo(mem,&r.cadena->codigo,cb_escribir_mem,NULL,NULL)||!escribir_archivo(meta,NULL,NULL,r.reporte_json,NULL)))estado=2;
+    const char *rutas[3]={antes,despues,spill};const IrPrograma *irs[3]={&r.original,&r.optimizada,&r.spilling};
+    for(unsigned k=0;!estado && k<3;++k) {
+        FILE *f=fopen(rutas[k],"w");if(!f){estado=2;break;}
+        int io=ir_imprimir(irs[k],f);if(fclose(f))io=1;if(io)estado=2;
+    }
+    if(!estado)fprintf(diag,"[O2] DCE=%zu unroll=%zu rename=%zu reorder=%zu spills=%zu loads=%zu stores=%zu bundles=%zu generaciones=%zu\n",r.eliminadas,r.desenrollados,r.renombradas,r.movidas,r.metricas.ranuras,r.metricas.cargas,r.metricas.almacenes,r.cadena->codigo.cantidad,r.generaciones);
+    if(!estado && op->paquetes)fputs(r.cadena->visualizacion_json,stdout);
+    if(!estado && op->simbolos)imprimir_simbolos(tabla,&mapa,NULL);
+    free(asm_ruta);free(bin);free(mem);free(meta);free(antes);free(despues);free(spill);ir_vliw_programa_liberar(&r);return estado;
+}
+
 int cli_run(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "--clones")) return buscar_clones(argc, argv);
     Compilacion op = {0};
@@ -1045,6 +1078,10 @@ int cli_run(int argc, char **argv) {
         return sem_visitar_proyecto(op.entrada, stderr, visitante_ir_spilling, NULL);
     if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
+    if (op.nivel==2) {
+        if(!termina_en(op.entrada,".bal")) {fputs("-O2 requiere fuente .bal\n",stderr);return 2;}
+        return sem_visitar_proyecto(op.entrada,stderr,visitante_o2,&op);
+    }
     if (op.nivel==1) {
         if (!termina_en(op.entrada,".bal")) {
             fputs("-O1 requiere un fuente .bal\n",stderr);return 2;

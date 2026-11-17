@@ -35,6 +35,8 @@ int gb_generar(const AstNodo *nodo, GbResolver resolver, void *datos,
 /* Arreglo estatico de enteros de 4 bytes, en orden por filas: el elemento
  * [i][j] de una matriz NxM esta en desplazamiento + 4*(i*M + j). */
 #define GB_MAX_DIMENSIONES 4
+/* Descriptor optativo: el home slot sp+desplazamiento contiene la dirección. */
+#define GB_ARREGLO_REFERENCIA_SP 34u
 typedef struct {
     unsigned base;          /* x2 (sp) o x3 (gp). */
     int desplazamiento;     /* Byte del primer elemento. */
@@ -55,5 +57,11 @@ typedef int (*GbResolverArreglo)(void *datos, const AstNodo *identificador,
 int gb_generar_arreglos(const AstNodo *nodo, GbResolver resolver,
                         GbResolverArreglo arreglos, void *datos,
                         FILE *salida, FILE *diagnosticos);
+
+/* Adaptador IR: expande la aritmética existente, con operandos ya evaluados
+ * en x4/x5 y resultado x4. Solo pitagoras/euclides/euler/descartes.
+ * Conserva exactamente errores/overflow del backend; clobbers x4..x15.
+ * El flujo contiene etiquetas, no bundles; el productor debe estructurarlas. */
+int gb_expandir_aritmetica(const char *operador, FILE *salida, FILE *diag);
 
 #endif

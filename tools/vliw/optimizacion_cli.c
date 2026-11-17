@@ -7,6 +7,11 @@
 #include "optimizacion_cli.h"
 #include "ide_dce.h"
 #include "lexer.h"
+#include "semantic_modules.h"
+#include "memory.h"
+#include "enlace_funciones.h"
+#include "codificacion_binaria.h"
+#include "cli.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -39,6 +44,21 @@ static int guardar(const char *ruta, const char *texto, size_t largo)
     int ok=fwrite(texto,1,largo,f)==largo;
     if (fclose(f)) ok=0;
     return ok;
+}
+/* El IDE conserva su backend escalar histórico. Si ese verificador rechaza
+ * la extensión de referencias, O1 debe acreditar de nuevo ambas variantes
+ * con el backend CLI ampliado; no basta ignorar hay_ensamblador. El visitante
+ * consume tabla/AST prestados y desecha todo código de validación. */
+static int validar_referencias(void *ctx,const Ast *ast,SimTabla *tabla,FILE *diag)
+{
+    (void)ctx;MemProyectoMapa mapa={0};
+    if(mem_asignar_proyecto_referencias(tabla,CLI_GP_BASE,CLI_FIN_GLOBALES,
+                                      CLI_CAPACIDAD_MARCO,&mapa)!=MEM_PROYECTO_OK)return 1;
+    FILE *f=tmpfile();if(!f)return 2;
+    EfArranque arranque={CLI_GP_BASE,CLI_TOPE_PILA};
+    int rc=ef_enlazar_referencias(ast,tabla,0,&arranque,NULL,f,diag,NULL);
+    if(fclose(f))rc=2;
+    return rc;
 }
 int vliw_opt_fuente_preparar(const char *entrada,VliwOptFuente *salida,FILE *diag)
 {
@@ -82,7 +102,12 @@ int vliw_opt_fuente_preparar(const char *entrada,VliwOptFuente *salida,FILE *dia
         estado=rechazo(diag,entrada,"DCE modifica IR pero no ofrece BAL reescrito acreditado",1);goto fin;
     }
     if (dce.codigo_nuevo && dce.hay_ensamblador!=1) {
-        estado=rechazo(diag,entrada,dce.motivo_ensamblador?dce.motivo_ensamblador:"ambas variantes deben admitir backend tradicional",1);goto fin;
+        if(!guardar(nuevo.ruta,texto,largo) ||
+           sem_visitar_proyecto(nuevo.ruta,diag,validar_referencias,NULL) ||
+           !guardar(nuevo.ruta,dce.codigo_nuevo,strlen(dce.codigo_nuevo)) ||
+           sem_visitar_proyecto(nuevo.ruta,diag,validar_referencias,NULL)) {
+            estado=rechazo(diag,entrada,"ambas variantes deben admitir el backend de referencias",1);goto fin;
+        }
     }
     const char *elegido=dce.codigo_nuevo?dce.codigo_nuevo:texto;
     if (!guardar(nuevo.ruta,elegido,strlen(elegido))) goto fin;

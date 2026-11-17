@@ -155,6 +155,17 @@ typedef struct {
  */
 int dce_eliminar(IrPrograma *ir, DceResultado *resultado);
 
+/* Variante optativa para consumidores que inspeccionan objetos al retornar
+ * funciones, incluso cuando BAL no los vuelve a leer. Las raíces son nombres IR
+ * acreditados por el consumidor, prestados solo durante esta llamada.
+ * Añade esas raíces a OUT de las salidas de cada función; no cambia las reglas sobre
+ * llamadas, efectos o instrucciones peligrosas. Devuelve 2 ante argumentos
+ * inválidos o falta de recursos, con la misma propiedad in-place de DCE.
+ * La API histórica mantiene su política anterior y no usa estas raíces. */
+int dce_eliminar_con_observables(IrPrograma *ir, DceResultado *resultado,
+                                const char *const *observables, size_t cantidad);
+
+
 /* Escribe un resumen: cuánto se eliminó, qué se eliminó y qué se conservó. */
 int dce_imprimir_resultado(const DceResultado *resultado, FILE *salida);
 

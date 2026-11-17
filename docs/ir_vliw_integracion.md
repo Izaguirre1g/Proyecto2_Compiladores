@@ -147,3 +147,7 @@ necesita lowering semántico de variables por alcance y memoria, parámetros,
 llamadas, retornos, arrays, opcodes faltantes; asignación ABI y preserves,
 arranque y finalización, y validación por simulación/RTL del programa completo.
 El productor de una única función se mantiene deliberadamente restrictivo.
+
+## Productor de programas completos
+
+`ir_vliw_programa()` complementa la API de fragmentos anterior. Integra IR optimizada, marcos particulares, funciones y enlace. Véase [contrato productivo](vliw/integracion-productiva-o2.md). Los rechazos del productor de fragmentos se conservan.

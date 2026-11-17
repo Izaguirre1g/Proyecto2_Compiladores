@@ -95,7 +95,7 @@ static int es_parametro(const SimSimbolo *s)
 
 static MemMarcoResultado calcular_marco(const SimTabla *tabla,
                                        const SimAmbito *ambito,
-                                       size_t capacidad, size_t *total)
+                                       size_t capacidad, size_t *total, int referencias)
 {
     size_t cursor = 4; /* salvaguarda de ra */
     if (capacidad < cursor) return MEM_MARCO_SIN_ESPACIO;
@@ -103,7 +103,8 @@ static MemMarcoResultado calcular_marco(const SimTabla *tabla,
     for (const SimSimbolo *s = tabla->primero; s; s = s->siguiente_orden) {
         if (!dentro_de_funcion(s->ambito, ambito) || !es_parametro(s)) continue;
         if (s->ambito != ambito || (s->clase != SIM_PARAMETRO &&
-            s->clase != SIM_VARIABLE) || s->dimensiones != 0 ||
+            s->clase != SIM_VARIABLE) ||
+            (s->dimensiones != 0 && !(referencias && s->dimensiones == 1)) ||
             s->tipo == SIM_TIPO_TEXT || s->tipo == SIM_TIPO_VOID ||
             s->tipo == SIM_TIPO_ERROR)
             return MEM_MARCO_PARAMETROS_PENDIENTES;
@@ -167,7 +168,7 @@ MemMarcoResultado mem_asignar_marco(SimTabla *tabla, const char *funcion,
     if (!ambito_funcion) return MEM_MARCO_FUNCION_INVALIDA;
     size_t total = 0;
     MemMarcoResultado r = calcular_marco(tabla, ambito_funcion,
-                                        capacidad_bytes, &total);
+                                        capacidad_bytes, &total, 0);
     if (r != MEM_MARCO_OK) return r;
     escribir_marco(tabla, ambito_funcion);
     marco->offset_ra = 0;
@@ -283,9 +284,9 @@ static void escribir_marco(SimTabla *tabla, const SimAmbito *ambito)
     }
 }
 
-MemProyectoResultado mem_asignar_proyecto(
+static MemProyectoResultado asignar_proyecto(
     SimTabla *tabla, size_t gp_base, size_t memoria_bytes,
-    size_t capacidad_marco, MemProyectoMapa *mapa)
+    size_t capacidad_marco, MemProyectoMapa *mapa, int referencias)
 {
     if (!tabla || !mapa || !tabla->global ||
         !sim_verificar_pre_memoria(tabla, NULL))
@@ -310,7 +311,7 @@ MemProyectoResultado mem_asignar_proyecto(
         const SimAmbito *a = ambito_de_funcion(tabla, f->nombre);
         if (!a) return MEM_PROYECTO_FUNCION_INVALIDA;
         size_t total = 0;
-        MemMarcoResultado rm = calcular_marco(tabla, a, capacidad_marco, &total);
+        MemMarcoResultado rm = calcular_marco(tabla, a, capacidad_marco, &total, referencias);
         switch (rm) {
             case MEM_MARCO_OK: break;
             case MEM_MARCO_PARAMETROS_PENDIENTES: return MEM_PROYECTO_PARAMETROS_PENDIENTES;
@@ -335,6 +336,22 @@ MemProyectoResultado mem_asignar_proyecto(
     mapa->funciones = funciones;
     mapa->marco_maximo_bytes = marco_maximo;
     return MEM_PROYECTO_OK;
+}
+
+/* La variante histórica sigue rechazando parámetros compuestos. La ruta
+ * optativa representa solamente arreglos unidimensionales como direcciones
+ * de 32 bits: no reserva el contenido dentro del marco del callee. */
+MemProyectoResultado mem_asignar_proyecto(
+    SimTabla *tabla, size_t gp_base, size_t memoria_bytes,
+    size_t capacidad_marco, MemProyectoMapa *mapa)
+{
+    return asignar_proyecto(tabla, gp_base, memoria_bytes, capacidad_marco, mapa, 0);
+}
+MemProyectoResultado mem_asignar_proyecto_referencias(
+    SimTabla *tabla, size_t gp_base, size_t memoria_bytes,
+    size_t capacidad_marco, MemProyectoMapa *mapa)
+{
+    return asignar_proyecto(tabla, gp_base, memoria_bytes, capacidad_marco, mapa, 1);
 }
 
 /* x8..x11 son caller-saved. La ubicacion de entrada por pila depende

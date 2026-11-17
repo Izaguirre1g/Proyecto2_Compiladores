@@ -33,4 +33,10 @@ int ir_spilling_backend_desde_tabla(const SimTabla *tabla,
                                     size_t ranuras,
                                     IrSpillingBackend *salida);
 
+/* Contrasta el layout optativo mem_asignar_proyecto_referencias: cada
+ * parámetro de arreglo 1D ocupa una dirección de 32 bits. No acredita
+ * longitud ni ausencia de alias; el lowering debe preservar esas garantías. */
+int ir_spilling_backend_desde_tabla_referencias(const SimTabla *tabla,
+    const char *nombre_funcion, size_t ranuras, IrSpillingBackend *salida);
+
 #endif
