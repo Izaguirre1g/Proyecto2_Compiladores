@@ -45,10 +45,10 @@ static int verificar_dato(const SimSimbolo *s, size_t *cursor,
     return 1;
 }
 
-int ir_spilling_backend_desde_tabla(const SimTabla *tabla,
+static int desde_tabla(const SimTabla *tabla,
                                     const char *nombre_funcion,
                                     size_t ranuras,
-                                    IrSpillingBackend *salida)
+                                    IrSpillingBackend *salida, int referencias)
 {
     if (!tabla || !tabla->global || !nombre_funcion ||
         !*nombre_funcion || !salida) return 2;
@@ -82,7 +82,7 @@ int ir_spilling_backend_desde_tabla(const SimTabla *tabla,
             !es_parametro(s)) continue;
         if (s->ambito != ambito_funcion ||
             (s->clase != SIM_PARAMETRO && s->clase != SIM_VARIABLE) ||
-            s->dimensiones != 0 ||
+            (s->dimensiones != 0 && !(referencias && s->dimensiones == 1)) ||
             (s->tipo != SIM_TIPO_INT && s->tipo != SIM_TIPO_BOOLEAN &&
              s->tipo != SIM_TIPO_CHAR) ||
             !verificar_dato(s, &cursor, 4, 4, SIM_ALMACEN_PARAMETRO)) return 2;
@@ -110,8 +110,21 @@ int ir_spilling_backend_desde_tabla(const SimTabla *tabla,
     /* Prepara el marco final en una variable temporal: en fallo ni la tabla
      * ni el resultado del llamador se modifican. */
     IrSpillingBackend nuevo = {0};
-    if (ir_spilling_backend_preparar(cursor, ranuras, parametros, &nuevo))
+    if ((referencias ? ir_spilling_backend_preparar_expandido : ir_spilling_backend_preparar)(cursor, ranuras, parametros, &nuevo))
         return 2;
     *salida = nuevo;
     return 0;
+}
+
+/* El consentimiento sobre ABI es explícito: la API anterior no acepta
+ * máscaras de tipos compuestos ni layouts que antes rechazaba. */
+int ir_spilling_backend_desde_tabla(const SimTabla *tabla,
+    const char *funcion, size_t ranuras, IrSpillingBackend *salida)
+{
+    return desde_tabla(tabla, funcion, ranuras, salida, 0);
+}
+int ir_spilling_backend_desde_tabla_referencias(const SimTabla *tabla,
+    const char *funcion, size_t ranuras, IrSpillingBackend *salida)
+{
+    return desde_tabla(tabla, funcion, ranuras, salida, 1);
 }
