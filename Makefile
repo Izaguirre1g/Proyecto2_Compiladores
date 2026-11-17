@@ -871,3 +871,11 @@ test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 VLIW_OPT_SRC := tools/vliw/optimizacion_cli.c $(filter-out $(SRC),$(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC))
 SRC += $(VLIW_OPT_SRC)
 balc: $(VLIW_OPT_SRC) tools/vliw/optimizacion_cli.h include/ide_dce.h
+
+# Productor de programas IR, opt-in O2; conserva el productor de fragmentos.
+SRC += src/ir_vliw_programa.c
+balc: src/ir_vliw_programa.c include/ir_vliw_programa.h
+
+# Versionado virtual local: paso separado del spilling y del banco físico.
+SRC += src/ir_renombramiento.c
+balc: src/ir_renombramiento.c include/ir_renombramiento.h
