@@ -1,5 +1,49 @@
 # Propuesta de niveles de optimización
 
+## Estado vigente: PR #66 y PR #68
+
+Spilling y el productor parcial `ir_vliw_desde_ir` están integrados. PR #68
+comparte USE/DEF entre consumidores, publica el mapeo físico y el contrato
+simbólico de latencias/efectos. Eso no completa el lowering BAL general.
+
+La CLI tiene `--vliw-ir=3` para el subconjunto admitido y conserva el backend
+tradicional. Sus análisis `--dce`, `--unroll`, `--reorder` son rutas independientes:
+no producen automáticamente una variante ISA optimizada mediante S7/S8-A.
+DCE del IDE sí puede reescribir BAL y recompilarlo tradicionalmente.
+
+## Configuración auxiliar implementada
+
+`validar_integracion_ir_rtl.py --perfil base|dce|reorder|unroll` selecciona una
+pasada real sobre fixtures IR explícitos antes del productor. Registra la IR
+anterior/posterior y el número de cambios. Rechaza nombres o modos inválidos;
+no hace fallback. DCE debe cambiar el fixture de prueba; una ejecución de
+unrolling/reorder sin cambios acredita llamada de API, no optimización efectiva.
+Cada construcción vuelve a obtener análisis físicos desde el flujo transformado.
+No se reutilizan CFG/DAG anteriores ni se generan máscaras virtuales como físicas.
+
+Los cuatro perfiles **no son** las opciones oficiales `-O0/-O1/-O2`.
+`gcc -O0..3` en Memcheck describe la compilación del verificador C, no un nivel BAL.
+
+## Propuesta productiva y condiciones
+
+| Nivel propuesto | Ruta | Estado y condición |
+|---|---|---|
+| -O0 | Backend tradicional | Ruta existente; opción oficial no añadida |
+| -O1 | DCE acreditado, lowering y cadena física cuando estén soportados | PARCIAL: dos pares DCE tradicionales contrastados; sin enlace general desde IR |
+| -O2 | Unrolling acotado y eventual reordenamiento antes de spilling/lowering | PENDIENTE DE ACUERDO: orden, crecimiento, CFG, ABI y observables |
+
+No basta conectar banderas a CLI/Makefile: faltan variables por nombre,
+operaciones generales y llamadas/retornos en el productor. Conectarlas ahora
+podría emitir un fragmento como programa o aplicar una pasada distinta de la
+solicitada. El siguiente cambio compartido debe acordar capacidades, procedencia,
+renovación de análisis y un diagnóstico sin fallback antes de exponer niveles.
+La evaluación requiere imágenes reales y cortes comparables; no usar estimaciones
+virtuales como ciclos ni publicar speedup de main a partir de un bucle estable.
+
+## Antecedente histórico anterior a PR #66 — no describe develop actual
+
+### Propuesta de niveles de optimización
+
 ## Estado actual comprobado
 
 La CLI actual ofrece análisis IR con --dce, --unroll[=k], --reorder[=L] y
