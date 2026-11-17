@@ -19,6 +19,7 @@
 #include "lu_reporte.h"
 #include "reordenamiento.h"
 #include "ro_reporte.h"
+#include "../../tools/vliw/optimizacion_cli.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -181,6 +182,8 @@ typedef struct {
     int simbolos;           /* -m */
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
+    const char *fuente_optimizada; /* Préstamo de la copia privada de -O1. */
+    int nivel, nivel_explicito; /* Sin opción: ruta histórica; -O2 se rechaza. */
     int ir;                 /* --ir: IR de tres direcciones */
     int ir_spilling;        /* --ir-spilling: IR con registros limitados */
     int vliw_ir;            /* --vliw-ir: vista previa del productor fisico */
@@ -205,6 +208,9 @@ static void usage(FILE *out) {
           "     balc -x [-o <archivo>] [-v] [-p] <archivo.asm>\n"
           "Compila el fuente y genera el binario (<fuente>.bin) y la imagen de IMEM (.mem).\n"
           "-o <archivo>  nombre del binario de salida (por defecto, el del fuente con .bin)\n"
+          "-O0           referencia tradicional, sin pasadas opcionales\n"
+          "-O1           DCE real con BAL reescrito y backend tradicional (un archivo)\n"
+          "-O2           reservado: rechaza hasta acreditar backend de pasadas agresivas\n"
           "-v            muestra cada fase del compilador y las decisiones importantes\n"
           "-s            genera tambien el ensamblador (.asm)\n"
           "-t            imprime el arbol sintactico (AST)\n"
@@ -238,6 +244,13 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     int posicional = 0;
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        /* Los niveles no se mezclan ni seleccionan una degradación implícita. */
+        if (!posicional && !strncmp(arg,"-O",2)) {
+            if (c->nivel_explicito || strlen(arg)!=3 || arg[2]<'0' || arg[2]>'2') {
+                fputs("nivel inválido o repetido: use -O0, -O1 o -O2\n",stderr);return -1;
+            }
+            c->nivel_explicito=1;c->nivel=arg[2]-'0';continue;
+        }
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
@@ -322,6 +335,15 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
+    /* O0 conserva la compilación normal; O1 nunca convierte vistas IR/JSON
+     * ni ensamblador existente en una supuesta optimización productiva. */
+    if (c->nivel_explicito && (c->ir || c->ir_spilling || c->vliw_ir || c->ast_json ||
+        c->diagnosticos || c->desde_ensamblador)) {
+        fputs("-O requiere compilación BAL normal; incompatible con vistas o -x\n",stderr);return -1;
+    }
+    if (c->nivel==2) {
+        fputs("-O2 no implementado: falta ruta productiva acreditada para unrolling/reordenamiento; sin fallback\n",stderr);return -1;
+    }
     /* El producto VLIW de IR es un fragmento para inspeccion, no un .bin
      * ejecutable. Prohibir salidas que impliquen enlazado o ABI completos. */
     if (c->vliw_ir && (c->ir || c->ir_spilling || c->dce || c->unroll ||
@@ -599,7 +621,7 @@ static int contar_tokens(const char *fuente, size_t largo, const char *nombre,
 static int frontend(const Compilacion *op)
 {
     size_t largo = 0;
-    char *fuente = read_source(op->entrada, &largo);
+    char *fuente = read_source(op->fuente_optimizada?op->fuente_optimizada:op->entrada, &largo);
     if (!fuente) return 2;
     int estado = 0;
     if (op->detallado) {
@@ -650,7 +672,7 @@ static int compilar(const Compilacion *op)
     } else {
         if (op->detallado || op->ast) estado = frontend(op);
         if (estado == 0)
-            estado = sem_visitar_proyecto(op->entrada, stderr, compilar_proyecto, &datos);
+            estado = sem_visitar_proyecto(op->fuente_optimizada?op->fuente_optimizada:op->entrada, stderr, compilar_proyecto, &datos);
     }
 
     if (estado == 0 && op->ensamblador) {
@@ -1023,6 +1045,22 @@ int cli_run(int argc, char **argv) {
         return sem_visitar_proyecto(op.entrada, stderr, visitante_ir_spilling, NULL);
     if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
+    if (op.nivel==1) {
+        if (!termina_en(op.entrada,".bal")) {
+            fputs("-O1 requiere un fuente .bal\n",stderr);return 2;
+        }
+        VliwOptFuente fuente={0};
+        int estado=vliw_opt_fuente_preparar(op.entrada,&fuente,stderr);
+        if (!estado) {
+            fprintf(stderr,"[O1] DCE: IR eliminadas=%zu; BAL borradas=%zu cambiadas=%zu conservadas=%zu; cambio=%d\n",
+                fuente.eliminadas_ir,fuente.borradas_bal,fuente.cambiadas_bal,fuente.conservadas_bal,fuente.cambio_bal);
+            op.fuente_optimizada=fuente.ruta;
+            /* El backend reconstruye memoria, símbolos, enlace y CB desde el
+             * BAL elegido; los nombres de salida conservan la entrada original. */
+            estado=compilar(&op);
+        }
+        vliw_opt_fuente_liberar(&fuente);return estado;
+    }
     return compilar(&op);
 }
 
