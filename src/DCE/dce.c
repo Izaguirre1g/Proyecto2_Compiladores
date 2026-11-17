@@ -276,20 +276,22 @@ static int es_resultado(const ResultadoMain *m, const char *nombre)
            bsearch(&nombre, m->nombres, m->cantidad, sizeof *m->nombres, comparar_nombres) != NULL;
 }
 
-static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado);
+static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado,
+                          const char *const *observables, size_t cantidad_observables);
 
 int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
 {
     if (ir == NULL || v == NULL) return 2;
     ResultadoMain m;
     if (resultado_de_main(ir, &m) != 0) return 2;
-    int estado = calcular_vivas(ir, v, &m);
+    int estado = calcular_vivas(ir, v, &m, NULL, 0);
     liberar_resultado_main(&m);
     return estado;
 }
 
 /* Variables vivas, con el resultado de main ya calculado (ver Paso 1b). */
-static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado)
+static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado,
+                          const char *const *observables, size_t cantidad_observables)
 {
     if (ir == NULL || v == NULL) return 2;
     memset(v, 0, sizeof *v);
@@ -385,6 +387,14 @@ static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain
     /* Las variables que se leen en main (calculadas con el programa original). */
     for (size_t j = 0; j < nv; ++j) de_main[j] = (unsigned char)es_resultado(resultado, v->variables[j]);
 
+    /* Las raíces externas expresan memoria observada por el consumidor.
+     * No añadimos instrucciones ficticias: solo cambia OUT al salir de las funciones.
+     * Los nombres son préstamos durante esta llamada y nunca se liberan aquí. */
+    for (size_t k = 0; k < cantidad_observables; ++k) {
+        size_t j = numero_de(v, observables[k]);
+        if (j != SIZE_MAX) de_main[j] |= 2;
+    }
+
     /*
      * Paso 2: algoritmo iterativo hasta el punto fijo (diapositiva 27).
      * Se empieza con todos los IN y OUT vacíos y se repite:
@@ -406,7 +416,8 @@ static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain
             const IrBloque *bloque = &ir->bloques[b];
             for (size_t j = 0; j < nv; ++j) {
                 /* Al final de main, sus variables siguen vivas (paso 1b). */
-                unsigned char nuevo_out = final_main[b] & de_main[j];
+                unsigned char nuevo_out = (final_main[b] && (de_main[j] & 1)) ||
+                    (!bloque->cantidad_sucesores && (de_main[j] & 2));
                 for (size_t s = 0; s < bloque->cantidad_sucesores; ++s) {
                     nuevo_out |= v->entrada[bloque->sucesores[s] * nv + j];
                 }
@@ -848,9 +859,12 @@ static size_t quitar_inalcanzables(IrPrograma *ir, DceResultado *r)
     return estado == 0 ? quitadas : SIZE_MAX;
 }
 
-int dce_eliminar(IrPrograma *ir, DceResultado *r)
+int dce_eliminar_con_observables(IrPrograma *ir, DceResultado *r,
+                                const char *const *observables, size_t cantidad)
 {
-    if (ir == NULL || r == NULL) return 2;
+    if (ir == NULL || r == NULL || (cantidad && !observables)) return 2;
+    for (size_t i = 0; i < cantidad; ++i)
+        if (!observables[i] || !observables[i][0]) return 2;
     memset(r, 0, sizeof *r);
     r->instrucciones_antes = ir->cantidad;
 
@@ -870,7 +884,11 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
 
         /* Tipo 1: variables vivas. */
         DceVivas vivas;
-        if (dce_calcular_vivas(ir, &vivas) != 0) return 2;
+        ResultadoMain m;
+        if (resultado_de_main(ir, &m) != 0) return 2;
+        int viva_estado = calcular_vivas(ir, &vivas, &m, observables, cantidad);
+        liberar_resultado_main(&m);
+        if (viva_estado != 0) return 2;
         r->pasadas++;
 
         unsigned char *borrar = calloc(ir->cantidad ? ir->cantidad : 1, 1);
@@ -892,6 +910,12 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
 
     r->instrucciones_despues = ir->cantidad;
     return 0;
+}
+
+/* La API histórica conserva exactamente su política de observación. */
+int dce_eliminar(IrPrograma *ir, DceResultado *r)
+{
+    return dce_eliminar_con_observables(ir, r, NULL, 0);
 }
 
 int dce_imprimir_resultado(const DceResultado *r, FILE *f)
