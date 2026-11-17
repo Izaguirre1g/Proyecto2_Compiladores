@@ -6,6 +6,7 @@ El driver C aísla fallos de reservas propias sin alterar el código del equipo.
 """
 from pathlib import Path
 import os
+import hashlib
 import json
 import shlex
 import shutil
@@ -38,7 +39,7 @@ class NivelesTests(unittest.TestCase):
         cls.dir=Path(cls.tmp.name);cls.root=cls.dir/'codigo'
         shutil.copytree(ROOT,cls.root,ignore=shutil.ignore_patterns('.git','__pycache__','build'))
         subprocess.run(['make','-B','balc'],cwd=cls.root,check=True,capture_output=True)
-        cls.balc=cls.root/'balc'
+        cls.balc=cls.root/'balc';cls.colisiones=[]
         recipe=subprocess.check_output(['make','-Bn','balc'],cwd=cls.root,text=True)
         line=next(l for l in recipe.splitlines() if 'src/Linea_Comandos/main.c' in l and ' -o ' in l)
         tokens=shlex.split(line);sources=[s for s in tokens if s.endswith('.c') and s not in ('src/Linea_Comandos/main.c','tools/vliw/optimizacion_cli.c')]
@@ -137,5 +138,145 @@ class NivelesTests(unittest.TestCase):
         self.assertEqual((a.returncode,b.returncode),(0,0),a.stderr+b.stderr)
         self.assertIn('[O1] DCE:',b.stderr)
         self.assertNotEqual((da/'caso.mem').read_bytes(),(db/'caso.mem').read_bytes())
+
+    # La evidencia opcional conserva hashes de cada archivo del fixture, incluso
+    # si un alias lo expone con otro nombre. No utiliza archivos del usuario.
+    @classmethod
+    def tearDownClass(cls):
+        if os.environ.get('F01_EVIDENCIA'):
+            Path(os.environ['F01_EVIDENCIA']).write_text(json.dumps(cls.colisiones,indent=2))
+
+    # Cada rechazo parte de una unidad BAL válida en un directorio privado;
+    # la limpieza pertenece al TemporaryDirectory de la clase.
+    def preparar_colision(self):
+        d=Path(tempfile.mkdtemp(dir=self.dir));(d/'caso.bal').write_text(FUENTE)
+        return d
+
+    # Registramos enlaces como enlaces, sin recorrer sus destinos externos;
+    # los archivos regulares del fixture se comparan por contenido SHA-256.
+    def hashes_fixture(self,d):
+        return {str(p.relative_to(d)):('symlink:'+os.readlink(p) if p.is_symlink()
+                else hashlib.sha256(p.read_bytes()).hexdigest())
+                for p in d.rglob('*') if p.is_symlink() or p.is_file()}
+
+    # Una colisión debe detectarse antes de abrir la primera salida: comparar el
+    # conjunto completo también detecta artefactos nuevos, no solo corrupción.
+    def rechazar_colision(self,d,salida,diagnostico='colisión'):
+        antes=self.hashes_fixture(d)
+        orden=[str(self.balc),'-O2','-o',str(salida),'caso.bal']
+        p=subprocess.run(orden,cwd=d,capture_output=True,text=True)
+        despues=self.hashes_fixture(d)
+        self.colisiones.append(dict(comando=orden,codigo=p.returncode,stderr=p.stderr,
+                                    antes=antes,despues=despues))
+        self.assertNotEqual(p.returncode,0,p.stderr);self.assertIn(diagnostico,p.stderr)
+        self.assertEqual(antes,despues,'El rechazo debe conservar todos los archivos')
+
+    # Estos cinco nombres reproducen BIN sobrescrito por ASM, JSON o cualquiera
+    # de los tres volcados IR; los centinelas preexistentes deben sobrevivir.
+    def test_14_colisiones_literales(self):
+        for ext in ('asm','o2.json','o2-antes.ir','o2-despues.ir','o2-spilling.ir'):
+            with self.subTest(ext=ext):
+                d=self.preparar_colision();salida='caso.'+ext
+                (d/salida).write_bytes(b'ARTEFACTO PROTEGIDO')
+                self.rechazar_colision(d,salida)
+
+    # Aunque BIN y MEM tienen nombres distintos, un enlace al mismo inodo
+    # haría que la segunda escritura destruyera el ejecutable recién emitido.
+    def test_15_colision_mem(self):
+        d=self.preparar_colision();(d/'resultado.mem').write_bytes(b'MEM PROTEGIDA')
+        (d/'resultado.bin').symlink_to('resultado.mem')
+        self.rechazar_colision(d,'resultado.bin')
+
+    # El frontend ya leyó BAL: permitir reutilizar su nombre como BIN destruiría
+    # una entrada válida después de compilarla, aun sin error de análisis.
+    def test_16_colision_fuente(self):
+        d=self.preparar_colision();self.rechazar_colision(d,'caso.bal')
+
+    # El nombre literal difiere; normalizar el padre debe reconocer el mismo
+    # sidecar aun cuando este todavía no exista.
+    def test_17_alias_relativo(self):
+        d=self.preparar_colision();self.rechazar_colision(d,'./caso.o2.json')
+
+    # Un padre real seguido de .. vuelve al directorio del JSON/IR; comparar
+    # únicamente la cadena de -o dejaría pasar la sobrescritura.
+    def test_18_alias_padre(self):
+        d=self.preparar_colision();(d/'sub').mkdir()
+        self.rechazar_colision(d,'sub/../caso.o2-antes.ir')
+
+    # Se ejercitan tanto enlaces de directorio con salida nueva como enlaces
+    # finales existentes; realpath del archivo inexistente no resolvería el primero.
+    def test_19_alias_simbolicos(self):
+        d=self.preparar_colision();(d/'alias').symlink_to('.',target_is_directory=True)
+        self.rechazar_colision(d,'alias/caso.o2-despues.ir')
+        d=self.preparar_colision();(d/'resultado.bin').symlink_to('caso.bal')
+        self.rechazar_colision(d,'resultado.bin')
+
+    # Un padre ausente, un archivo usado como padre, una salida directorio y un
+    # enlace colgante no son destinos publicables. No deben dejar ni el ASM.
+    def test_20_destinos_invalidos(self):
+        for tipo in ('ausente','archivo','ejecutable','directorio','colgante'):
+            with self.subTest(tipo=tipo):
+                d=self.preparar_colision();salida='sub/resultado.bin'
+                if tipo in ('archivo','ejecutable'):
+                    (d/'sub').write_bytes(b'PADRE PROTEGIDO')
+                    if tipo=='ejecutable':(d/'sub').chmod(0o700)
+                if tipo=='directorio':(d/'sub').mkdir();(d/salida).mkdir()
+                if tipo=='colgante':
+                    salida='resultado.bin';(d/salida).symlink_to('sin-destino')
+                self.rechazar_colision(d,salida,'destino inválido')
+
+    # Cubrimos los 21 pares de salidas y las siete contra la fuente usando
+    # enlaces duros. Igualdad textual/canónica sola no detectaría estos alias.
+    def test_21_identidad_archivos_protegidos(self):
+        nombres=['caso.asm','caso.bin','caso.mem','caso.o2.json',
+                 'caso.o2-antes.ir','caso.o2-despues.ir','caso.o2-spilling.ir']
+        for i,a in enumerate(nombres):
+            for b in nombres[i+1:]+['caso.bal']:
+                with self.subTest(a=a,b=b):
+                    d=self.preparar_colision()
+                    if b!='caso.bal':(d/b).write_bytes(b'INODO PROTEGIDO')
+                    os.link(d/b,d/a);self.rechazar_colision(d,'caso.bin')
+
+    # El preflight conserva las rutas admitidas y todos sus formatos. Repetir
+    # sobre las mismas salidas también contrasta la rama de archivos existentes.
+    def test_22_salidas_validas_deterministas(self):
+        sys.path.insert(0,str(ROOT/'tools/vliw'))
+        from evaluar_entrega_final import validar_imagen
+        from validar_integracion_ir_rtl import ensamblador
+        arq=Path(os.environ.get('ARQUITECTURA_ROOT',str(ROOT.parent/'Proyecto2_Arquitectura1')))
+        for modo in ('predeterminado','relativo','absoluto'):
+            with self.subTest(modo=modo):
+                d=self.preparar_colision();externo=d/'externo';externo.mkdir()
+                binario=d/'caso.bin' if modo=='predeterminado' else (d/'resultado.bin' if modo=='relativo' else externo/'resultado.bin')
+                opts=[] if modo=='predeterminado' else ['-o',str(binario) if modo=='absoluto' else binario.name]
+                orden=[str(self.balc),'-O2',*opts,'caso.bal']
+                p=subprocess.run(orden,cwd=d,capture_output=True,text=True)
+                self.assertEqual(p.returncode,0,p.stderr)
+                rutas=[d/'caso.asm',binario,binario.with_suffix('.mem'),d/'caso.o2.json',
+                       d/'caso.o2-antes.ir',d/'caso.o2-despues.ir',d/'caso.o2-spilling.ir']
+                self.assertTrue(all(p.is_file() and p.stat().st_size for p in rutas))
+                self.assertEqual(json.loads((d/'caso.o2.json').read_text())['nivel'],'O2')
+                validar_imagen(binario,binario.with_suffix('.mem'))
+                self.assertEqual(ensamblador(arq).assemble_source((d/'caso.asm').read_text()).memory_text(),binario.with_suffix('.mem').read_text())
+                antes=self.hashes_fixture(d)
+                q=subprocess.run(orden,cwd=d,capture_output=True,text=True)
+                self.assertEqual(q.returncode,0,q.stderr);self.assertEqual(antes,self.hashes_fixture(d))
+
+    # La imagen con BIN externo debe recorrer el mismo M2 físico: f(3) escribe
+    # 4 en resultados[0]. La sonda exige retorno real y preservación SP/GP/RA,
+    # sin convertir ese corte en terminación B1.
+    def test_23_salida_externa_m2(self):
+        d=self.preparar_colision();(d/'externo').mkdir();binario=d/'externo/resultado.bin'
+        p=subprocess.run([str(self.balc),'-O2','-o',str(binario),'caso.bal'],cwd=d,capture_output=True,text=True)
+        self.assertEqual(p.returncode,0,p.stderr)
+        sonda=d/'sonda';cc=shlex.split(os.environ.get('CC','cc'))
+        sim=sorted(str(p) for p in (ROOT/'src/Simulador_VLIW').glob('*.c'))
+        subprocess.run(cc+['-std=c11','-Wall','-Wextra','-Werror','-pedantic','-I'+str(ROOT/'include'),str(ROOT/'tools/vliw/sonda_o2.c'),*sim,'-o',str(sonda)],check=True,capture_output=True)
+        meta=json.loads((d/'caso.o2.json').read_text());fn=next(f for f in meta['funciones'] if f['nombre']=='main')
+        p=subprocess.run([str(sonda),str(binario.with_suffix('.mem')),str(meta['pc_fin']),str(fn['inicio_pc']),str(fn['fin_pc']),str(d),'100000'],capture_output=True,text=True)
+        self.assertEqual(p.returncode,0,p.stderr)
+        obj=next(o for o in meta['objetos'] if o['funcion']=='main' and o['nombre']=='resultados')
+        direccion=65536-fn['marco']+obj['offset'];mem=(d/'sim-memoria.bin').read_bytes()
+        self.assertEqual(int.from_bytes(mem[direccion:direccion+4],'little'),4)
 
 if __name__=='__main__':unittest.main()

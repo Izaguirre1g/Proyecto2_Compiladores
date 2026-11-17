@@ -4,11 +4,106 @@ Este documento consolida la ejecución, calendarización y validación. Los cont
 precisos permanecen en [integración física](contrato-integracion.md),
 [CFG](cfg-fisico.md), [DAG](dag-fisico.md) e
 [integración con Arquitectura](integracion-ir-arquitectura.md).
-La base de esta entrega es Compiladores `e66ee5e` (PR #69); la referencia RTL
-es Arquitectura `5e6e45f`. Las cifras actuales se conservan en el informe externo
-`evidencias-proyecto2-compiladores-javier-final`, con logs y comandos por campaña.
 
-## Ejecución por ciclos
+## Estado vigente — integración productiva y corrección de salidas
+
+PR [#70](https://github.com/Izaguirre1g/Proyecto2_Compiladores/pull/70) y
+[#71](https://github.com/Izaguirre1g/Proyecto2_Compiladores/pull/71) están
+fusionados. Base de esta revisión: Compiladores `13497a9`; referencia de
+Arquitectura consultada: `192050e`. El contrato vigente está en
+[integración productiva O2](integracion-productiva-o2.md).
+
+| Ruta | Estado vigente |
+|---|---|
+| Sin nivel / `-O0` | Backend tradicional; O0 conserva ASM/BIN/MEM de la ruta predeterminada. |
+| `-O1` | DCE y reescritor BAL de José, seguidos del frontend/backend tradicional; rechaza IR cambiada sin reescritura acreditada. |
+| `-O2` | IR optimizada → spilling/mapeo existentes → ISA → metadatos/CFG/DAG/proyección/I1-A1 → S7 y verificador → S8-A/CB, con enlace y estabilización de direcciones reales. |
+
+O2 ejecuta unrolling, versionado local, DCE con raíces y reordenamiento antes
+de bajar la IR transformada. No recompila el AST original como fallback.
+`-O2 -p` muestra el JSON de la calendarización productiva. S7 selecciona las
+operaciones listas por **orden original determinista**; el DAG calcula camino
+crítico, pero esa información no es una prioridad del selector.
+
+F-01 añade preflight de las siete salidas (ASM, BIN, MEM, JSON y tres IR)
+contra todas las demás y contra la fuente. Resuelve padres aun con salidas
+inexistentes, alias relativos/directorios y enlaces simbólicos existentes;
+compara dispositivo/inodo para enlaces duros. Un destino inválido o una
+colisión se rechaza antes de abrir salidas. Los nombres resueltos se usan al
+escribir. Los directorios deben permanecer estables durante la compilación:
+no se ofrece bloqueo contra modificaciones concurrentes ni transacción conjunta
+ante errores posteriores de E/S. Los formatos y O0/O1 se conservan.
+
+### Campañas y límites vigentes
+
+La auditoría externa `evidencias-cierre-definitivo-javier-p2` del 17/11/2026,
+sobre `13497a9`/`192050e`, registró **26 suites, 460 métodos por modalidad**
+normal/ASan/UBSan/ASan+UBSan/LSan, FAIL=0 y SKIP=0. Es evidencia histórica de
+esa campaña, anterior a F-01. También acreditó los **15 programas en O0/O1/O2**
+y **100 contrastes RTL**: 90 oficiales (15×3 niveles×2 modos) y diez dirigidos
+(cinco programas×dos modos), MEM_MODE 0/2, L2_MODEL=0. No son cien programas
+ni una campaña RTL nueva de este parche. Los resultados nuevos de la corrección
+se conservan en `evidencias-javier-cierre-correcciones`.
+
+Campaña nueva F-01: **26 suites / 470 métodos por modalidad**, normal, ASan,
+UBSan, ASan+UBSan y LSan, FAIL=0 y SKIP=0. `make -B balc` y
+`make -B -k test` devuelven 0. La suite de niveles contiene 23 métodos y
+44 subcasos negativos con hashes conservados; las pruebas adicionales no
+se suman de nuevo al total. Valgrind ejecutó doce rutas (una válida y once
+rechazos), cero errores y cero bytes/bloques pendientes. La prueba O2/M2
+externa conserva el valor esperado 7 y coherencia ASM/BIN/MEM. No se repitió
+la campaña extensa de cien contrastes RTL; sí las suites con RTL aplicables.
+
+O2 admite el subconjunto documentado: escalares, bytes, referencias 1D,
+globales, llamadas, argumentos adicionales y recursión dentro de su capacidad.
+Rechaza módulos/enlace entre unidades, listas, texto, arrays dinámicos,
+IR_SIZE y parámetros multidimensionales sin contrato de strides, entre otros
+límites del documento O2. No hay protección dinámica nueva de desbordamiento
+de pila ni promesa de mejora universal de rendimiento.
+
+B1/B2 permanece **INCONCLUSO** en las quince parejas O0/O2: retorno observado
+y resultados BAL correctos no equivalen a terminación arquitectónica ni a
+igualdad de todos los registros entre niveles. Los tres casos DCE tienen
+eliminación real; solo uno acredita efectos externos del callee en el
+manifiesto actual. José/equipo deben revisar la cobertura literal de tres
+casos con llamadas con efectos. No se cambian programas ni oráculos.
+
+Dylan revisa ABI/marcos/lowering y contratos compartidos; Meibel, versionado y
+orden de pasadas; José, raíces DCE/validación O1 y cobertura de efectos. El
+documento formal, gráficas y defensa son colectivos. La bitácora individual
+con horas humanas reales está **PENDIENTE DE DATOS DEL ESTUDIANTE** hasta
+acreditarla; pruebas y commits no permiten deducir horas.
+
+### Reproducir la corrección
+
+En una **copia externa**, con Arquitectura fijada a una referencia compatible:
+
+```bash
+make -B balc
+ARQUITECTURA_ROOT=/ruta/arquitectura python3 -B tests/vliw/test_niveles_optimizacion.py -v
+./balc -O2 -o resultado.bin caso.bal
+./balc -O2 -p caso.bal
+# Debe rechazar con diagnóstico de colisión antes de publicar:
+./balc -O2 -o caso.o2.json caso.bal
+python3 -B tools/vliw/validar_vliw.py --help
+python3 -B tools/vliw/validar_vliw.py --arquitectura /ruta/arquitectura --evidencia /tmp/regresion-nueva.json
+python3 -B tools/vliw/evaluar_integracion_productiva.py --help
+```
+
+La suite de niveles conserva sus pruebas O0/O1 y añade colisiones, alias,
+identidades, destinos inválidos, determinismo, coherencia de imágenes y M2.
+La campaña extensa se reproduce con `evaluar_integracion_productiva.py`;
+`evaluar_entrega_final.py` conserva la evaluación O0/O1 anterior.
+
+## Estado anterior — antecedentes PR #69/#70
+
+Las secciones siguientes conservan el contexto y resultados de la entrega
+basada en Compiladores `e66ee5e` y Arquitectura `5e6e45f`, guardados en
+`evidencias-proyecto2-compiladores-javier-final`. Las restricciones O2 y las
+cifras de esa campaña describen ese estado anterior; la sección vigente y
+el contrato O2 enlazado las sustituyen donde la integración evolucionó.
+
+### Ejecución por ciclos
 
 S1 carga imágenes; S2 decodifica palabras reales del ISA. Cada bundle tiene
 128 bits, con slots ALU, LSU, BRU y CRIPTO. M2 modela IF/ID/EX/WB: las lecturas
@@ -38,7 +133,7 @@ El simulador usa memoria funcional por instancia; no modela automáticamente
 los ciclos de stalls de L1/L2/RAM del RTL. Por ello ciclos M2 y ciclos físicos
 con caché no son medidas intercambiables.
 
-## Del flujo físico al código
+### Del flujo físico al código
 
 I1-A2a extrae metadatos físicos con S2: slot, registros, efectos y tipo. Un ID
 externo identifica una operación, pero las aristas S7 usan índices. La generación
@@ -55,8 +150,9 @@ conservadoras del contrato. No se inventa una barrera para ocultar un riesgo.
 La cobertura transitiva debe conservar la suma de distancias de un camino,
 incluso entre bloques; una arista válida aislada no demuestra cobertura global.
 
-S7 calcula prioridades por camino crítico y selecciona operaciones listas en
-orden determinista. Agrupa hasta una por slot cuando las dependencias lo
+El DAG calcula información de camino crítico; S7 selecciona operaciones listas
+en orden original determinista, sin priorización por camino crítico. Agrupa
+hasta una por slot cuando las dependencias lo
 permiten, aísla barreras y cierra bloques con sus transferencias. Introduce NOP
 para respetar latencias y dos guardas en entradas protegidas. Verifica tanto
 el plan como sus mapas, ubicaciones, riesgos y restricciones arquitectónicas.
@@ -70,7 +166,7 @@ resolución de símbolos, ABI o reubicaciones que deba proporcionar el productor
 Los constructores publican resultados completos, con propiedad y liberación
 explícitas; las entradas prestadas permanecen inmutables.
 
-## Rutas productivas y límites
+### Rutas productivas y límites
 
 | Ruta | Estado implementado |
 |---|---|
@@ -95,7 +191,7 @@ duplicados/invalidos y combinaciones con vistas de análisis, JSON o ejecución
 La CLI predeterminada mantiene su comportamiento. `-O2` devuelve error sin
 fallback; `--dce`, `--unroll`, `--reorder` siguen siendo análisis independientes.
 
-## Evaluación reproducible
+### Evaluación reproducible
 
 Construir siempre en una copia externa para preservar el ejecutable versionado:
 
@@ -128,7 +224,7 @@ productivo. Un análisis `--ir-spilling` o `--unroll` guardado junto a la imagen
 no demuestra que esa imagen incorpore la transformación. Los bloqueos del
 backend se conservan en sus logs y no se reparan modificando módulos ajenos.
 
-## Lectura de métricas
+### Lectura de métricas
 
 Código y bundles son magnitudes estáticas de la imagen; operaciones útiles,
 ciclos, saltos y accesos son dinámicos al horizonte registrado. IPC requiere
@@ -144,7 +240,7 @@ la igualdad de un subconjunto de temporales. ASan/UBSan/LSan y Memcheck
 acreditan las rutas ejecutadas, sin demostrar ausencia universal de errores.
 Los niveles C `-O0..3` de instrumentación no son niveles de optimización BAL.
 
-## Defensa técnica breve
+### Defensa técnica breve
 
 Javier implementó el consumidor físico y la calendarización VLIW, el simulador
 por ciclos, sus comparadores y métricas, y la validación cruzada con el procesador
@@ -157,9 +253,9 @@ resultados y rechazos reales. El backend general, las pasadas de otros miembros,
 ABI y enlace siguen bajo responsabilidad del equipo; esta entrega no los
 presenta como terminados por Javier.
 
-## Resultados medidos del cierre
+### Resultados medidos del cierre anterior (PR #70)
 
-La campaña actual recompiló quince fuentes: catorce parejas O0/O1 produjeron
+La campaña anterior recompiló quince fuentes: catorce parejas O0/O1 produjeron
 resultados lógicos correctos y 56 contrastes RTL completos (dos variantes,
 dos modos). B1 y el lote B2 devolvieron 14 INCONCLUSO, cero EQUIVALENTE,
 cero DIFERENTE y cero errores. Cinco casos acreditan su categoría: dos DCE
