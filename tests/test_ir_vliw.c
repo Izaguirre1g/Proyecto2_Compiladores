@@ -68,6 +68,28 @@ static void test_cadena_real(void) {
     assert(!r.cadena && !r.despues_spilling.codigo);
     ir_liberar(&p);
 }
+/* Verifica que el ultimo registro del banco de 8 llegue a la ISA real.
+ * La prueba de 3 registros anterior verifica el caso con alta presion. */
+static void test_banco_fisico_de_ocho(void) {
+    IrPrograma p={0};IrVliwResultado r={0};IrVliwConfiguracion cfg={8,16};
+    instr(&p,IR_FUNC,"main",NULL,NULL,NULL);
+    for (unsigned i=0;i<8;++i) {
+        char temp[24],val[24];
+        snprintf(temp,sizeof temp,"$t%u",i);
+        snprintf(val,sizeof val,"%u",i+1);
+        instr(&p,IR_COPY,temp,val,NULL,NULL);
+    }
+    instr(&p,IR_END_FUNC,"main",NULL,NULL,NULL);
+    assert(ir_bloques_basicos(&p)==0);
+    assert(ir_vliw_desde_ir(&p,&cfg,&r,stderr)==IR_VLIW_OK);
+    assert(r.metricas.registros==8);
+    assert(strstr(r.cadena->asm_texto,"sumai x23,x0,8"));
+    assert(strstr(r.cadena->asm_texto,"guardap x2,x23"));
+    assert(vliw_verificar(&r.cadena->proyeccion->entrada,r.cadena->plan,NULL)==VLIW_OK);
+    ir_vliw_liberar(&r);ir_liberar(&p);
+    puts("OK banco fisico de 8: $r7 corresponde a x23");
+}
+
 static void test_saltos_y_cfg_fisico(void) {
     IrPrograma p={0};IrVliwResultado r={0};IrVliwConfiguracion cfg={3,16};
     instr(&p,IR_FUNC,"main",NULL,NULL,NULL);
@@ -162,7 +184,7 @@ static void test_campo_fuera_de_isa(void) {
     ir_liberar(&p);
 }
 int main(void) {
-    test_cadena_real();test_saltos_y_cfg_fisico();test_backedge_y_inmediato();test_desde_ast();test_rechazos_sin_binario();test_campo_fuera_de_isa();
+    test_cadena_real();test_banco_fisico_de_ocho();test_saltos_y_cfg_fisico();test_backedge_y_inmediato();test_desde_ast();test_rechazos_sin_binario();test_campo_fuera_de_isa();
     puts("OK: puente de IR/spilling hacia consumidor VLIW fisico (subconjunto)");
     return 0;
 }

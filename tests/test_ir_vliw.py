@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = [
     'tests/test_ir_vliw.c', 'src/ir_vliw.c', 'src/ir_spilling.c',
+    'src/Representacion_Intermedia/ir_registros_fisicos.c',
+    'src/Representacion_Intermedia/ir_defuse.c',
     'src/ir_spilling_marco.c', 'src/ir_spilling_backend.c',
     'src/Generacion_Codigo/funciones_marco.c',
     'src/Representacion_Intermedia/ir.c', 'src/Analisis_Sintactico/ast.c',

@@ -849,13 +849,19 @@ test-loop-unrolling: loop_unrolling/pruebas/test_loop_unrolling balc
 reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
       reordenamiento/reordenamiento.h $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
-	      $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
+	      $(IR)/ir.c $(SINTACTICO)/ast.c $(IR_DEFUSE_SRC) -o $@
 test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 	./reordenamiento/pruebas/test_reordenamiento
 	sh reordenamiento/pruebas/test_bal.sh
 
 # Productor físico IR/spilling en subconjunto validado, aislado del backend BAL.
 -include Makefile.ir_vliw.mk
+# Issue #7: API comun de usos, definiciones y efectos sobre IR.
+-include Makefile.ir_defuse.mk
+# Issue #23: banco fisico de registros de IR/spilling.
+-include Makefile.ir_fisico.mk
+# Issue #3: latencias de registros, memoria y efectos de llamadas/globales.
+-include Makefile.ir_latencias.mk
 
 # Reservas de spilling basadas en offsets reales de simbolos por funcion.
 -include Makefile.spilling.memoria.mk
