@@ -58,6 +58,14 @@ int gb_generar_arreglos(const AstNodo *nodo, GbResolver resolver,
                         GbResolverArreglo arreglos, void *datos,
                         FILE *salida, FILE *diagnosticos);
 
+/* Guarda x4 en el elemento `destino` (a[i] o m[i][j], nodo AST_INDICE).
+ * El valor ya debe estar en x4 (por ejemplo, el resultado de una llamada):
+ * la direccion se calcula en x5/x6 sin tocar x4. Los indices no pueden
+ * contener llamadas. Devuelve 0 bien y 1 con error (escrito en diagnosticos). */
+int gb_guardar_elemento(const AstNodo *destino, GbResolver resolver,
+                        GbResolverArreglo arreglos, void *datos,
+                        FILE *salida, FILE *diagnosticos);
+
 /* Adaptador IR: expande la aritmética existente, con operandos ya evaluados
  * en x4/x5 y resultado x4. Solo pitagoras/euclides/euler/descartes.
  * Conserva exactamente errores/overflow del backend; clobbers x4..x15.
