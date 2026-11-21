@@ -460,6 +460,22 @@ int gb_generar_arreglos(const AstNodo *nodo, GbResolver resolver,
     return ok ? 0 : 1;
 }
 
+/* a[i] : <valor ya calculado en x4>. Igual que la asignacion a un elemento
+ * de generar(), pero sin evaluar el valor: lo usa generacion_funciones.c
+ * cuando el valor es una llamada (a[i] : f(x);). La direccion va en x5. */
+int gb_guardar_elemento(const AstNodo *destino, GbResolver resolver,
+                        GbResolverArreglo arreglos, void *datos,
+                        FILE *salida, FILE *diagnosticos) {
+    Generador g = {resolver, datos, salida, diagnosticos, 0, 0, arreglos};
+    if (!salida) return 1;
+    if (!destino || destino->tipo != AST_INDICE)
+        return !fallar(&g, destino, "se esperaba un elemento de arreglo");
+    GbArreglo a;
+    if (!direccion_elemento(&g, destino, 5, &a)) return 1;
+    fprintf(salida, "guardap x5, x4, %d\n", a.desplazamiento);
+    return ferror(salida) ? 1 : 0;
+}
+
 /* No se vuelve a implementar multiplicación/división/potencia en el backend
  * IR. Los operandos están en registros caller-saved que no ofrece spilling. */
 int gb_expandir_aritmetica(const char *op,FILE *salida,FILE *diag)

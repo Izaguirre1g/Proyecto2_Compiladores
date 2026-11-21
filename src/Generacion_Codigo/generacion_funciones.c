@@ -177,6 +177,16 @@ static int asignacion_ext(GfContexto *c, const AstNodo *n)
     int declaracion = n->tipo == AST_DECLARACION;
     const AstNodo *id = n->primer_hijo;
     const AstNodo *valor = id ? id->siguiente : NULL;
+    /* a[i] : f(x);  primero el valor (queda en x4), despues la direccion
+     * del elemento. El indice no puede tener llamadas: pisarian x4. */
+    if (!declaracion && id && id->tipo == AST_INDICE && valor && !valor->siguiente) {
+        if (contiene_llamada(id))
+            return gf_fallo(c, id, "indice con llamadas aun no soportado");
+        if (!c->arreglos) return gf_fallo(c, id, "arreglo sin referencia semantica");
+        if (!expresion_ext(c, valor, 0)) return 0;
+        return gb_guardar_elemento(id, c->resolver, c->arreglos, c->datos,
+                                   c->salida, c->diagnosticos) == 0;
+    }
     if (!id || !valor || id->tipo != AST_IDENTIFICADOR)
         return gf_fallo(c, n, "asignacion invalida");
     GbReferencia ref;

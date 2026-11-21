@@ -153,7 +153,71 @@ analizarse: la verificación del punto de entrada corresponde a la integración.
 
 `math.suma` genera un acceso a miembro; la llamada contiene ese acceso como
 destino. También se representan accesos indexados como `datos.matriz[i][j]`.
-Registrar una importación en el AST **no abre el archivo ni enlaza sus funciones**.
+El parser solo registra la importación; el archivo se abre y se enlaza en la
+semántica (ver abajo).
+
+### Enlace entre archivos
+
+`src/Analisis_Semantico/semantic_modules.c` carga y valida cada módulo
+(existencia, ciclos de importación, funciones, argumentos, tipos, privacidad).
+Después, en `sem_visitar_proyecto`, **une el programa y sus módulos en un solo
+AST** antes de entregarlo al backend, así que el ensamblador normal, `--ir`,
+`--dce`, `--unroll`, `--reorder`, `-O2` y el IDE generan código para programas
+con `bring` sin cambios propios:
+
+1. Cada módulo importado, directa o indirectamente, se copia una sola vez,
+   después de los módulos que él importa, aunque se importe con varios alias.
+2. Sus funciones y constantes llevan el nombre del archivo como prefijo:
+   `sumar` de `matematicas.bal` pasa a ser `matematicas__sumar`. Así no chocan
+   con nombres del programa ni de otros módulos (un `main` de un módulo queda
+   como `modulo__main`).
+3. Las referencias se reescriben: `math.sumar(2, 3)` → `matematicas__sumar(2, 3)`,
+   y dentro del módulo `sumar(...)` → `matematicas__sumar(...)`.
+4. Un parámetro o variable local con el mismo nombre que una constante del
+   módulo la tapa y no se renombra (se respeta el orden: en
+   `r * declare_int : base;` antes de declarar un `base` local, se usa la constante).
+5. Las constantes `declare_int` o `declare_boolean` con valor literal se
+   reemplazan por ese valor (`config.limite` → `10`), porque la IR todavía no
+   admite declaraciones globales.
+6. El AST unido vuelve a pasar por la semántica para construir su tabla de
+   símbolos y se entrega al backend. Un programa sin `bring` no cambia.
+7. El código copiado de un módulo queda en la **línea 0** ("otro archivo").
+   El DCE que reescribe el texto (`-O1` y "Aplicar al código" del IDE) edita
+   por número de línea: así nunca confunde la línea 5 de un módulo con la
+   línea 5 del principal. El código muerto de un módulo se compila tal cual.
+
+```text
+bring operaciones aka op;            %% operaciones.bal hace bring matematicas aka math
+... op.duplicar(5) ...
+```
+
+queda, para el backend, como
+
+```text
+create_funk #declare_int# matematicas__sumar(a * declare_int, b * declare_int) { ... }
+create_funk #declare_int# operaciones__duplicar(n * declare_int) {
+    give matematicas__sumar(n, n);
+}
+create_funk #declare_infinite_void# main() { ... operaciones__duplicar(5) ... }
+```
+
+`-O1` copia el programa a un directorio privado para reescribirlo; con
+`bring`, copia ahí también los módulos importados (y los que ellos importan)
+desde la carpeta del fuente, y borra todo al terminar
+(`tools/vliw/optimizacion_cli.c`).
+
+Pruebas: `make test-enlace` compila los programas válidos de `tests/modulos/`
+con el backend normal, `--ir`, `-O1` y `-O2`, y ejecuta en el simulador VLIW
+(`tests/test_enlace_simulador.c`) `enlace_principal.bal` (normal y `-O1`) y
+`enlace_dce.bal` (con `-O1` se borra una variable muerta del principal y el
+resultado no cambia), revisando sus resultados. Además, los binarios de un
+programa con `bring` son idénticos byte a byte a los del mismo programa escrito
+en un solo archivo con los nombres ya unidos.
+
+Limitaciones: un identificador escrito a mano como `modulo__nombre` choca con
+el nombre enlazado (la semántica lo informa como duplicado); un módulo no puede
+llamarse `entrada` con `-O1` (es el nombre de la copia de trabajo); los errores
+del backend dentro de código de un módulo se informan en la línea 0.
 
 ## Seek y seize
 
