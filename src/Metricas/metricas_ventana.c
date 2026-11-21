@@ -414,9 +414,15 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
         texto_tamano(antes, f->texto[0], sizeof f->texto[0]);
         texto_tamano(despues, f->texto[1], sizeof f->texto[1]);
         texto_cambio_tamano(&c, f->nota, sizeof f->nota);
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < 2; ++i) {
+            /* texto_tamano deja una cadena terminada en NUL. Copiamos el
+             * buffer completo a un objeto independiente para que snprintf
+             * no lea y escriba campos del mismo objeto bajo restrict. */
+            char texto[sizeof f->texto[i]];
+            memcpy(texto, f->texto[i], sizeof texto);
             snprintf(f->tip[i], sizeof f->tip[i], "%s: %s; incluye NOP y guardas, excluye datos y cabecera BALB",
-                     g->leyenda[i], f->texto[i]);
+                     g->leyenda[i], texto);
+        }
     }
 }
 
