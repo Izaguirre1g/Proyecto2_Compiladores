@@ -1,6 +1,7 @@
 /* Configura DCE productivo sin modificar sus pasadas ni el backend BAL.
  * El resultado posee un directorio temporal privado y el fuente a recompilar.
- * Solo acepta BAL de un archivo; llamadas locales conservan el ABI tradicional. */
+ * Con `bring`, los módulos importados se copian al mismo directorio privado;
+ * el DCE reescribe solo el principal. Las llamadas conservan el ABI tradicional. */
 #ifndef VLIW_OPTIMIZACION_CLI_H
 #define VLIW_OPTIMIZACION_CLI_H
 #include <stddef.h>
