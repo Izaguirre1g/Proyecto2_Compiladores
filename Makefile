@@ -753,7 +753,7 @@ test-ide-unrolling: tests/test_ide_unrolling
 # Boton "Reordenamiento" del IDE: semantico -> IR -> [unrolling] ->
 # ro_reordenar (modulo de Meibel, reordenamiento/) sobre el texto del
 # editor, sin GTK. Usa ro_texto_instr de ro_reporte.c para el texto de la IR.
-IDE_RO_SRC := $(IDE)/ide_reordenamiento.c reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c
+IDE_RO_SRC := $(IDE)/ide_reordenamiento.c reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c $(IR)/ir_defuse.c
 
 tests/test_ide_reordenamiento: tests/test_ide_reordenamiento.c $(IDE_RO_SRC) loop_unrolling/loop_unrolling.c $(IR)/ir.c $(IDE_ANALISIS_SRC) include/ide_reordenamiento.h reordenamiento/reordenamiento.h reordenamiento/ro_reporte.h include/ir.h $(SINTACTICO)/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_reordenamiento.c $(IDE_RO_SRC) loop_unrolling/loop_unrolling.c $(IR)/ir.c $(IDE_ANALISIS_SRC) -o $@
