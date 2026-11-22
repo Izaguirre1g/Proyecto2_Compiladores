@@ -42,7 +42,9 @@ static const Color SERIES[2] = {COLOR(0x3987E5),  /* Azul: serie 1. */
 /* Una gráfica de barras horizontales                                 */
 /* ------------------------------------------------------------------ */
 
-#define MAX_FILAS 6
+/* La gráfica más larga es "Antes y después del DCE": ciclos, instrucciones,
+ * bundles NOP, IPC, tamaño en bundles, tamaño en bytes y tiempo de compilación. */
+#define MAX_FILAS 7
 
 /* Una fila: su nombre y una barra por serie (1 o 2). */
 typedef struct {
@@ -257,7 +259,7 @@ typedef struct {
     int hay_dce;                /* 1: también se midió el código sin el código muerto. */
     MetMedicion sin_muerto;
     char nota_dce[400];         /* Si hay_dce es 0: por qué no hay comparación. */
-    Grafica slots, bundles, dce;
+    Grafica slots, bundles, dce, compilacion;
 } Datos;
 
 static GtkWidget *ventana_met = NULL;
@@ -348,6 +350,36 @@ static void armar_bundles(Grafica *g, const SimMetricasResumen *s)
     }
 }
 
+/* Gráfica "Tiempo de compilación": cuánto tardó cada fase, con la misma
+ * escala (el total), para ver qué fase pesa más. */
+static void armar_compilacion(Grafica *g, const IdeAsmTiempos *t)
+{
+    snprintf(g->titulo, sizeof g->titulo, "Tiempo de compilación por fase");
+    snprintf(g->subtitulo, sizeof g->subtitulo,
+             "Mediana de %d compilaciones del código del editor, en milisegundos. "
+             "Escala común: el total", MET_COMPILACIONES);
+    g->series = 1;
+    g->maximo = t->total;
+    g->cantidad = 4;
+    const char *nombres[4] = {"Léxico, sintáctico y semántico", "Memoria, generación y enlace",
+                              "Codificación y .bin", "Total (con el archivo temporal)"};
+    const char *explicacion[4] = {
+        "Análisis: tokens, AST, tabla de símbolos y tipos (también de los módulos de bring)",
+        "Backend: dónde vive cada variable, ensamblador VLIW y saltos resueltos",
+        "Cada bundle a sus 16 bytes y el contenedor BALB",
+        "Desde guardar el texto en el archivo temporal hasta borrarlo"};
+    double valores[4] = {t->analisis, t->generacion, t->codificacion, t->total};
+    for (int i = 0; i < 4; ++i) {
+        Fila *f = &g->filas[i];
+        snprintf(f->nombre, sizeof f->nombre, "%s", nombres[i]);
+        f->valor[0] = valores[i];
+        double pct = t->total > 0 ? 100.0 * valores[i] / t->total : 0.0;
+        if (i < 3) snprintf(f->texto[0], sizeof f->texto[0], "%.3f ms (%.0f %%)", valores[i], pct);
+        else snprintf(f->texto[0], sizeof f->texto[0], "%.3f ms", valores[i]);
+        snprintf(f->tip[0], sizeof f->tip[0], "%s: %.3f ms. %s", nombres[i], valores[i], explicacion[i]);
+    }
+}
+
 /* Una fila de la comparación antes/después del DCE. "decimales" < 0: es un
  * conteo (se escribe con miles); si no, un número con esos decimales. */
 static void fila_dce(Grafica *g, const char *nombre, double antes, double despues, int decimales)
@@ -424,6 +456,8 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
                      g->leyenda[i], texto);
         }
     }
+    /* El tiempo de compilación (mediana) con y sin el código muerto. */
+    fila_dce(g, "Tiempo de compilación (ms)", antes->compilacion.total, despues->compilacion.total, 3);
 }
 
 /* Mide el código del editor y, si tiene código muerto, también el código
@@ -482,17 +516,19 @@ static GtkWidget *numero_principal(const char *valor, const char *nombre)
 
 static GtkWidget *fila_principal(const MetMedicion *m)
 {
-    char ciclos[32], instrucciones[32], bundles[32], ipc[32];
+    char ciclos[32], instrucciones[32], bundles[32], ipc[32], compilacion[32];
     miles(m->sim.ciclos, ciclos, sizeof ciclos);
     miles(m->sim.instrucciones_utiles, instrucciones, sizeof instrucciones);
     miles(m->bundles, bundles, sizeof bundles);
     snprintf(ipc, sizeof ipc, "%.3f", m->sim.ipc);
+    snprintf(compilacion, sizeof compilacion, "%.2f ms", m->compilacion.total);
     GtkWidget *fila = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_set_homogeneous(GTK_BOX(fila), TRUE);
     gtk_box_pack_start(GTK_BOX(fila), numero_principal(ciclos, "ciclos"), TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(fila), numero_principal(ipc, "IPC (instrucciones por ciclo)"), TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(fila), numero_principal(instrucciones, "instrucciones ejecutadas"), TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(fila), numero_principal(bundles, "bundles en el programa"), TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(fila), numero_principal(compilacion, "tiempo de compilación"), TRUE, TRUE, 0);
     return fila;
 }
 
@@ -521,16 +557,19 @@ static GtkWidget *columna_graficas(Grafica **graficas, int cantidad)
     return recuadro;
 }
 
-/* Una fila de la pestaña Tabla. "otra" es NULL si no hay comparación. */
-typedef struct { const char *nombre; uint64_t valor[2]; int es_ipc; double ipc[2]; } FilaTabla;
+/* Una fila de la pestaña Tabla. "otra" es NULL si no hay comparación.
+ * Con decimales = 0 es un conteo ("valor"); si no, un número con esos
+ * decimales ("real"): el IPC o un tiempo en milisegundos. */
+typedef struct { const char *nombre; uint64_t valor[2]; int decimales; double real[2]; } FilaTabla;
 
 static GtkWidget *pestana_tabla(const MetMedicion *m, const MetMedicion *otra)
 {
     const SimMetricasResumen *a = &m->sim;
     const SimMetricasResumen *b = otra ? &otra->sim : &m->sim;
+    const MetMedicion *o = otra ? otra : m;   /* La segunda columna (o la misma). */
     const FilaTabla filas[] = {
         {"Ciclos", {a->ciclos, b->ciclos}, 0, {0, 0}},
-        {"IPC (instrucciones por ciclo)", {0, 0}, 1, {a->ipc, b->ipc}},
+        {"IPC (instrucciones por ciclo)", {0, 0}, 3, {a->ipc, b->ipc}},
         {"Instrucciones ejecutadas", {a->instrucciones_utiles, b->instrucciones_utiles}, 0, {0, 0}},
         {"Bundles ejecutados", {a->completados, b->completados}, 0, {0, 0}},
         {"   con al menos una instrucción", {a->bundles_utiles, b->bundles_utiles}, 0, {0, 0}},
@@ -546,6 +585,10 @@ static GtkWidget *pestana_tabla(const MetMedicion *m, const MetMedicion *otra)
         {"Escrituras de memoria (store)", {a->lsu_escrituras_ex, b->lsu_escrituras_ex}, 0, {0, 0}},
         {"Excepciones (traps)", {a->traps, b->traps}, 0, {0, 0}},
         {"Bundles en el programa", {m->bundles, otra ? otra->bundles : m->bundles}, 0, {0, 0}},
+        {"Tiempo de compilación (ms)", {0, 0}, 3, {m->compilacion.total, o->compilacion.total}},
+        {"   léxico, sintáctico y semántico", {0, 0}, 3, {m->compilacion.analisis, o->compilacion.analisis}},
+        {"   memoria, generación y enlace", {0, 0}, 3, {m->compilacion.generacion, o->compilacion.generacion}},
+        {"   codificación y .bin", {0, 0}, 3, {m->compilacion.codificacion, o->compilacion.codificacion}},
     };
     int columnas = otra ? 4 : 2;
     GtkListStore *modelo = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
@@ -553,11 +596,11 @@ static GtkWidget *pestana_tabla(const MetMedicion *m, const MetMedicion *otra)
         const FilaTabla *f = &filas[i];
         char v[2][32], dif[32] = "";
         for (int s = 0; s < 2; ++s) {
-            if (f->es_ipc) snprintf(v[s], sizeof v[s], "%.3f", f->ipc[s]);
+            if (f->decimales > 0) snprintf(v[s], sizeof v[s], "%.*f", f->decimales, f->real[s]);
             else miles(f->valor[s], v[s], sizeof v[s]);
         }
         if (otra) {
-            if (f->es_ipc) cambio(f->ipc[0], f->ipc[1], dif, sizeof dif);
+            if (f->decimales > 0) cambio(f->real[0], f->real[1], dif, sizeof dif);
             else cambio((double)f->valor[0], (double)f->valor[1], dif, sizeof dif);
         }
         gtk_list_store_insert_with_values(modelo, NULL, -1, 0, f->nombre, 1, v[0], 2, v[1], 3, dif, -1);
@@ -638,7 +681,9 @@ void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta,
     gtk_box_pack_start(GTK_BOX(columna), parrafo(
         "Se compila el código del editor y se ejecuta en el <b>simulador VLIW</b> "
         "(<tt>src/Simulador_VLIW/</tt>) hasta que <tt>main</tt> termina. El recolector de "
-        "métricas del simulador cuenta cada ciclo. Pasa el mouse sobre una barra para ver su valor."),
+        "métricas del simulador cuenta cada ciclo. El <b>tiempo de compilación</b> es lo que "
+        "tarda el compilador (el mismo de <tt>balc</tt>) en pasar el código a binario, medido "
+        "en esta computadora. Pasa el mouse sobre una barra para ver su valor."),
         FALSE, FALSE, 0);
 
     const MetMedicion *m = &datos_met->actual;
@@ -647,6 +692,15 @@ void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta,
         gchar *marcado = g_markup_printf_escaped("<b>%s</b> %s", problema, m->motivo ? m->motivo : "");
         gtk_box_pack_start(GTK_BOX(columna), parrafo(marcado), FALSE, FALSE, 0);
         g_free(marcado);
+        /* Si el código es válido sí se compiló (hasta donde llegó): se muestra cuánto tardó. */
+        if (m->estado != MET_CON_ERRORES && m->compilacion.total > 0) {
+            gchar *tiempo = g_markup_printf_escaped(
+                "Tiempo de compilación (mediana de %d): <b>%.3f ms</b> (léxico, sintáctico y "
+                "semántico %.3f ms; memoria, generación y enlace %.3f ms).",
+                MET_COMPILACIONES, m->compilacion.total, m->compilacion.analisis, m->compilacion.generacion);
+            gtk_box_pack_start(GTK_BOX(columna), parrafo(tiempo), FALSE, FALSE, 0);
+            g_free(tiempo);
+        }
         gtk_widget_show_all(ventana_met);
         return;
     }
@@ -671,6 +725,10 @@ void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta,
     GtkWidget *pestanas = gtk_notebook_new();
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), columna_graficas(ejecucion, 2),
                              gtk_label_new("Ejecución"));
+    armar_compilacion(&datos_met->compilacion, &m->compilacion);
+    Grafica *compilacion[1] = {&datos_met->compilacion};
+    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), columna_graficas(compilacion, 1),
+                             gtk_label_new("Compilación"));
     if (datos_met->hay_dce) {
         Grafica *dce[1] = {&datos_met->dce};
         gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), columna_graficas(dce, 1),

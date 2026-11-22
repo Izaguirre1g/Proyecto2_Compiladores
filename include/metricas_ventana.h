@@ -4,9 +4,11 @@
  * Ejecuta el código del editor en el simulador VLIW (metricas.c) y lo
  * muestra con gráficas:
  *   - Arriba: los números principales (ciclos, IPC, instrucciones
- *     ejecutadas y tamaño del código en bytes y bundles).
+ *     ejecutadas, tamaño del código en bytes y bundles y tiempo de compilación).
  *   - Pestaña "Ejecución": qué tanto se usó cada slot del bundle (ALU, LSU,
  *     BRU, CRIPTO) y cuántos bundles traían trabajo y cuántos eran solo NOP.
+ *   - Pestaña "Compilación": cuánto tardó cada fase del compilador
+ *     (léxico/sintáctico/semántico, backend, codificación), en milisegundos.
  *   - Pestaña "Antes y después del DCE": el mismo código con y sin el código
  *     muerto (el que da el botón Código muerto), métrica por métrica,
  *     incluidos bytes originales/optimizados, diferencia y variación.

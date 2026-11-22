@@ -826,8 +826,11 @@ GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
 ide: balc-ide
 
+# ir_defuse.c llega dos veces: en IDE_RO_SRC (para test_ide_reordenamiento) y
+# en IDE_DCE_SRC (Makefile.ir_defuse.mk). Se enlaza una sola vez: si no, el
+# enlazador da "multiple definition".
 balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c include/ide_reordenamiento.h include/ide_reordenamiento_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS) -lm
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(filter-out $(IR)/ir_defuse.c,$(IDE_RO_SRC)) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS) -lm
 
 # Eliminacion de codigo muerto (DCE) con analisis de variables vivas, sobre
 # la IR. La prueba arma la IR desde programas BAL (examples/dce/) con el parser,

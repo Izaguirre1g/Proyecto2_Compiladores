@@ -53,15 +53,20 @@ void ide_mostrar_ensamblador(GtkWindow *padre, const IdeEnsamblador *a, const ch
     g_free(base);
 
     /* Arriba, el resumen y cómo leer cada línea. */
+    const IdeAsmTiempos *t = &a->tiempos;
     gchar *resumen = g_markup_printf_escaped(
         "<b>%zu bundles</b> · %zu funci%s · %zu saltos (%zu reescrito%s por alcance)\n"
+        "<b>Tiempo de compilación: %.3f ms</b> = análisis léxico, sintáctico y semántico %.3f ms "
+        "+ memoria, generación y enlace %.3f ms + codificación y .bin %.3f ms "
+        "(el resto es escribir el archivo temporal).\n"
         "Es el mismo ensamblador que genera <tt>balc -s</tt>. Cada línea es un bundle "
         "VLIW con 4 slots: <tt>ALU | LSU | BRU | CRIPTO</tt>; <tt>nop</tt> es un slot vacío "
         "(una línea con solo <tt>nop</tt> es un bundle vacío que espera un resultado).\n"
         "Primero va <tt># __arranque:</tt> (inicializa gp y sp y llama a main); el código de "
         "cada función empieza en <tt># __fn_nombre:</tt>, por ejemplo <tt># __fn_main:</tt>.",
         a->bundles, a->funciones, a->funciones == 1 ? "ón" : "ones",
-        a->saltos, a->reescritos, a->reescritos == 1 ? "" : "s");
+        a->saltos, a->reescritos, a->reescritos == 1 ? "" : "s",
+        t->total, t->analisis, t->generacion, t->codificacion);
     GtkWidget *encabezado = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(encabezado), resumen);
     gtk_label_set_xalign(GTK_LABEL(encabezado), 0.0f);

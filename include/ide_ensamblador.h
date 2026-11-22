@@ -27,8 +27,27 @@ typedef enum {
                                * generar (ver "motivo"). */
 } IdeAsmEstado;
 
+/*
+ * Tiempo de compilación, en milisegundos, por fase. Se mide con el reloj
+ * monótono del sistema (no cambia si alguien ajusta la hora).
+ *   analisis:     léxico + sintáctico + semántico (sem_visitar_proyecto hace
+ *                 las tres fases juntas, incluidos los módulos de "bring").
+ *   generacion:   asignar la memoria, generar el ensamblador y enlazarlo
+ *                 con el arranque (el backend).
+ *   codificacion: pasar cada bundle a binario y armar el .bin (BALB).
+ *   total:        todo, incluido escribir y borrar el archivo temporal.
+ * Si el código tiene errores, solo "analisis" y "total" tienen valor.
+ */
+typedef struct {
+    double analisis;
+    double generacion;
+    double codificacion;
+    double total;
+} IdeAsmTiempos;
+
 typedef struct {
     IdeAsmEstado estado;
+    IdeAsmTiempos tiempos; /* Cuánto tardó la compilación (ver arriba). */
     char *motivo;          /* Con IDE_ASM_SIN_BACKEND: lo que dijo el backend. */
     char *ensamblador;     /* El texto del .asm (bundles: 4 slots separados por '|'). */
     char *binario;         /* Cada bundle con su codificación (como "balc -p"). */

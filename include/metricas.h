@@ -27,7 +27,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ide_ensamblador.h"
 #include "sim_ejecucion.h"
+
+/* Cuántas veces se compila para medir el tiempo de compilación. Una sola
+ * medida de unos pocos milisegundos varía mucho (la primera vez el sistema
+ * todavía no tiene los archivos en caché, otro programa ocupa el
+ * procesador...). Se compila varias veces y se toma la MEDIANA: la corrida
+ * del medio, que no se deja llevar por una muy lenta o muy rápida. */
+#define MET_COMPILACIONES 5
 
 /* Presupuesto de ciclos si no se pide otro: si el programa no termina antes,
  * se considera que no terminó (probablemente tiene un ciclo infinito). */
@@ -51,6 +59,8 @@ typedef struct {
     size_t bundles;           /* Tamaño del programa: bundles en memoria (métrica estática). */
     uint32_t direccion_fin;   /* Dirección del salto final del arranque (__arranque_fin). */
     uint64_t presupuesto;     /* Ciclos máximos que se permitieron. */
+    IdeAsmTiempos compilacion; /* Tiempo de compilación (mediana de MET_COMPILACIONES
+                                * corridas), por fase. Válido desde MET_SIN_BACKEND. */
     SimMetricasResumen sim;   /* Métricas dinámicas (válidas con LISTO y SIN_TERMINAR). */
 } MetMedicion;
 
