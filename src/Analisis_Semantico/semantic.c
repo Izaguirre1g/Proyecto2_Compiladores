@@ -1144,35 +1144,70 @@ static SimTipo analizar_indice(
 )
 {
     const AstNodo *base = base_indice(n);
+    const SimSimbolo *simbolo = NULL;
+    const char *nombre_base = NULL;
 
-    if (!base ||
-        base->tipo != AST_IDENTIFICADOR ||
-        !base->texto) {
+    if (base && base->tipo == AST_ACCESO_MIEMBRO) {
 
-        error(
-            s,
-            n,
-            "acceso indexado invalido"
-        );
+        /*
+         * modulo.ARREGLO[i]: arreglo constante
+         * de un modulo importado. Se valida
+         * igual que un arreglo local.
+         */
+        simbolo = resolver_miembro(s, base, NULL);
 
-        return SIM_TIPO_ERROR;
-    }
+        if (!simbolo) {
+            return SIM_TIPO_ERROR;
+        }
 
-    SimSimbolo *simbolo = sim_buscar(
-        s->tabla,
-        base->texto
-    );
+        if (simbolo->clase != SIM_CONSTANTE ||
+            simbolo->dimensiones == 0) {
 
-    if (!simbolo) {
+            error(
+                s,
+                n,
+                "solo se pueden indexar arreglos "
+                "constantes importados"
+            );
 
-        error(
-            s,
-            base,
-            "coleccion '%s' no declarada",
+            return SIM_TIPO_ERROR;
+        }
+
+        nombre_base = hijo(base, 1)->texto;
+
+    } else {
+
+        if (!base ||
+            base->tipo != AST_IDENTIFICADOR ||
+            !base->texto) {
+
+            error(
+                s,
+                n,
+                "acceso indexado invalido"
+            );
+
+            return SIM_TIPO_ERROR;
+        }
+
+        simbolo = sim_buscar(
+            s->tabla,
             base->texto
         );
 
-        return SIM_TIPO_ERROR;
+        if (!simbolo) {
+
+            error(
+                s,
+                base,
+                "coleccion '%s' no declarada",
+                base->texto
+            );
+
+            return SIM_TIPO_ERROR;
+        }
+
+        nombre_base = base->texto;
     }
 
     /*
@@ -1199,7 +1234,7 @@ static SimTipo analizar_indice(
             s,
             n,
             "'%s' no es una coleccion indexable",
-            base->texto
+            nombre_base
         );
 
         return SIM_TIPO_ERROR;
@@ -1217,7 +1252,7 @@ static SimTipo analizar_indice(
             n,
             "coleccion '%s': se esperaban %u "
             "indices, se recibieron %u",
-            base->texto,
+            nombre_base,
             esperados,
             cantidad
         );
@@ -1357,7 +1392,7 @@ static SimTipo analizar_indice(
                     "(longitud %zu)",
                     valor,
                     posicion + 1,
-                    base->texto,
+                    nombre_base,
                     simbolo->longitudes[posicion]
                 );
 

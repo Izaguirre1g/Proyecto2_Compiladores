@@ -391,6 +391,57 @@ static void sentencia(Generador *g, const AstNodo *n) {
     default: error(g,n,"sentencia aun no soportada en IR");break;
     }
 }
+static int es_nombre(const AstNodo *id, const char *nombre) {
+    return id && id->tipo==AST_IDENTIFICADOR && id->texto && !strcmp(id->texto,nombre);
+}
+static int usa_lista(const AstNodo *n, const char *nombre, int tapado);
+/* 1 si `n` usa el global `nombre` sin que un nombre local lo tape. Los
+ * nombres que se declaran (parametros, variables, indices de cycle,
+ * variables de seize) y los nombres de funcion no son usos. */
+static int usa_nodo(const AstNodo *n, const char *nombre, int tapado) {
+    const AstNodo *h0=hijo(n,0);
+    switch(n->tipo) {
+    case AST_IDENTIFICADOR: return !tapado && es_nombre(n,nombre);
+    case AST_DECLARACION: case AST_CONSTANTE: case AST_PARAMETRO: case AST_LLAMADA:
+        return h0 && usa_lista(h0->siguiente,nombre,tapado);
+    case AST_FUNCION: {
+        int params=0;
+        for(const AstNodo *p=hijo(n,2)?hijo(n,2)->primer_hijo:NULL;p;p=p->siguiente)
+            params |= es_nombre(hijo(p,0),nombre);
+        for(const AstNodo *h=h0?h0->siguiente:NULL;h;h=h->siguiente)
+            if(h->tipo!=AST_PARAMETROS && usa_nodo(h,nombre,tapado||params)) return 1;
+        return 0;
+    }
+    case AST_RECORRIDO:
+        for(const AstNodo *h=h0?h0->siguiente:NULL;h;h=h->siguiente)
+            if(usa_nodo(h,nombre,tapado||(h->tipo==AST_BLOQUE && es_nombre(h0,nombre)))) return 1;
+        return 0;
+    case AST_CAPTURA: {
+        const AstNodo *var=hijo(n,1);
+        return var && usa_lista(var->siguiente,nombre,tapado||es_nombre(var,nombre));
+    }
+    default: return usa_lista(h0,nombre,tapado);
+    }
+}
+/* Una lista de hermanos en orden: una declaracion tapa a los siguientes. */
+static int usa_lista(const AstNodo *n, const char *nombre, int tapado) {
+    for(; n; n=n->siguiente) {
+        if(usa_nodo(n,nombre,tapado)) return 1;
+        if((n->tipo==AST_DECLARACION || n->tipo==AST_CONSTANTE) && es_nombre(hijo(n,0),nombre))
+            tapado=1;
+    }
+    return 0;
+}
+/* Una constante global que ninguna funcion usa no necesita IR: el plegado
+ * de constantes (semantic_modules.c) ya reemplazo sus usos por su valor.
+ * Si alguna funcion todavia la usa, se mantiene el rechazo historico. */
+static int constante_sin_usos(const Ast *ast, const AstNodo *k) {
+    const AstNodo *id=hijo(k,0);
+    if (k->tipo!=AST_CONSTANTE||!id||!id->texto) return 0;
+    for(const AstNodo *p=ast->raiz->primer_hijo;p;p=p->siguiente)
+        if(p->tipo==AST_FUNCION && usa_nodo(p,id->texto,0)) return 0;
+    return 1;
+}
 /* Punto de entrada del generador: valida el AST, recorre funciones,
  * construye la secuencia IR y calcula los bloques basicos.
  * Si algo falla, libera la salida parcial antes de devolver el error. */
@@ -421,6 +472,7 @@ static int desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos, int glo
     for(const AstNodo *p=ast->raiz->primer_hijo;p&&!g.estado;p=p->siguiente) {
         if (p->tipo==AST_IMPORTACION) continue; /* validada antes por semantica */
         if(globales && (p->tipo==AST_CONSTANTE || p->tipo==AST_DECLARACION))continue;
+        if(!globales && constante_sin_usos(ast,p))continue;
         if(p->tipo!=AST_FUNCION) {error(&g,p,"declaracion global aun no soportada");break;}
         const AstNodo *id=hijo(p,0),*params=hijo(p,2),*cuerpo=hijo(p,3);
         if (!id||!id->texto) {error(&g,p,"funcion sin nombre");break;}

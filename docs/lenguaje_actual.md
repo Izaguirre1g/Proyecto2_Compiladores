@@ -36,6 +36,57 @@ Esta es la convención adoptada para concretar el token del avance. Se admiten
 constantes globales y locales; las variables y listas se declaran en bloques.
 Prohibir reasignaciones a constantes corresponde al análisis semántico.
 
+### Plegado de constantes
+
+Después del análisis semántico (y del enlace de `bring`), `sem_visitar_proyecto`
+en `src/Analisis_Semantico/semantic_modules.c` resuelve las constantes antes
+de entregar el AST al backend, porque cada backend las soportaba a medias:
+
+| Constante | Antes | Ahora (normal, `--ir`, `-O1`, `-O2`) |
+|---|---|---|
+| `declare_int` global, literal o expresión (`A pitagoras 3`) | solo normal y `-O2` | todos |
+| `declare_boolean` usada en condiciones (`whether (DEBUG)`) | solo `-O2` | todos* |
+| Arreglo constante global (`TABLA[i][j]`, índice variable o constante) | solo `-O2` | todos |
+| Constante local (`declare_const` dentro de una función) | `--ir` y `-O2` | todos |
+| Constante como tamaño de arreglo (`v * declare_int[N]`) | ninguno | todos |
+| Constantes importadas (`d.DOBLE`, `d.MATRIZ[1][0]`) | ninguno | todos |
+
+\* `-O1` no puede reescribir el texto cuando el DCE quita el salto de un
+`whether` cuya condición es constante y la variable se usa después; pasa igual
+con `whether (declare_true)` escrito a mano. Las variables `declare_boolean`
+siguen sin soporte en el backend normal (ocupan 1 byte en la tabla y el
+backend lee palabras de 4).
+
+Reglas:
+
+1. Una constante `declare_int` o `declare_boolean` cuyo valor se calcula en
+   compilación (literales, otras constantes, operadores, elementos de un
+   arreglo constante con índice constante) se reemplaza por su valor en cada
+   uso. Los parámetros y variables locales con el mismo nombre la tapan y no
+   se reemplazan.
+2. La aritmética es la de la sección de datos del binario (`fb_preparar_datos`):
+   32 bits con desborde circular, `euclides`/`euler` con signo truncando hacia
+   cero, `descartes` con exponente no negativo. Una división por cero no se
+   pliega (el error se informa como antes).
+3. Las constantes `declare_int` globales siguen declaradas, con su valor ya
+   calculado: el binario las sigue guardando en su sección de datos. La IR ignora una
+   constante global que ninguna función usa (`src/Representacion_Intermedia/ir.c`);
+   si alguna la usa todavía (no se pudo plegar), la rechaza como antes.
+4. Un arreglo constante global se declara como arreglo normal al inicio de
+   cada función que lo usa (la semántica ya impide modificarlo). Su literal se
+   lee en el ámbito global: un parámetro con el nombre de una constante del
+   literal no la tapa.
+5. Una constante local que no se puede calcular (depende de variables o
+   llamadas), o un arreglo constante local, pasa a ser una declaración normal.
+6. El AST plegado vuelve a pasar por la semántica; si fallara, se usa el AST
+   sin plegar, igual que antes.
+
+`semantic.c` también acepta indexar un arreglo constante importado
+(`d.MATRIZ[1][0]`), con las mismas reglas de índices y límites que un arreglo
+local. Pruebas: `make test-constantes` (`tests/fixtures/constantes.bal`, `constantes_ambito.bal`,
+`tests/modulos/constantes_principal.bal`), con resultados revisados en el
+simulador.
+
 ## Operadores
 
 Precedencia adoptada, de menor a mayor:
