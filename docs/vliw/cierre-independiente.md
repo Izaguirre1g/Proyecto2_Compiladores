@@ -1,5 +1,48 @@
 # Estado del cierre independiente de Javier
 
+## Actualización de cierre posterior al PR #69
+
+La [guía consolidada](entrega-final-javier.md) describe el estado vigente:
+`-O0` conserva el backend tradicional; `-O1` aplica DCE mediante BAL reescrito
+y recompilación tradicional, con rechazos explícitos. `-O2` continúa sin ruta
+productiva general y no hace fallback. La evaluación actual distingue pares
+semánticos, categorías pendientes y B1 inconcluso. Las secciones siguientes
+conservan el contexto histórico de sus campañas; sus cifras no son resultados
+nuevos de esta entrega. No se completa el productor BAL general ni su ABI.
+
+
+## Actualización I1-A3
+
+Referencia de integración auditada: Compiladores `9cf06e2`, posterior a PR #66
+y PR #68. La cadena consumidora de Javier **ya recibe el productor parcial de
+Dylan**. Spilling no está en una rama pendiente de fusionar. El antecedente
+histórico se conserva abajo para mantener trazabilidad de la frontera original.
+
+IMPLEMENTADO en esta entrega: pruebas adicionales del productor y de la ruta
+BAL→IR admitida; arnés externo con bytes del fragmento intactos; comparación
+completa de 32 GPR y 64 KiB DMEM con RTL en modos 0/2, L2 real y flush público;
+tres casos tradicionales de control/funciones con centinelas x16..31; perfiles
+auxiliares opt-in y rechazo explícito de capacidades no soportadas.
+
+Las nuevas pruebas no cambian el productor, el simulador, la cadena, la CLI,
+Makefile ni Arquitectura. No convierten el fragmento en ejecutable autónomo.
+Las capturas se hacen en horizontes explícitos con pipeline ACTIVO, sin HALT.
+
+PARCIAL: niveles productivos #29 y quince pares oficiales #37. Dos variantes
+BAL producidas por DCE real del IDE tienen oráculos semánticos contrastados;
+esto no modifica B1 ni permite certificar equivalencia estricta al alcanzar un
+límite activo. Llamadas experimentales, variables con nombre y enlace general
+siguen dependiendo del productor y del acuerdo ABI del equipo.
+
+Consultar [estado-i1a3.md](estado-i1a3.md) y
+[matriz-cobertura-entrega.md](matriz-cobertura-entrega.md). Los resultados de
+esta ejecución están fuera del repositorio; las cifras históricas inferiores
+no se reutilizan como nuevas.
+
+## Antecedente histórico anterior a PR #66 — no describe develop actual
+
+### Estado del cierre independiente de Javier
+
 ## Frontera conseguida
 
 La implementación consumidora recibe datos ISA físicos explícitos acreditados,

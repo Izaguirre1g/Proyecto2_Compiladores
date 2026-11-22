@@ -9,6 +9,7 @@
  *   3. Un ciclo infinito agota el presupuesto (MET_SIN_TERMINAR).
  *   4. Un código con errores no se mide.
  *
+ * También contrasta tamaño estático, NOP, BALB, cortes y rechazos/overflow.
  * Se ejecuta con: make test-metricas
  */
 #include "metricas.h"
@@ -17,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "codificacion_binaria.h"
 #include "ide_dce.h"
 #include "ide_ensamblador.h"
 
@@ -99,9 +101,83 @@ static uint64_t ciclo_fin_paso_a_paso(const char *bin, uint32_t fin)
     return ciclo;
 }
 
+/* Conteos conocidos y frontera del tipo: se detecta overflow antes del
+ * producto y se conserva el centinela de salida ante argumentos inválidos. */
+static void prueba_bytes_codigo(void)
+{
+    size_t bytes = 123;
+    VERIFICAR(met_calcular_bytes_codigo(1, &bytes) == 0 && bytes == 16);
+    VERIFICAR(met_calcular_bytes_codigo(7, &bytes) == 0 && bytes == 112);
+    VERIFICAR(met_calcular_bytes_codigo(0, &bytes) == 0 && bytes == 0);
+    VERIFICAR(met_calcular_bytes_codigo(SIZE_MAX / 16, &bytes) == 0);
+    VERIFICAR(bytes == SIZE_MAX - SIZE_MAX % 16);
+    bytes = 123;
+    VERIFICAR(met_calcular_bytes_codigo(SIZE_MAX / 16 + 1, &bytes) == -1 && bytes == 123);
+    VERIFICAR(met_calcular_bytes_codigo(SIZE_MAX, &bytes) == -1 && bytes == 123);
+    VERIFICAR(met_calcular_bytes_codigo(1, NULL) == -1);
+
+    /* Los dos NOP ocupan IMEM aunque no realicen operaciones útiles. El
+     * oráculo es la longitud del código binario crudo, no sizeof(CbBundle). */
+    CbPrograma p = {0};
+    VERIFICAR(cb_ensamblar("sumai x13,x0,0 | nop | nop | nop\nnop\nnop\n", &p, stderr) == 0);
+    FILE *bin = tmpfile();
+    VERIFICAR(bin != NULL);
+    if (bin != NULL) {
+        VERIFICAR(cb_escribir_bin(&p, bin) == 0);
+        VERIFICAR(fflush(bin) == 0 && ftell(bin) == 48);
+        VERIFICAR(met_calcular_bytes_codigo(p.cantidad, &bytes) == 0 && bytes == 48);
+        fclose(bin);
+    }
+    cb_liberar(&p);
+}
+
+/* La comparación expresa reducción, aumento y tamaño vacío sin underflow ni
+ * porcentajes inventados cuando el original es cero. Los ciclos no intervienen. */
+static void prueba_comparacion_bytes(void)
+{
+    MetMedicion a = {0}, b = {0};
+    a.estado = MET_LISTO; b.estado = MET_SIN_TERMINAR;
+    a.bundles = 250; b.bundles = 200;
+    a.sim.ciclos = 1; b.sim.ciclos = UINT64_MAX;
+    MetComparacionTamano c = {0};
+    VERIFICAR(met_comparar_tamano_codigo(&a, &b, &c) == 0);
+    VERIFICAR(c.original_bytes == 4000 && c.optimizado_bytes == 3200);
+    VERIFICAR(c.diferencia_bytes == 800 && c.reduccion && c.porcentaje_definido);
+    VERIFICAR(c.variacion_porcentual == -20.0);
+    VERIFICAR(met_comparar_tamano_codigo(&b, &a, &c) == 0);
+    VERIFICAR(c.diferencia_bytes == 800 && !c.reduccion && c.variacion_porcentual == 25.0);
+    VERIFICAR(met_comparar_tamano_codigo(&a, &a, &c) == 0);
+    VERIFICAR(c.diferencia_bytes == 0 && c.variacion_porcentual == 0.0);
+    b.bundles = 0;
+    VERIFICAR(met_comparar_tamano_codigo(&a, &b, &c) == 0 && c.variacion_porcentual == -100.0);
+    VERIFICAR(met_comparar_tamano_codigo(&b, &a, &c) == 0);
+    VERIFICAR(c.diferencia_bytes == 4000 && !c.porcentaje_definido);
+    VERIFICAR(met_comparar_tamano_codigo(&b, &b, &c) == 0 && !c.porcentaje_definido);
+
+    /* Un estado sin imagen no puede convertir un conteo residual en tamaño.
+     * Un rechazo tampoco publica una comparación parcialmente actualizada. */
+    size_t bytes = 123;
+    VERIFICAR(met_tamano_codigo(NULL, &bytes) == -1 && bytes == 123);
+    VERIFICAR(met_tamano_codigo(&a, NULL) == -1);
+    VERIFICAR(met_comparar_tamano_codigo(NULL, &a, &c) == -1);
+    VERIFICAR(met_comparar_tamano_codigo(&a, NULL, &c) == -1);
+    VERIFICAR(met_comparar_tamano_codigo(&a, &a, NULL) == -1);
+    const MetEstado invalidos[] = {MET_CON_ERRORES, MET_SIN_BACKEND, MET_FALLO_SIMULADOR, (MetEstado)99};
+    for (size_t i = 0; i < sizeof invalidos / sizeof invalidos[0]; ++i) {
+        b.estado = invalidos[i]; b.bundles = 9; c.original_bytes = 123;
+        VERIFICAR(met_tamano_codigo(&b, &bytes) == -1 && bytes == 123);
+        VERIFICAR(met_comparar_tamano_codigo(&a, &b, &c) == -1 && c.original_bytes == 123);
+    }
+    b.estado = MET_LISTO; b.bundles = SIZE_MAX / 16 + 1;
+    VERIFICAR(met_tamano_codigo(&b, &bytes) == -1 && bytes == 123);
+    VERIFICAR(met_comparar_tamano_codigo(&a, &b, &c) == -1 && c.original_bytes == 123);
+}
+
 int main(int argc, char **argv)
 {
     MetMedicion m;
+    prueba_bytes_codigo();
+    prueba_comparacion_bytes();
 
     /* 1. factorial.bal. argv[1] (opcional): el .bin que generó balc para
      *    el mismo archivo (lo hace make test-metricas). */
@@ -130,6 +206,16 @@ int main(int argc, char **argv)
         if (fuente != NULL && de_balc != NULL &&
             ide_ensamblador_generar(fuente, largo_editor, "examples/factorial.bal", &a) == 0) {
             VERIFICAR(a.largo_balb == largo_balc && memcmp(a.balb, de_balc, largo_balc) == 0);
+            /* BALB contiene cabecera y datos; su longitud no es la huella IMEM.
+             * El campo code_bytes v1 (offset 24) es un oráculo independiente. */
+            size_t bytes = 0;
+            VERIFICAR(met_calcular_bytes_codigo(a.bundles, &bytes) == 0);
+            VERIFICAR(a.largo_balb > bytes && a.largo_balb >= 48);
+            if (a.largo_balb >= 48) {
+                uint32_t codigo = (uint32_t)a.balb[24] | (uint32_t)a.balb[25] << 8 |
+                                  (uint32_t)a.balb[26] << 16 | (uint32_t)a.balb[27] << 24;
+                VERIFICAR(bytes == codigo);
+            }
             ide_ensamblador_liberar(&a);
         }
         free(fuente);
@@ -161,6 +247,15 @@ int main(int argc, char **argv)
                 verificar_coherencia(&antes);
                 verificar_coherencia(&despues);
                 VERIFICAR(despues.bundles < antes.bundles);
+                MetComparacionTamano tamano = {0};
+                VERIFICAR(met_comparar_tamano_codigo(&antes, &despues, &tamano) == 0);
+                VERIFICAR(tamano.original_bytes == antes.bundles * 16);
+                VERIFICAR(tamano.optimizado_bytes == despues.bundles * 16);
+                VERIFICAR(tamano.reduccion && tamano.diferencia_bytes == (antes.bundles - despues.bundles) * 16);
+                VERIFICAR(tamano.porcentaje_definido && tamano.variacion_porcentual < 0.0);
+                printf("DCE codigo: %zu -> %zu bytes; reduccion %zu bytes (%.6f %%)\n",
+                       tamano.original_bytes, tamano.optimizado_bytes, tamano.diferencia_bytes,
+                       -tamano.variacion_porcentual);
                 VERIFICAR(despues.sim.ciclos < antes.sim.ciclos);
                 VERIFICAR(despues.sim.instrucciones_utiles < antes.sim.instrucciones_utiles);
                 SimMetricasComparacion c;
@@ -189,12 +284,32 @@ int main(int argc, char **argv)
     VERIFICAR(m.estado == MET_SIN_TERMINAR);
     VERIFICAR(m.motivo != NULL && strstr(m.motivo, "20000") != NULL);
     VERIFICAR(m.sim.ciclos >= 20000 && m.sim.pc != m.direccion_fin);
+    /* Dos presupuestos distintos cortan la misma imagen en ciclos distintos;
+     * su tamaño estático permanece idéntico porque se genera el mismo código. */
+    VERIFICAR(met_medir(infinito, strlen(infinito), "examples/editor.bal", 30000, &otra) == 0);
+    VERIFICAR(otra.estado == MET_SIN_TERMINAR && otra.sim.ciclos != m.sim.ciclos);
+    size_t bytes_corto = 0, bytes_largo = 0;
+    VERIFICAR(met_tamano_codigo(&m, &bytes_corto) == 0);
+    VERIFICAR(met_tamano_codigo(&otra, &bytes_largo) == 0);
+    VERIFICAR(bytes_corto > 0 && bytes_corto == bytes_largo);
+    MetComparacionTamano misma_imagen = {0};
+    VERIFICAR(met_comparar_tamano_codigo(&m, &otra, &misma_imagen) == 0);
+    VERIFICAR(misma_imagen.diferencia_bytes == 0);
+    met_liberar(&otra);
     met_liberar(&m);
 
     /* 4. Con errores no se mide (aquí x no está declarada). */
     const char *con_errores = "create_funk #declare_infinite_void# main() {\n    x : 5;\n}\n";
     VERIFICAR(met_medir(con_errores, strlen(con_errores), "examples/editor.bal", 0, &m) == 0);
     VERIFICAR(m.estado == MET_CON_ERRORES);
+    met_liberar(&m);
+
+    /* El backend tradicional rechaza estos parámetros compuestos. No debe
+     * aparecer un tamaño de cero presentado como una compilación existente. */
+    VERIFICAR(medir_archivo("examples/dce/dce_llamadas.bal", 0, &m) == 0);
+    VERIFICAR(m.estado == MET_SIN_BACKEND && m.bundles == 0);
+    size_t no_publicado = 123;
+    VERIFICAR(met_tamano_codigo(&m, &no_publicado) == -1 && no_publicado == 123);
     met_liberar(&m);
 
     /* Funciones de apoyo para las gráficas. */

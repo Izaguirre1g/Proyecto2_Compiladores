@@ -1,7 +1,7 @@
 /*
  * Ventana "Métricas" (ver include/metricas_ventana.h).
  *
- * Solo muestra lo que calcula metricas.c con el simulador de Javier.
+ * Muestra métricas dinámicas del simulador y tamaño estático del código emitido.
  * Las gráficas son barras horizontales dibujadas con cairo en un
  * GtkDrawingArea:
  *   - Cada barra empieza en la misma línea base (a la izquierda) y su
@@ -47,7 +47,7 @@ static const Color SERIES[2] = {COLOR(0x3987E5),  /* Azul: serie 1. */
 /* Una fila: su nombre y una barra por serie (1 o 2). */
 typedef struct {
     char nombre[64];
-    char nota[64];         /* Segunda línea debajo del nombre (por ejemplo "−64.9 %"). */
+    char nota[128];         /* Segunda línea debajo del nombre (por ejemplo "−64.9 %"). */
     double valor[2];       /* Largo de cada barra (en las unidades de la gráfica). */
     char texto[2][64];     /* Lo que se escribe al final de cada barra. */
     char tip[2][200];      /* Tooltip de cada barra. */
@@ -366,6 +366,26 @@ static void fila_dce(Grafica *g, const char *nombre, double antes, double despue
     }
 }
 
+/* El texto conserva la precisión de size_t, aunque las barras usen double.
+ * La falta de backend/overflow se muestra como ausencia, no como cero bytes. */
+static void texto_tamano(const MetMedicion *m, char *texto, size_t largo)
+{
+    size_t bytes;
+    if (met_tamano_codigo(m, &bytes) != 0) snprintf(texto, largo, "no disponible");
+    else snprintf(texto, largo, "%zu bytes (%zu bundles)", bytes, m->bundles);
+}
+
+/* La diferencia absoluta indica su dirección; un original vacío no tiene
+ * denominador porcentual. El mismo texto se utiliza en la gráfica y la tabla. */
+static void texto_cambio_tamano(const MetComparacionTamano *c, char *texto, size_t largo)
+{
+    const char *tipo = c->reduccion ? "Reducción" : c->diferencia_bytes ? "Aumento" : "Sin cambio";
+    if (c->porcentaje_definido)
+        snprintf(texto, largo, "%s: %zu bytes (%.1f %%)", tipo, c->diferencia_bytes,
+                 fabs(c->variacion_porcentual));
+    else snprintf(texto, largo, "%s: %zu bytes (porcentaje no definido)", tipo, c->diferencia_bytes);
+}
+
 static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *despues)
 {
     snprintf(g->titulo, sizeof g->titulo, "Antes y después de eliminar el código muerto");
@@ -383,6 +403,27 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
     fila_dce(g, "Bundles solo NOP ejecutados", (double)a->bundles_nop, (double)d->bundles_nop, -1);
     fila_dce(g, "IPC (instrucciones por ciclo)", a->ipc, d->ipc, 3);
     fila_dce(g, "Tamaño del programa (bundles)", (double)antes->bundles, (double)despues->bundles, -1);
+    /* Conservamos la fila de bundles y añadimos la huella estática en bytes.
+     * Los dos tamaños provienen de sus propias compilaciones antes/después DCE. */
+    MetComparacionTamano c;
+    if (met_comparar_tamano_codigo(antes, despues, &c) == 0) {
+        Fila *f = &g->filas[g->cantidad++];
+        snprintf(f->nombre, sizeof f->nombre, "Tamaño del código (bytes)");
+        f->valor[0] = (double)c.original_bytes;
+        f->valor[1] = (double)c.optimizado_bytes;
+        texto_tamano(antes, f->texto[0], sizeof f->texto[0]);
+        texto_tamano(despues, f->texto[1], sizeof f->texto[1]);
+        texto_cambio_tamano(&c, f->nota, sizeof f->nota);
+        for (int i = 0; i < 2; ++i) {
+            /* texto_tamano deja una cadena terminada en NUL. Copiamos el
+             * buffer completo a un objeto independiente para que snprintf
+             * no lea y escriba campos del mismo objeto bajo restrict. */
+            char texto[sizeof f->texto[i]];
+            memcpy(texto, f->texto[i], sizeof texto);
+            snprintf(f->tip[i], sizeof f->tip[i], "%s: %s; incluye NOP y guardas, excluye datos y cabecera BALB",
+                     g->leyenda[i], texto);
+        }
+    }
 }
 
 /* Mide el código del editor y, si tiene código muerto, también el código
@@ -521,6 +562,19 @@ static GtkWidget *pestana_tabla(const MetMedicion *m, const MetMedicion *otra)
         }
         gtk_list_store_insert_with_values(modelo, NULL, -1, 0, f->nombre, 1, v[0], 2, v[1], 3, dif, -1);
     }
+    /* Esta fila utiliza enteros exactos y la misma comparación que la gráfica,
+     * sin convertir tamaños grandes a double para volver a imprimirlos. */
+    char tamano[2][96], diferencia[160] = "";
+    texto_tamano(m, tamano[0], sizeof tamano[0]);
+    texto_tamano(otra ? otra : m, tamano[1], sizeof tamano[1]);
+    if (otra) {
+        MetComparacionTamano c;
+        if (met_comparar_tamano_codigo(m, otra, &c) == 0)
+            texto_cambio_tamano(&c, diferencia, sizeof diferencia);
+        else snprintf(diferencia, sizeof diferencia, "no disponible");
+    }
+    gtk_list_store_insert_with_values(modelo, NULL, -1, 0, "Tamaño del código", 1, tamano[0],
+                                     2, tamano[1], 3, diferencia, -1);
     GtkWidget *vista = gtk_tree_view_new_with_model(GTK_TREE_MODEL(modelo));
     g_object_unref(modelo);
     gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(vista), GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
@@ -604,6 +658,11 @@ void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta,
     }
 
     gtk_box_pack_start(GTK_BOX(columna), fila_principal(m), FALSE, FALSE, 4);
+    char tamano[96];
+    texto_tamano(m, tamano, sizeof tamano);
+    gchar *resumen_tamano = g_markup_printf_escaped("<b>Tamaño del código:</b> %s", tamano);
+    gtk_box_pack_start(GTK_BOX(columna), parrafo(resumen_tamano), FALSE, FALSE, 0);
+    g_free(resumen_tamano);
 
     /* Pestañas. */
     armar_slots(&datos_met->slots, &m->sim);

@@ -3,15 +3,15 @@
 
 /* Usa la validacion del marco original sin permitir que los parametros
  * invadan las ranuras reservadas para los temporales desalojados. */
-int ir_spilling_backend_preparar(size_t bytes_existentes, size_t ranuras,
+static int preparar(size_t bytes_existentes, size_t ranuras,
                                  size_t numero_parametros,
-                                 IrSpillingBackend *backend) {
+                                 IrSpillingBackend *backend, int expandir) {
     if (!backend || bytes_existentes < 4 || bytes_existentes % 4 != 0 ||
         numero_parametros > 255 ||
         numero_parametros > (bytes_existentes - 4) / 4) return 2;
 
     IrSpillingMarco marco = {0};
-    if (ir_spilling_calcular_marco(bytes_existentes, ranuras, &marco)) return 2;
+    if ((expandir ? ir_spilling_calcular_marco_expandido : ir_spilling_calcular_marco)(bytes_existentes, ranuras, &marco)) return 2;
 
     /* fm_emitir_prologo requiere un marco multiplo de cuatro y con espacio
      * para la direccion de retorno y todos los parametros. */
@@ -43,3 +43,9 @@ int ir_spilling_backend_acceso(FILE *salida, const IrSpillingBackend *backend,
     return ir_spilling_emitir_acceso(salida, &backend->marco,
                                     instruccion, registro_fisico);
 }
+
+/* Selección explícita del consumidor: las otras APIs no cambian su alcance. */
+int ir_spilling_backend_preparar(size_t bytes,size_t ranuras,size_t params,IrSpillingBackend *out)
+{ return preparar(bytes,ranuras,params,out,0); }
+int ir_spilling_backend_preparar_expandido(size_t bytes,size_t ranuras,size_t params,IrSpillingBackend *out)
+{ return preparar(bytes,ranuras,params,out,1); }

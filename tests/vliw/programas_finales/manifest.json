@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "casos": [
+    {
+      "id": "lu_constante",
+      "categoria": "loop_unrolling",
+      "fuente": "tests/vliw/programas_finales/lu_constante.bal",
+      "sha256": "75b9928373812d61b30c3b8ca5295131e318454f1ee59694a3cf40d3df35c53c",
+      "observables": {
+        "resultados[0]": 10
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "desenrollado total de N constante",
+      "transformacion_requerida": "unrolling"
+    },
+    {
+      "id": "lu_variable",
+      "categoria": "loop_unrolling",
+      "fuente": "tests/vliw/programas_finales/lu_variable.bal",
+      "sha256": "01b4a356e578dd62bad95952f78993cb208f5a651efdc5873bc7b60e632266a2",
+      "observables": {
+        "resultados[0]": 3
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "desenrollado parcial con límite recibido como parámetro",
+      "transformacion_requerida": "unrolling"
+    },
+    {
+      "id": "lu_grande",
+      "categoria": "loop_unrolling",
+      "fuente": "tests/vliw/programas_finales/lu_grande.bal",
+      "sha256": "abd475846054d2bab73898e7ec33f572f08be24a330870c77b45a75846991ed1",
+      "observables": {
+        "resultados[0]": 80
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "heurística parcial sobre N mayor que 16",
+      "transformacion_requerida": "unrolling"
+    },
+    {
+      "id": "reg_war",
+      "categoria": "renombramiento",
+      "fuente": "tests/vliw/programas_finales/reg_war.bal",
+      "sha256": "364451e7d2a596e219889ccb9df0e90ad0680d5f8287e98bffe19b74fa4611e1",
+      "observables": {
+        "resultados[0]": 11
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "lectura anterior a escritura del mismo nombre",
+      "transformacion_requerida": "renombramiento"
+    },
+    {
+      "id": "reg_waw",
+      "categoria": "renombramiento",
+      "fuente": "tests/vliw/programas_finales/reg_waw.bal",
+      "sha256": "12c8d372355303ca5a420c4b7d80fed66360a3938e302e119f4e7dccecdb2df9",
+      "observables": {
+        "resultados[0]": 12
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "dos escrituras con la última visible",
+      "transformacion_requerida": "renombramiento"
+    },
+    {
+      "id": "reg_cruzado",
+      "categoria": "renombramiento",
+      "fuente": "tests/vliw/programas_finales/reg_cruzado.bal",
+      "sha256": "a03532d16ed99898dd470d0ae6f5e3f3dbd0881b9b3d49ba4eb495374b495188",
+      "observables": {
+        "resultados[0]": 8
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "RAW/WAR/WAW sobre intercambio de variables",
+      "transformacion_requerida": "renombramiento"
+    },
+    {
+      "id": "dce_puntajes",
+      "categoria": "dce",
+      "fuente": "examples/ejercicio3_puntajes.bal",
+      "sha256": "063c5fca57fc3ed1685af64e56aa7ad95ef0c27d32f23709eb0109e12718019a",
+      "observables": {
+        "resultado": 24,
+        "combinado": 13,
+        "total": 37
+      },
+      "offsets_o0": {
+        "resultado": 4,
+        "combinado": 12,
+        "total": 16
+      },
+      "offsets_o1": {
+        "resultado": 4,
+        "combinado": 8,
+        "total": 12
+      },
+      "objetivo": "código muerto y resultados de llamadas reales",
+      "transformacion_requerida": "dce"
+    },
+    {
+      "id": "dce_funciones",
+      "categoria": "dce",
+      "fuente": "examples/dce/dce_ensamblador.bal",
+      "sha256": "9fe31fcb5aab6768b92f32ded322da85baca41901312e59e6706b9f8676b7bec",
+      "observables": {
+        "cuadrado4": 16,
+        "suma_hasta5": 15
+      },
+      "offsets_o0": {
+        "cuadrado4": 4,
+        "suma_hasta5": 8
+      },
+      "offsets_o1": {
+        "cuadrado4": 4,
+        "suma_hasta5": 8
+      },
+      "objetivo": "código muerto y resultados de llamadas reales",
+      "transformacion_requerida": "dce"
+    },
+    {
+      "id": "dce_efectos",
+      "categoria": "dce",
+      "fuente": "examples/dce/dce_llamadas.bal",
+      "sha256": "bebf459f9889deac2ed240cd8fe8c4bb8b71cea59aaac7063c8420e1f9f262d0",
+      "observables": {
+        "datos[0]": 7,
+        "datos[1]": 4
+      },
+      "offsets_o0": {
+        "datos[0]": 4,
+        "datos[1]": 8
+      },
+      "offsets_o1": {
+        "datos[0]": 4,
+        "datos[1]": 8
+      },
+      "objetivo": "llamadas con efectos sobre parámetros compuestos; bloqueo conocido del backend",
+      "transformacion_requerida": "dce"
+    },
+    {
+      "id": "control_condicional",
+      "categoria": "saltos_funciones",
+      "fuente": "tests/vliw/programas_finales/control_condicional.bal",
+      "sha256": "c818b2f47bfb382293c49115592833bb7416874ff222d333fad20efacdbd4e03",
+      "observables": {
+        "resultados[0]": 20
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "control condicional preservado entre O0/O1",
+      "transformacion_requerida": "seguridad_control"
+    },
+    {
+      "id": "control_backedge",
+      "categoria": "saltos_funciones",
+      "fuente": "tests/vliw/programas_finales/control_backedge.bal",
+      "sha256": "1c6cb7b4f6a1f954537a53ae147db2aa886ee3c0ea38a814f7cba3fb287422bc",
+      "observables": {
+        "resultados[0]": 21
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "salto hacia atrás y estado final",
+      "transformacion_requerida": "seguridad_control"
+    },
+    {
+      "id": "control_llamadas",
+      "categoria": "saltos_funciones",
+      "fuente": "tests/vliw/programas_finales/control_llamadas.bal",
+      "sha256": "3f457351d3b43ae4ff4b410f3953d74246b6af1a4b7cd50ca1ae25ec9218e6cd",
+      "observables": {
+        "resultados[0]": 14
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "llamadas y retornos con flujo preservado",
+      "transformacion_requerida": "seguridad_control"
+    },
+    {
+      "id": "spill_suma",
+      "categoria": "spilling",
+      "fuente": "tests/vliw/programas_finales/spill_suma.bal",
+      "sha256": "17f1aa999e963a783caef49ebfef413b9f1ba9b76afa32da523d5c9fe073c3c4",
+      "observables": {
+        "resultados[0]": 36
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "presión de temporales y spilling sobre expresión balanceada",
+      "transformacion_requerida": "spilling"
+    },
+    {
+      "id": "spill_diferencias",
+      "categoria": "spilling",
+      "fuente": "tests/vliw/programas_finales/spill_diferencias.bal",
+      "sha256": "b3456b5fd7b9e9fa7ce589aeaa552e0b5ab6648e7227e6cf44fd092311583553",
+      "observables": {
+        "resultados[0]": 0
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "presión de temporales y spilling sobre expresión balanceada",
+      "transformacion_requerida": "spilling"
+    },
+    {
+      "id": "spill_mixto",
+      "categoria": "spilling",
+      "fuente": "tests/vliw/programas_finales/spill_mixto.bal",
+      "sha256": "647ad35004b85392b38756c25b95aa3cbae6bb414062f861c019805f1d2200ad",
+      "observables": {
+        "resultados[0]": 16
+      },
+      "offsets_o0": {
+        "resultados[0]": 4
+      },
+      "offsets_o1": {
+        "resultados[0]": 4
+      },
+      "objetivo": "presión de temporales y spilling sobre expresión balanceada",
+      "transformacion_requerida": "spilling"
+    }
+  ]
+}

@@ -38,6 +38,10 @@ typedef struct {
  * hay error de memoria/argumentos. No modifica el AST ni la tabla semantica.
  * Un error deja el programa vacio; el mensaje incluye ubicacion del nodo. */
 int ir_desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos);
+/* Variante optativa: inicializadores globales en __o2_init_global. Misma
+ * propiedad y errores que ir_desde_ast; el consumidor debe llamar esa función
+ * antes de main, con su marco particular. No enlaza unidades importadas. */
+int ir_desde_ast_programa(const Ast *ast, IrPrograma *ir, FILE *diagnosticos);
 int ir_bloques_basicos(IrPrograma *ir);
 int ir_imprimir(const IrPrograma *ir, FILE *salida);
 void ir_liberar(IrPrograma *ir);

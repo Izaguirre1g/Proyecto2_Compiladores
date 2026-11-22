@@ -30,4 +30,6 @@ int ir_spilling_backend_acceso(FILE *salida, const IrSpillingBackend *backend,
                                const IrInstr *instruccion,
                                unsigned registro_fisico);
 
+/* Solo para productores que expanden direcciones antes del DAG físico. */
+int ir_spilling_backend_preparar_expandido(size_t bytes,size_t ranuras,size_t parametros,IrSpillingBackend *salida);
 #endif

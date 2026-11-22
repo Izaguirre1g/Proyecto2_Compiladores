@@ -119,7 +119,7 @@ static int arranque_lineal(const Ast *ast, const SimTabla *tabla,
 /* Genera el lineal de todas las funciones con las direcciones de destinos. */
 static char *generar(const Ast *ast, const SimTabla *tabla,
                      const EfArranque *arranque, const RrTabla *destinos,
-                     FILE *diagnosticos)
+                     FILE *diagnosticos, int referencias)
 {
     FILE *f = tmpfile();
     if (!f) return NULL;
@@ -128,7 +128,7 @@ static char *generar(const Ast *ast, const SimTabla *tabla,
         if (fn->tipo != AST_FUNCION) continue;
         size_t marco = marco_de(tabla, nombre(fn));
         ok = marco && fprintf(f, "__fn_%s:\n", nombre(fn)) >= 0 &&
-             ri_generar_funcion(fn, tabla, marco, destinos, f, diagnosticos) == 0;
+             (referencias?ri_generar_funcion_referencias:ri_generar_funcion)(fn, tabla, marco, destinos, f, diagnosticos) == 0;
         if (!ok) fallo(diagnosticos, "no se pudo generar la funcion", nombre(fn));
     }
     char *texto = ok ? leer_todo(f) : NULL;
@@ -136,9 +136,9 @@ static char *generar(const Ast *ast, const SimTabla *tabla,
     return texto;
 }
 
-int ef_enlazar(const Ast *ast, const SimTabla *tabla, uint32_t inicio,
+static int enlazar(const Ast *ast, const SimTabla *tabla, uint32_t inicio,
                const EfArranque *arranque, RrTabla *funciones, FILE *salida, FILE *diagnosticos,
-               EfResumen *resumen)
+               EfResumen *resumen, int referencias)
 {
     if (!ast || !ast->raiz || !tabla || !tabla->global || !salida) {
         fallo(diagnosticos, "argumentos invalidos", NULL);
@@ -166,7 +166,7 @@ int ef_enlazar(const Ast *ast, const SimTabla *tabla, uint32_t inicio,
             ok = fallo(diagnosticos, "las direcciones de funciones no convergen", NULL);
             break;
         }
-        char *lineal = generar(ast, tabla, arranque, &destinos, diagnosticos);
+        char *lineal = generar(ast, tabla, arranque, &destinos, diagnosticos, referencias);
         if (!lineal) { ok = 0; break; }
         RrTabla etiquetas;
         rr_inicializar(&etiquetas);
@@ -215,3 +215,10 @@ int ef_enlazar(const Ast *ast, const SimTabla *tabla, uint32_t inicio,
     rr_liberar(&destinos);
     return ok ? 0 : 1;
 }
+
+/* La API anterior mantiene el ABI escalar; la nueva requiere el layout
+ * optativo de referencias, que preserva tamaños y offsets de escalares. */
+int ef_enlazar(const Ast *a,const SimTabla *t,uint32_t pc,const EfArranque *b,RrTabla *d,FILE *o,FILE *e,EfResumen *r)
+{ return enlazar(a,t,pc,b,d,o,e,r,0); }
+int ef_enlazar_referencias(const Ast *a,const SimTabla *t,uint32_t pc,const EfArranque *b,RrTabla *d,FILE *o,FILE *e,EfResumen *r)
+{ return enlazar(a,t,pc,b,d,o,e,r,1); }

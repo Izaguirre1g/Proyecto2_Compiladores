@@ -59,7 +59,7 @@ SRC := $(CLI)/main.c $(CLI)/cli.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token
        reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c reordenamiento/ro_json.c
 
 # Estos nombres son comandos de Make, no archivos.
-.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-metricas test-ll1 tabla-ll1 ide clean
+.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-enlace test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 tabla-ll1 ide clean
 
 # Al ejecutar make, se construye balc.
 all: balc
@@ -88,7 +88,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -699,6 +699,40 @@ test-ide-dce: tests/test_ide_dce tests/test_dce_simulador balc
 	./tests/test_dce_simulador tests/dce_original.bin 24 tests/dce_nuevo.bin 20
 	rm -f tests/dce_original.* tests/dce_nuevo.*
 
+# Enlace entre archivos (bring), en src/Analisis_Semantico/semantic_modules.c:
+# 1. Los programas validos de tests/modulos/ compilan con el backend normal,
+#    con --ir y con -O2 (antes ninguno generaba codigo si usaba el modulo).
+# 2. enlace_principal.bal (dos modulos, uno anidado, constantes y nombres
+#    locales que las tapan) se ejecuta en el simulador y da los valores
+#    esperados, compilado normal y con -O1. El marco de main mide 36 bytes.
+# 3. enlace_dce.bal con -O1: el DCE borra una variable del principal (marco
+#    de 20 a 16 bytes) y el resultado no cambia.
+# 4. arreglo_llamada.bal: a[i] : f(x); en el backend normal.
+tests/test_enlace_simulador: tests/test_enlace_simulador.c $(SIM_SRC) include/sim_ejecucion.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_enlace_simulador.c $(SIM_SRC) -o $@
+
+test-enlace: balc tests/test_enlace_simulador
+	@set -e; for f in llamada constante anidado compartido doble_importacion arreglo_importado valido; do \
+	    ./balc -o tests/enlace_tmp.bin tests/modulos/principal_$$f.bal > /dev/null; \
+	    ./balc --ir tests/modulos/principal_$$f.bal > /dev/null; \
+	    ./balc -O1 -o tests/enlace_tmp_o1.bin tests/modulos/principal_$$f.bal > /dev/null; \
+	    ./balc -O2 -o tests/enlace_tmp_o2.bin tests/modulos/principal_$$f.bal > /dev/null; \
+	    echo "  ok   principal_$$f.bal: normal, --ir, -O1 y -O2"; \
+	done
+	./balc -o tests/enlace_principal.bin tests/modulos/enlace_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_principal.bin 36 109 107 100 10
+	./balc -O1 -o tests/enlace_principal_o1.bin tests/modulos/enlace_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_principal_o1.bin 36 109 107 100 10
+	./balc -o tests/enlace_dce.bin tests/modulos/enlace_dce.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_dce.bin 20 8 20
+	./balc -O1 -o tests/enlace_dce_o1.bin tests/modulos/enlace_dce.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_dce_o1.bin 16 8 20
+	./balc -o tests/arreglo_llamada.bin tests/fixtures/arreglo_llamada.bal > /dev/null
+	./tests/test_enlace_simulador tests/arreglo_llamada.bin 40 9 17 25 36
+	rm -f tests/enlace_tmp* tests/enlace_principal* tests/enlace_dce* tests/arreglo_llamada.* \
+	      tests/modulos/principal_*.asm tests/modulos/principal_*.o2* tests/modulos/*.simbolos.md
+	@echo "OK: enlace entre archivos (bring), -O1 con modulos y a[i] : f(x)"
+
 tests/test_ide_ensamblador: tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_ensamblador.h include/cli.h include/ide_analisis.h $(SINTACTICO)/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@
 
@@ -715,6 +749,17 @@ tests/test_ide_unrolling: tests/test_ide_unrolling.c $(IDE_LU_SRC) $(IR)/ir.c $(
 
 test-ide-unrolling: tests/test_ide_unrolling
 	./tests/test_ide_unrolling
+
+# Boton "Reordenamiento" del IDE: semantico -> IR -> [unrolling] ->
+# ro_reordenar (modulo de Meibel, reordenamiento/) sobre el texto del
+# editor, sin GTK. Usa ro_texto_instr de ro_reporte.c para el texto de la IR.
+IDE_RO_SRC := $(IDE)/ide_reordenamiento.c reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c $(IR)/ir_defuse.c
+
+tests/test_ide_reordenamiento: tests/test_ide_reordenamiento.c $(IDE_RO_SRC) loop_unrolling/loop_unrolling.c $(IR)/ir.c $(IDE_ANALISIS_SRC) include/ide_reordenamiento.h reordenamiento/reordenamiento.h reordenamiento/ro_reporte.h include/ir.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_reordenamiento.c $(IDE_RO_SRC) loop_unrolling/loop_unrolling.c $(IR)/ir.c $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-reordenamiento: tests/test_ide_reordenamiento
+	./tests/test_ide_reordenamiento
 
 # Metricas del codigo del editor (src/Metricas/): compila el texto con el
 # boton Ensamblador (IDE_ASM_SRC), lo ejecuta en el simulador VLIW de Javier
@@ -781,8 +826,8 @@ GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
 ide: balc-ide
 
-balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS) -lm
+balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c include/ide_reordenamiento.h include/ide_reordenamiento_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS) -lm
 
 # Eliminacion de codigo muerto (DCE) con analisis de variables vivas, sobre
 # la IR. La prueba arma la IR desde programas BAL (examples/dce/) con el parser,
@@ -865,3 +910,17 @@ test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
 
 # Reservas de spilling basadas en offsets reales de simbolos por funcion.
 -include Makefile.spilling.memoria.mk
+
+# Niveles oficiales acotados: reutilizar el DCE/reescritor IDE sin GTK.
+# Se agregan solo fuentes que balc aún no enlaza; no se duplican algoritmos.
+VLIW_OPT_SRC := tools/vliw/optimizacion_cli.c $(filter-out $(SRC),$(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC))
+SRC += $(VLIW_OPT_SRC)
+balc: $(VLIW_OPT_SRC) tools/vliw/optimizacion_cli.h include/ide_dce.h
+
+# Productor de programas IR, opt-in O2; conserva el productor de fragmentos.
+SRC += src/ir_vliw_programa.c
+balc: src/ir_vliw_programa.c include/ir_vliw_programa.h
+
+# Versionado virtual local: paso separado del spilling y del banco físico.
+SRC += src/ir_renombramiento.c
+balc: src/ir_renombramiento.c include/ir_renombramiento.h

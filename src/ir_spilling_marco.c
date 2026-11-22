@@ -16,8 +16,8 @@ static int alinear_palabra(size_t bytes, size_t *alineados) {
 
 /* Reserva espacios despues de la memoria ocupada por el backend.
  * El caller tiene que pasar el consumo completo de ra, parametros y locales. */
-int ir_spilling_calcular_marco(size_t bytes_ocupados, size_t ranuras,
-                              IrSpillingMarco *marco) {
+static int calcular_marco(size_t bytes_ocupados, size_t ranuras,
+                              IrSpillingMarco *marco, int expandir) {
     if (!marco || bytes_ocupados < 4) return 2;
     size_t inicio = 0;
     if (alinear_palabra(bytes_ocupados, &inicio)) return 2;
@@ -27,7 +27,7 @@ int ir_spilling_calcular_marco(size_t bytes_ocupados, size_t ranuras,
     if (total > SPILL_MARCO_MAXIMO) return 2;
     /* Cada ranura debe ser accesible mediante un desplazamiento inmediato.
      * Si se supera, el integrador debe emitir calculo de direccion aparte. */
-    if (ranuras && (inicio > SPILL_OFFSET_MAXIMO ||
+    if (!expandir && ranuras && (inicio > SPILL_OFFSET_MAXIMO ||
                     ranuras - 1 > (SPILL_OFFSET_MAXIMO - inicio) / 4)) return 2;
     IrSpillingMarco nuevo = {bytes_ocupados, inicio, ranuras, total};
     *marco = nuevo;
@@ -36,8 +36,8 @@ int ir_spilling_calcular_marco(size_t bytes_ocupados, size_t ranuras,
 
 /* Lee exclusivamente nombres de la forma $spillN, con N decimal.
  * Verifica el rango antes de multiplicar por cuatro. */
-int ir_spilling_offset(const IrSpillingMarco *marco,
-                       const char *ranura, size_t *offset) {
+static int offset_marco(const IrSpillingMarco *marco,
+                       const char *ranura, size_t *offset, int expandir) {
     if (!marco || !ranura || !offset || strncmp(ranura, "$spill", 6) != 0 ||
         ranura[6] < '0' || ranura[6] > '9') return 2;
     size_t indice = 0;
@@ -50,11 +50,23 @@ int ir_spilling_offset(const IrSpillingMarco *marco,
     if (indice >= marco->ranuras ||
         indice > (SIZE_MAX - marco->inicio_spilling) / 4) return 2;
     size_t resultado = marco->inicio_spilling + indice * 4;
-    if (resultado > SPILL_OFFSET_MAXIMO ||
+    if ((!expandir && resultado > SPILL_OFFSET_MAXIMO) ||
         resultado + 4 > marco->bytes_marco) return 2;
     *offset = resultado;
     return 0;
 }
+
+/* Variantes ampliadas: calculan direcciones, no emiten LSU. El consumidor
+ * debe expandir los offsets lejanos antes de construir CFG/DAG y scheduling.
+ * Las APIs históricas siguen imponiendo el rango inmediato de LSU. */
+int ir_spilling_calcular_marco(size_t bytes, size_t ranuras, IrSpillingMarco *out)
+{ return calcular_marco(bytes,ranuras,out,0); }
+int ir_spilling_calcular_marco_expandido(size_t bytes, size_t ranuras, IrSpillingMarco *out)
+{ return calcular_marco(bytes,ranuras,out,1); }
+int ir_spilling_offset(const IrSpillingMarco *m,const char *r,size_t *out)
+{ return offset_marco(m,r,out,0); }
+int ir_spilling_offset_expandido(const IrSpillingMarco *m,const char *r,size_t *out)
+{ return offset_marco(m,r,out,1); }
 
 /* Convierte una operacion logica en una instruccion de memoria real.
  * La asignacion y preservacion de registros fisicos sigue siendo externa. */

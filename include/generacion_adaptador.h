@@ -20,4 +20,13 @@ int gd_generar_funcion(const AstNodo *funcion, const SimTabla *tabla,
                        void *contexto_destinos, FILE *salida,
                        FILE *diagnosticos);
 
+/* Identidad semántica del uso, con visibilidad y enlaces AST/ámbito reales.
+ * Préstamo de tabla; no requiere ni asigna memoria. NULL si no se acredita. */
+const SimSimbolo *gd_resolver_simbolo(const SimTabla *tabla,
+    const char *funcion, const AstNodo *identificador);
+
+/* Opt-in para el layout mem_asignar_proyecto_referencias: arreglos int 1D
+ * prestados por dirección; sin descriptor de longitud ni copia de elementos. */
+int gd_generar_funcion_referencias(const AstNodo *funcion,const SimTabla *tabla,
+    size_t bytes_marco,GfResolverDestino destino,void *contexto,FILE *salida,FILE *diagnosticos);
 #endif

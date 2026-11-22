@@ -107,3 +107,7 @@ byte, aunque `cargai`/`guardap` acceden una palabra completa. El adaptador
 certifica posiciones, no autoriza al backend a usar stores de 32 bits sobre
 variables subpalabra adyacentes: su lowering debe conservar los límites reales
 o establecer antes una ABI de padding consistente.
+
+## Extensiones optativas para O2
+
+Las APIs históricas mantienen sus restricciones. `mem_asignar_proyecto_referencias()` y `ir_spilling_backend_desde_tabla_referencias()` acreditan homes de punteros para arreglos 1D. Las variantes `*_expandido` calculan offsets más allá del inmediato LSU, que el consumidor debe expandir antes del DAG. No permiten emitir un inmediato fuera de rango mediante `ir_spilling_emitir_acceso()`. La convención, propiedad y límites se detallan en [el contrato O2](vliw/integracion-productiva-o2.md). Revisión requerida de Dylan.
