@@ -67,8 +67,14 @@
  *      qué hizo el DCE de -O1 y cada pasada de -O2, y si el resultado de
  *      main es el mismo
  *      (ide_optimizacion.c e ide_optimizacion_ventana.c).
+ *  15. Deshacer y rehacer: Ctrl+Z deshace el último cambio y Ctrl+Y (o
+ *      Ctrl+Shift+Z) lo vuelve a hacer. Una palabra escrita seguida se
+ *      deshace entera, y un "Corregir" o "Aplicar al código" se deshace de
+ *      una vez. Si se deshace hasta lo guardado, el título pierde el *
+ *      (ide_historial.c).
  *
- * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
+ * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir,
+ *         Ctrl+Z deshacer, Ctrl+Y o Ctrl+Shift+Z rehacer.
  * Uso: ./balc-ide [archivo.bal]
  */
 #include <gtk/gtk.h>
@@ -80,6 +86,7 @@
 #include "ide_colores.h"
 #include "ide_dce.h"
 #include "ide_dce_ventana.h"
+#include "ide_historial.h"
 #include "ide_ensamblador.h"
 #include "ide_ensamblador_ventana.h"
 #include "ide_unrolling_ventana.h"
@@ -130,6 +137,9 @@ typedef struct {
     int digitos_numeros;        /* Cifras que caben en la columna de números de línea. */
     IdeDce dce;                 /* Último resultado del botón "Código muerto". */
     gboolean dce_mostrado;      /* TRUE si ese resultado está marcado en el editor. */
+    IdeHistorial historial;     /* Cambios del texto, para Ctrl+Z y Ctrl+Y (ide_historial.c). */
+    gboolean aplicando_historial;  /* TRUE mientras se deshace o rehace: esos
+                                    * cambios no se anotan otra vez. */
 } Ide;
 
 /* ================================================================== */
@@ -1630,7 +1640,12 @@ static void cargar_texto(Ide *ide, const char *texto, const char *ruta)
     g_free(ide->ruta);
     ide->ruta = (ruta != NULL) ? g_strdup(ruta) : NULL;
 
+    /* El historial empieza de cero con el archivo nuevo: no se puede
+     * deshacer "hasta el archivo anterior". */
+    ide->aplicando_historial = TRUE;  /* set_text no se anota. */
     gtk_text_buffer_set_text(ide->buffer, texto, -1);
+    ide->aplicando_historial = FALSE;
+    ide_historial_vaciar(&ide->historial);
     limpiar_clones(ide);  /* Los clones eran del archivo anterior. */
     limpiar_dce(ide, DCE_SIN_ANALIZAR);  /* Y el código muerto también. */
     GtkTextIter inicio;
@@ -1687,6 +1702,7 @@ static gboolean guardar_en(Ide *ide, const char *ruta)
         ide->ruta = g_strdup(ruta);
     }
     ide->modificado = FALSE;
+    ide_historial_marcar_guardado(&ide->historial);  /* Deshacer hasta aquí = sin cambios. */
     actualizar_titulo(ide);
     programar_revision(ide);  /* El nombre pudo cambiar: revisar otra vez. */
     return TRUE;
@@ -1788,16 +1804,119 @@ static void al_pulsar_guardar_como(GtkWidget *boton, gpointer datos)
     guardar(datos, TRUE);
 }
 
-/* Atajos de teclado de la ventana: Ctrl+N, Ctrl+O, Ctrl+S y Ctrl+. (corregir). */
+/* ================================================================== */
+/* Deshacer y rehacer (Ctrl+Z y Ctrl+Y)                                */
+/* ================================================================== */
+
+/*
+ * GTK avisa cada cambio del texto ANTES de hacerlo (por eso se conectan
+ * con g_signal_connect y no con "_after"): así, al borrar, el texto que se
+ * va a borrar todavía está y se puede copiar al historial. Las posiciones
+ * se guardan en caracteres (offsets de GTK), que no cambian con las tildes.
+ */
+
+/* Empieza una acción de la persona (una tecla, pegar, "Corregir"...). */
+static void al_empezar_accion(GtkTextBuffer *buffer, gpointer datos)
+{
+    (void)buffer;
+    Ide *ide = datos;
+    if (!ide->aplicando_historial) ide_historial_empezar(&ide->historial);
+}
+
+/* Termina la acción: sus cambios quedan como un paso del historial. */
+static void al_terminar_accion(GtkTextBuffer *buffer, gpointer datos)
+{
+    (void)buffer;
+    Ide *ide = datos;
+    if (!ide->aplicando_historial) ide_historial_terminar(&ide->historial);
+}
+
+/* Se va a insertar "texto" en "posicion". */
+static void al_insertar(GtkTextBuffer *buffer, GtkTextIter *posicion, gchar *texto, gint largo,
+                        gpointer datos)
+{
+    (void)buffer;
+    Ide *ide = datos;
+    if (ide->aplicando_historial) return;
+    ide_historial_insertar(&ide->historial, (size_t)gtk_text_iter_get_offset(posicion), texto, largo);
+}
+
+/* Se va a borrar lo que hay entre "inicio" y "fin". */
+static void al_borrar(GtkTextBuffer *buffer, GtkTextIter *inicio, GtkTextIter *fin, gpointer datos)
+{
+    Ide *ide = datos;
+    if (ide->aplicando_historial) return;
+    GtkTextIter a = *inicio, b = *fin;
+    gtk_text_iter_order(&a, &b);
+    gchar *texto = gtk_text_buffer_get_text(buffer, &a, &b, TRUE);
+    ide_historial_borrar(&ide->historial, (size_t)gtk_text_iter_get_offset(&a), texto, -1);
+    g_free(texto);
+}
+
+/* Aplica un cambio del historial al editor: al derecho (rehacer) o al revés
+ * (deshacer). Devuelve dónde queda el cursor, en caracteres. */
+static gint aplicar_cambio(Ide *ide, const IdeHistCambio *c, gboolean al_reves)
+{
+    GtkTextIter inicio, fin;
+    gint pos = (gint)c->posicion;
+    gtk_text_buffer_get_iter_at_offset(ide->buffer, &inicio, pos);
+    /* Insertar al derecho, o deshacer un borrado: se vuelve a escribir. */
+    if ((c->tipo == IDE_HIST_INSERTAR) != al_reves) {
+        gtk_text_buffer_insert(ide->buffer, &inicio, c->texto, -1);
+        return pos + (gint)c->caracteres;
+    }
+    /* Borrar al derecho, o deshacer una inserción: se quita. */
+    gtk_text_buffer_get_iter_at_offset(ide->buffer, &fin, pos + (gint)c->caracteres);
+    gtk_text_buffer_delete(ide->buffer, &inicio, &fin);
+    return pos;
+}
+
+/* Ctrl+Z (deshacer = TRUE) o Ctrl+Y (deshacer = FALSE). */
+static void deshacer_o_rehacer(Ide *ide, gboolean deshacer)
+{
+    const IdeHistPaso *paso = deshacer ? ide_historial_deshacer(&ide->historial)
+                                       : ide_historial_rehacer(&ide->historial);
+    if (paso == NULL || paso->cantidad == 0) {
+        gtk_widget_error_bell(GTK_WIDGET(ide->vista));  /* No hay nada que deshacer. */
+        return;
+    }
+    ocultar_sugerencias(ide);
+    ide->aplicando_historial = TRUE;
+    gint cursor = 0;
+    if (deshacer) {
+        /* Al revés y del último cambio al primero: así cada posición vuelve
+         * a ser la que era cuando pasó ese cambio. */
+        for (size_t i = paso->cantidad; i-- > 0;) cursor = aplicar_cambio(ide, &paso->cambios[i], TRUE);
+    } else {
+        for (size_t i = 0; i < paso->cantidad; ++i) cursor = aplicar_cambio(ide, &paso->cambios[i], FALSE);
+    }
+    ide->aplicando_historial = FALSE;
+
+    /* El cursor va donde ocurrió el cambio, y se ve en pantalla. */
+    GtkTextIter donde;
+    gtk_text_buffer_get_iter_at_offset(ide->buffer, &donde, cursor);
+    gtk_text_buffer_place_cursor(ide->buffer, &donde);
+    gtk_text_view_scroll_mark_onscreen(ide->vista, gtk_text_buffer_get_insert(ide->buffer));
+
+    /* Si se volvió a lo guardado, ya no hay cambios sin guardar. */
+    ide->modificado = !ide_historial_en_guardado(&ide->historial);
+    actualizar_titulo(ide);
+}
+
+/* Atajos de teclado de la ventana: Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+. (corregir),
+ * Ctrl+Z (deshacer) y Ctrl+Y o Ctrl+Shift+Z (rehacer). */
 static gboolean al_presionar_atajo(GtkWidget *widget, GdkEventKey *evento, gpointer datos)
 {
     (void)widget;
     if (!(evento->state & GDK_CONTROL_MASK)) return FALSE;
+    gboolean mayuscula = (evento->state & GDK_SHIFT_MASK) != 0;
     switch (gdk_keyval_to_lower(evento->keyval)) {
         case GDK_KEY_n: al_pulsar_nuevo(NULL, datos); return TRUE;
         case GDK_KEY_o: al_pulsar_abrir(NULL, datos); return TRUE;
         case GDK_KEY_s: al_pulsar_guardar(NULL, datos); return TRUE;
         case GDK_KEY_period: corregir_en_cursor(datos); return TRUE;
+        case GDK_KEY_z: deshacer_o_rehacer(datos, !mayuscula); return TRUE;
+        case GDK_KEY_y: deshacer_o_rehacer(datos, FALSE); return TRUE;
         default: return FALSE;
     }
 }
@@ -1819,6 +1938,7 @@ static void al_destruir(GtkWidget *widget, gpointer datos)
     liberar_arreglos(ide);
     diag_liberar(&ide->errores);
     ide_dce_liberar(&ide->dce);
+    ide_historial_vaciar(&ide->historial);
     g_free(ide->ruta);
     gtk_main_quit();
 }
@@ -2022,6 +2142,11 @@ static void construir_ventana(Ide *ide)
     g_signal_connect_after(vista, "draw", G_CALLBACK(al_dibujar_numeros), ide);
     g_signal_connect(ide->buffer, "changed", G_CALLBACK(al_cambiar_texto), ide);
     g_signal_connect(ide->buffer, "mark-set", G_CALLBACK(al_mover_marca), ide);
+    /* Historial para Ctrl+Z / Ctrl+Y: cada cambio se anota antes de hacerse. */
+    g_signal_connect(ide->buffer, "begin-user-action", G_CALLBACK(al_empezar_accion), ide);
+    g_signal_connect(ide->buffer, "end-user-action", G_CALLBACK(al_terminar_accion), ide);
+    g_signal_connect(ide->buffer, "insert-text", G_CALLBACK(al_insertar), ide);
+    g_signal_connect(ide->buffer, "delete-range", G_CALLBACK(al_borrar), ide);
 
     GtkWidget *desplazar_editor = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_name(desplazar_editor, "editor");  /* Para el CSS (CSS_PANEL). */
