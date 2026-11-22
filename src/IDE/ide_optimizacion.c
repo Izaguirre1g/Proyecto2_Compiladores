@@ -70,12 +70,14 @@ static char *leer_todo(FILE *f)
     return texto;
 }
 
-/* El primer mensaje de error del texto, sin los avisos "[OK]" del semántico. */
+/* El primer mensaje de error del texto. Se saltan los avisos informativos,
+ * que empiezan con "[": "[OK] ..." del semántico y "[unroll] ciclo ... ->
+ * desenrollado TOTAL" del unrolling, que no son errores. */
 static char *primer_error(const char *texto)
 {
     for (const char *linea = texto; linea != NULL && *linea != '\0';) {
         size_t largo = strcspn(linea, "\n");
-        if (largo > 0 && strncmp(linea, "[OK]", 4) != 0) {
+        if (largo > 0 && linea[0] != '[') {
             char *copia = malloc(largo + 1);
             if (copia != NULL) {
                 memcpy(copia, linea, largo);

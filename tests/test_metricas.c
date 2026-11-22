@@ -309,9 +309,19 @@ int main(int argc, char **argv)
     VERIFICAR(m.estado == MET_CON_ERRORES);
     met_liberar(&m);
 
-    /* El backend tradicional rechaza estos parámetros compuestos. No debe
-     * aparecer un tamaño de cero presentado como una compilación existente. */
-    VERIFICAR(medir_archivo("examples/dce/dce_llamadas.bal", 0, &m) == 0);
+    /* El backend tradicional rechaza parámetros compuestos que todavía no
+     * soporta (un arreglo de dos dimensiones; los de una dimensión ya se
+     * pasan por su dirección). No debe aparecer un tamaño de cero presentado
+     * como una compilación existente. */
+    const char *no_soportado =
+        "create_funk #declare_int# primero(t * declare_int[][]) {\n"
+        "    give t[0][0];\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    t * declare_int[2][2] : [[1, 2], [3, 4]];\n"
+        "    x * declare_int : primero(t);\n"
+        "}\n";
+    VERIFICAR(met_medir(no_soportado, strlen(no_soportado), "examples/editor.bal", 0, &m) == 0);
     VERIFICAR(m.estado == MET_SIN_BACKEND && m.bundles == 0);
     size_t no_publicado = 123;
     VERIFICAR(met_tamano_codigo(&m, &no_publicado) == -1 && no_publicado == 123);

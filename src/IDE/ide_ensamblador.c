@@ -74,15 +74,16 @@ typedef struct {
 } Contexto;
 
 /*
- * Qué significa cada código de error de mem_asignar_proyecto (memory.c).
+ * Qué significa cada código de error de mem_asignar_proyecto_referencias (memory.c).
  * balc solo muestra el número ("codigo 6"); el IDE lo explica.
  */
 static const char *explicar_memoria(MemProyectoResultado r)
 {
     switch (r) {
         case MEM_PROYECTO_PARAMETROS_PENDIENTES:
-            return "el backend todavía no soporta parámetros que sean arreglos, listas o "
-                   "text: solo int, boolean y char (asignación de memoria, memory.c)";
+            return "el backend todavía no soporta parámetros que sean listas, text o "
+                   "arreglos de varias dimensiones: solo int, boolean, char y arreglos "
+                   "de una dimensión (asignación de memoria, memory.c)";
         case MEM_PROYECTO_TAMANO_INDEFINIDO:
             return "hay un arreglo sin tamaño conocido al compilar, y el backend necesita "
                    "saber cuánta memoria reservar (memory.c)";
@@ -106,10 +107,12 @@ static int generar(Contexto *c, const Ast *arbol, SimTabla *tabla, FILE *diag)
 {
     IdeEnsamblador *s = c->salida;
 
-    /* Memoria: globales desde gp y la pila desde su tope hacia abajo. */
+    /* Memoria: globales desde gp y la pila desde su tope hacia abajo. Igual
+     * que compilar_proyecto() de cli.c: la variante "_referencias" pasa los
+     * arreglos de una dimensión como parámetro por su dirección. */
     MemProyectoMapa mapa = {0};
-    MemProyectoResultado r = mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
-                                                  CLI_CAPACIDAD_MARCO, &mapa);
+    MemProyectoResultado r = mem_asignar_proyecto_referencias(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
+                                                              CLI_CAPACIDAD_MARCO, &mapa);
     if (r != MEM_PROYECTO_OK) {
         c->explicacion = explicar_memoria(r);
         return 1;
@@ -127,7 +130,9 @@ static int generar(Contexto *c, const Ast *arbol, SimTabla *tabla, FILE *diag)
         return 2;
     }
     EfResumen resumen = {0};
-    int estado = ef_enlazar(arbol, tabla, 0, &arranque, &funciones, temporal, diag, &resumen);
+    /* La variante "_referencias", igual que balc: genera las funciones que
+     * reciben arreglos por su dirección. */
+    int estado = ef_enlazar_referencias(arbol, tabla, 0, &arranque, &funciones, temporal, diag, &resumen);
     /* Los datos de las globales (como hace balc): sin ellos el .bin no se arma. */
     if (estado == 0 && fb_preparar_datos(arbol, tabla, (uint32_t)mapa.globales.gp_base,
                                          mapa.globales.bytes_globales, c->datos, diag) != 0) {
