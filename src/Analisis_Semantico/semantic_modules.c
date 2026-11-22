@@ -648,6 +648,515 @@ static int fusionar(Cargador *c, Modulo *principal, Ast *fusion)
     return 0;
 }
 
+/* =====================================================================
+ * Plegado de constantes
+ * =====================================================================
+ * Los backends tienen soporte parcial de `declare_const`: la IR y -O1 no
+ * aceptan constantes globales, el backend normal no acepta constantes
+ * booleanas ni arreglos globales ni constantes locales, y nadie acepta una
+ * constante como dimension (`a * declare_int[N]`). Como una constante no
+ * cambia, se puede resolver ANTES del backend, sobre una copia del AST:
+ *   1. Una constante declare_int o declare_boolean cuyo valor se calcula en
+ *      compilacion (literales, otras constantes y operadores) se reemplaza
+ *      por su valor en cada uso. Se respetan los parametros y variables
+ *      locales que la tapan. Las constantes declare_int GLOBALES siguen
+ *      declaradas, con su valor ya calculado: el binario las guarda en su
+ *      seccion de datos (formato_binario.c) y la IR las ignora si ya nadie
+ *      las usa. Las demas constantes plegadas desaparecen.
+ *   2. Un arreglo constante global con valor literal se declara como arreglo
+ *      normal al inicio de cada funcion que lo usa (nadie lo puede
+ *      modificar: la semantica ya lo verifico).
+ *   3. Una constante local que no se puede calcular (depende de variables o
+ *      llamadas), o un arreglo constante local, pasa a ser una declaracion
+ *      normal.
+ * La aritmetica es la misma de la seccion de datos del binario
+ * (fb_preparar_datos): 32 bits con desborde circular, division y residuo
+ * con signo truncando hacia cero, potencia con exponente no negativo. No se
+ * pliega una division por cero. El resultado vuelve a pasar por la
+ * semantica; si fallara, se usa el AST sin plegar, como antes. */
+
+typedef enum { PL_SOMBRA, PL_VALOR, PL_ARREGLO } PlClase;
+
+typedef struct {
+    const char *nombre;
+    PlClase clase;
+    int64_t valor;               /* PL_VALOR */
+    int es_bool;                 /* PL_VALOR */
+    const AstNodo *declaracion;  /* PL_ARREGLO: la constante original */
+} PlEntrada;
+
+typedef struct {
+    Ast *destino;
+    PlEntrada *v;                /* Pila de nombres visibles */
+    size_t n, cap;
+    size_t globales;             /* v[0..globales) son las constantes globales */
+    int error;
+} Plegado;
+
+static AstNodo OMITIR_NODO;      /* Marca: la sentencia desaparece */
+#define OMITIR (&OMITIR_NODO)
+
+static int pl_agregar(Plegado *p, PlEntrada e)
+{
+    if (!e.nombre) return 1;
+    if (p->n == p->cap) {
+        size_t cap = p->cap ? p->cap * 2 : 32;
+        PlEntrada *v = realloc(p->v, cap * sizeof *v);
+        if (!v) { p->error = 1; return 0; }
+        p->v = v;
+        p->cap = cap;
+    }
+    p->v[p->n++] = e;
+    return 1;
+}
+
+static int pl_sombra(Plegado *p, const char *nombre)
+{
+    return pl_agregar(p, (PlEntrada){nombre, PL_SOMBRA, 0, 0, NULL});
+}
+
+static const PlEntrada *pl_buscar(const Plegado *p, const char *nombre)
+{
+    if (!nombre) return NULL;
+    for (size_t i = p->n; i-- > 0;)
+        if (strcmp(p->v[i].nombre, nombre) == 0) return &p->v[i];
+    return NULL;
+}
+
+/* Tipo escalar de una constante: 0 int, 1 boolean, -1 otro. */
+static int pl_tipo_escalar(const AstNodo *k)
+{
+    const AstNodo *t = hijo(k, 1);
+    if (!t || t->tipo != AST_TIPO || !t->texto) return -1;
+    if (strcmp(t->texto, "declare_int") == 0) return 0;
+    if (strcmp(t->texto, "declare_boolean") == 0) return 1;
+    return -1;
+}
+
+/* Valor con signo de 32 bits (como int32_t) a partir de su patron de bits. */
+static int64_t pl_firmado(uint32_t v)
+{
+    return v <= INT32_MAX ? (int64_t)v : (int64_t)v - INT64_C(4294967296);
+}
+
+static int pl_evaluar(const Plegado *p, const AstNodo *e, int64_t *v, int *es_bool, unsigned prof);
+
+/* a[i][j] de un arreglo constante con valor literal e indices constantes. */
+static int pl_elemento(const Plegado *p, const AstNodo *e, int64_t *v, int *es_bool, unsigned prof)
+{
+    const AstNodo *indices[8];
+    unsigned cantidad = 0;
+    const AstNodo *base = e;
+    for (; base && base->tipo == AST_INDICE && hijo(base, 1) && !hijo(base, 2);
+         base = base->primer_hijo) {
+        if (cantidad == 8) return 0;
+        indices[cantidad++] = hijo(base, 1);
+    }
+    if (!base || base->tipo != AST_IDENTIFICADOR) return 0;
+    const PlEntrada *a = pl_buscar(p, base->texto);
+    if (!a || a->clase != PL_ARREGLO) return 0;
+    const AstNodo *lit = hijo(a->declaracion, 2);
+    for (unsigned k = cantidad; k-- > 0;) {      /* Del primer indice al ultimo */
+        int64_t i;
+        int b;
+        if (!lit || lit->tipo != AST_LITERAL_COLECCION ||
+            !pl_evaluar(p, indices[k], &i, &b, prof + 1) || b || i < 0) return 0;
+        lit = hijo(lit, (unsigned)i);
+    }
+    return lit && lit->tipo != AST_LITERAL_COLECCION && pl_evaluar(p, lit, v, es_bool, prof + 1);
+}
+
+/* Calcula `e` en compilacion. 1 si se pudo (valor en *v, *es_bool). */
+static int pl_evaluar(const Plegado *p, const AstNodo *e, int64_t *v, int *es_bool, unsigned prof)
+{
+    if (!e || prof > 200) return 0;
+    switch (e->tipo) {
+    case AST_ENTERO: {                  /* Hasta 4294967295, como la seccion de datos */
+        if (!e->texto || !*e->texto || strlen(e->texto) > 10) return 0;
+        int64_t r = 0;
+        for (const char *s = e->texto; *s; ++s) {
+            if (*s < '0' || *s > '9') return 0;
+            r = r * 10 + (*s - '0');
+        }
+        if (r > (int64_t)UINT32_MAX) return 0;
+        *v = pl_firmado((uint32_t)r); *es_bool = 0;
+        return 1;
+    }
+    case AST_BOOLEANO:
+        if (!e->texto) return 0;
+        if (strcmp(e->texto, "declare_true") == 0) *v = 1;
+        else if (strcmp(e->texto, "declare_false") == 0) *v = 0;
+        else return 0;
+        *es_bool = 1;
+        return 1;
+    case AST_IDENTIFICADOR: {
+        const PlEntrada *k = pl_buscar(p, e->texto);
+        if (!k || k->clase != PL_VALOR) return 0;
+        *v = k->valor; *es_bool = k->es_bool;
+        return 1;
+    }
+    case AST_INDICE:
+        return pl_elemento(p, e, v, es_bool, prof);
+    case AST_UNARIO: {
+        int64_t a;
+        int b;
+        if (!e->texto || hijo(e, 1) || !pl_evaluar(p, hijo(e, 0), &a, &b, prof + 1)) return 0;
+        if (!strcmp(e->texto, "neumann") && !b) {
+            *v = pl_firmado(0u - (uint32_t)a); *es_bool = 0;
+            return 1;
+        }
+        if (!strcmp(e->texto, "~") && b) { *v = !a; *es_bool = 1; return 1; }
+        return 0;
+    }
+    case AST_BINARIO: {
+        int64_t a, c;
+        int ba, bc;
+        const char *op = e->texto;
+        if (!op || hijo(e, 2) || !pl_evaluar(p, hijo(e, 0), &a, &ba, prof + 1) ||
+            !pl_evaluar(p, hijo(e, 1), &c, &bc, prof + 1) || ba != bc) return 0;
+        *es_bool = 0;
+        if (!ba) {                                   /* Aritmetica y comparaciones */
+            uint32_t x = (uint32_t)a, y = (uint32_t)c, r;
+            if (!strcmp(op, "gauss")) r = x + y;
+            else if (!strcmp(op, "neumann")) r = x - y;
+            else if (!strcmp(op, "pitagoras")) r = x * y;
+            else if (!strcmp(op, "euclides") || !strcmp(op, "euler")) {
+                if (c == 0) return 0;              /* Division por cero: no se pliega */
+                r = (uint32_t)(!strcmp(op, "euclides") ? a / c : a % c);
+            } else if (!strcmp(op, "descartes")) {
+                if (c < 0) return 0;
+                r = 1;
+                while (y) {                        /* Potencia rapida, 32 bits */
+                    if (y & 1u) r *= x;
+                    x *= x;
+                    y >>= 1;
+                }
+            } else {
+                *es_bool = 1;
+                if (!strcmp(op, "==")) *v = a == c;
+                else if (!strcmp(op, "=/=")) *v = a != c;
+                else if (!strcmp(op, "<")) *v = a < c;
+                else if (!strcmp(op, ">")) *v = a > c;
+                else if (!strcmp(op, "<=")) *v = a <= c;
+                else if (!strcmp(op, ">=")) *v = a >= c;
+                else return 0;
+                return 1;
+            }
+            *v = pl_firmado(r);
+            return 1;
+        }
+        *es_bool = 1;                                /* Logicos */
+        if (!strcmp(op, "&&")) *v = a && c;
+        else if (!strcmp(op, "||")) *v = a || c;
+        else if (!strcmp(op, "^")) *v = (a != 0) != (c != 0);
+        else if (!strcmp(op, "==")) *v = a == c;
+        else if (!strcmp(op, "=/=")) *v = a != c;
+        else return 0;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* Literal con el valor: Entero, neumann Entero o Booleano. */
+static AstNodo *pl_literal(Plegado *p, int64_t v, int es_bool, AstUbicacion u)
+{
+    AstNodo *r;
+    if (es_bool) {
+        r = ast_crear(p->destino, AST_BOOLEANO, v ? "declare_true" : "declare_false", u);
+    } else {
+        char texto[24];
+        snprintf(texto, sizeof texto, "%lld", (long long)(v < 0 ? -v : v));
+        r = ast_crear(p->destino, AST_ENTERO, texto, u);
+        if (r && v < 0) {
+            AstNodo *menos = ast_crear(p->destino, AST_UNARIO, "neumann", u);
+            if (menos) ast_agregar_hijo(menos, r);
+            r = menos;
+        }
+    }
+    if (!r) p->error = 1;
+    return r;
+}
+
+/* Copia exacta. */
+static AstNodo *pl_igual(Plegado *p, const AstNodo *n)
+{
+    AstNodo *r = ast_crear(p->destino, n->tipo, n->texto, n->ubicacion);
+    if (!r) { p->error = 1; return NULL; }
+    for (const AstNodo *h = n->primer_hijo; h; h = h->siguiente) {
+        AstNodo *k = pl_igual(p, h);
+        if (!k) return NULL;
+        ast_agregar_hijo(r, k);
+    }
+    return r;
+}
+
+static AstNodo *pl_copiar(Plegado *p, const AstNodo *n);
+
+/* Copia los hijos desde `desde`, saltando los que desaparecen. */
+static int pl_hijos(Plegado *p, AstNodo *destino, const AstNodo *n, unsigned desde)
+{
+    unsigned i = 0;
+    for (const AstNodo *h = n->primer_hijo; h; h = h->siguiente, ++i) {
+        if (i < desde) continue;
+        AstNodo *k = pl_copiar(p, h);
+        if (!k) return 0;
+        if (k != OMITIR) ast_agregar_hijo(destino, k);
+    }
+    return 1;
+}
+
+/* Nodo con el mismo tipo; el primer hijo (un nombre que se declara) tal cual. */
+static AstNodo *pl_con_nombre(Plegado *p, const AstNodo *n, AstTipo tipo)
+{
+    AstNodo *r = ast_crear(p->destino, tipo, n->texto, n->ubicacion);
+    AstNodo *k = r && hijo(n, 0) ? pl_igual(p, hijo(n, 0)) : NULL;
+    if (!r || (hijo(n, 0) && !k)) { p->error = 1; return NULL; }
+    if (k) ast_agregar_hijo(r, k);
+    return pl_hijos(p, r, n, 1) ? r : NULL;
+}
+
+/* 1 si el subarbol declara `nombre` (parametro, variable, constante, indice
+ * de cycle o variable de seize). */
+static int pl_declara(const AstNodo *n, const char *nombre)
+{
+    for (; n; n = n->siguiente) {
+        if (n->tipo == AST_PARAMETRO || n->tipo == AST_DECLARACION || n->tipo == AST_CONSTANTE ||
+            n->tipo == AST_RECORRIDO) {
+            const AstNodo *id = hijo(n, 0);
+            if (id && id->texto && strcmp(id->texto, nombre) == 0) return 1;
+        }
+        if (n->tipo == AST_CAPTURA) {
+            const AstNodo *id = hijo(n, 1);
+            if (id && id->texto && strcmp(id->texto, nombre) == 0) return 1;
+        }
+        if (pl_declara(n->primer_hijo, nombre)) return 1;
+    }
+    return 0;
+}
+
+/* Linea 0 ("codigo generado"): igual que el codigo copiado de un modulo, el
+ * DCE que reescribe el texto (-O1, "Aplicar al codigo") no lo confunde con
+ * la linea donde estaba la constante global. */
+static void pl_sin_linea(AstNodo *n)
+{
+    for (; n; n = n->siguiente) {
+        n->ubicacion = (AstUbicacion){0, 0, 0, 0};
+        pl_sin_linea(n->primer_hijo);
+    }
+}
+
+static int pl_usa(const AstNodo *n, const char *nombre)
+{
+    for (; n; n = n->siguiente) {
+        if (n->tipo == AST_IDENTIFICADOR && n->texto && strcmp(n->texto, nombre) == 0) return 1;
+        if (pl_usa(n->primer_hijo, nombre)) return 1;
+    }
+    return 0;
+}
+
+static AstNodo *pl_copiar(Plegado *p, const AstNodo *n)
+{
+    if (!n || p->error) return NULL;
+    size_t marca = p->n;
+    switch (n->tipo) {
+    case AST_IDENTIFICADOR: {                       /* Uso de un nombre */
+        const PlEntrada *k = pl_buscar(p, n->texto);
+        if (k && k->clase == PL_VALOR) return pl_literal(p, k->valor, k->es_bool, n->ubicacion);
+        return pl_igual(p, n);
+    }
+    case AST_LLAMADA:                               /* El nombre de la funcion no se toca */
+    case AST_IMPORTACION:
+    case AST_ACCESO_MIEMBRO:
+        if (n->tipo != AST_LLAMADA) return pl_igual(p, n);
+        return pl_con_nombre(p, n, AST_LLAMADA);
+    case AST_DECLARACION:
+    case AST_PARAMETRO: {
+        AstNodo *r = pl_con_nombre(p, n, n->tipo);
+        if (r && hijo(n, 0)) pl_sombra(p, hijo(n, 0)->texto);
+        return p->error ? NULL : r;
+    }
+    case AST_CONSTANTE: {                           /* Constante local */
+        const AstNodo *id = hijo(n, 0);
+        int tipo = pl_tipo_escalar(n);
+        int64_t v;
+        int b;
+        if (tipo >= 0 && id && !hijo(n, 3) && pl_evaluar(p, hijo(n, 2), &v, &b, 0) && b == tipo) {
+            pl_agregar(p, (PlEntrada){id->texto, PL_VALOR, v, b, NULL});
+            return p->error ? NULL : OMITIR;
+        }
+        AstNodo *r = pl_con_nombre(p, n, AST_DECLARACION);
+        if (r && id) pl_sombra(p, id->texto);
+        return p->error ? NULL : r;
+    }
+    case AST_RECORRIDO: {                           /* cycle i let a until b ... */
+        const AstNodo *i = hijo(n, 0);
+        AstNodo *r = ast_crear(p->destino, n->tipo, n->texto, n->ubicacion);
+        AstNodo *k = r && i ? pl_igual(p, i) : NULL;
+        if (!k) { p->error = 1; return NULL; }
+        ast_agregar_hijo(r, k);
+        for (const AstNodo *h = i->siguiente; h; h = h->siguiente) {
+            if (h->tipo == AST_BLOQUE) pl_sombra(p, i->texto);
+            AstNodo *c = pl_copiar(p, h);
+            if (!c) return NULL;
+            if (c != OMITIR) ast_agregar_hijo(r, c);
+        }
+        p->n = marca;
+        return r;
+    }
+    case AST_CAPTURA: {                             /* seize (Tipo e) { ... } */
+        AstNodo *r = ast_crear(p->destino, n->tipo, n->texto, n->ubicacion);
+        if (!r) { p->error = 1; return NULL; }
+        for (unsigned i = 0; i < 2 && hijo(n, i); ++i) {
+            AstNodo *k = pl_igual(p, hijo(n, i));
+            if (!k) return NULL;
+            ast_agregar_hijo(r, k);
+        }
+        if (hijo(n, 1)) pl_sombra(p, hijo(n, 1)->texto);
+        int ok = pl_hijos(p, r, n, 2);
+        p->n = marca;
+        return ok && !p->error ? r : NULL;
+    }
+    case AST_BLOQUE: {
+        AstNodo *r = ast_crear(p->destino, n->tipo, n->texto, n->ubicacion);
+        int ok = r && pl_hijos(p, r, n, 0);
+        p->n = marca;
+        if (!r) p->error = 1;
+        return ok ? r : NULL;
+    }
+    case AST_FUNCION: {
+        /* nombre, tipo, parametros y bloque. Los arreglos constantes globales
+         * que usa se declaran al inicio de su bloque. */
+        AstNodo *r = ast_crear(p->destino, n->tipo, n->texto, n->ubicacion);
+        if (!r) { p->error = 1; return NULL; }
+        for (const AstNodo *h = n->primer_hijo; h; h = h->siguiente) {
+            AstNodo *k;
+            if (h == n->primer_hijo || h->tipo == AST_TIPO) k = pl_igual(p, h);
+            else if (h->tipo == AST_BLOQUE) {
+                k = ast_crear(p->destino, AST_BLOQUE, h->texto, h->ubicacion);
+                if (!k) { p->error = 1; return NULL; }
+                for (size_t g = 0; g < p->globales; ++g) {
+                    const PlEntrada *a = &p->v[g];
+                    if (a->clase != PL_ARREGLO || !pl_usa(n->primer_hijo->siguiente, a->nombre) ||
+                        pl_declara(n->primer_hijo->siguiente, a->nombre)) continue;
+                    /* El valor del arreglo se lee en el ambito global: un
+                     * parametro llamado igual que una constante del literal
+                     * (T : [N, 2] con f(N)) no debe taparla. */
+                    size_t visibles = p->n;
+                    p->n = p->globales;
+                    AstNodo *d = pl_con_nombre(p, a->declaracion, AST_DECLARACION);
+                    p->n = visibles;
+                    if (!d) return NULL;
+                    pl_sin_linea(d);   /* No es una linea del texto de esta funcion */
+                    ast_agregar_hijo(k, d);
+                }
+                size_t antes = p->n;
+                if (!pl_hijos(p, k, h, 0)) return NULL;
+                p->n = antes;
+            } else k = pl_copiar(p, h);
+            if (!k) return NULL;
+            if (k != OMITIR) ast_agregar_hijo(r, k);
+        }
+        p->n = marca;
+        return p->error ? NULL : r;
+    }
+    default: {
+        AstNodo *r = ast_crear(p->destino, n->tipo, n->texto, n->ubicacion);
+        if (!r) { p->error = 1; return NULL; }
+        return pl_hijos(p, r, n, 0) ? r : NULL;
+    }
+    }
+}
+
+static int pl_tiene_constantes(const AstNodo *n)
+{
+    for (; n; n = n->siguiente)
+        if (n->tipo == AST_CONSTANTE || pl_tiene_constantes(n->primer_hijo)) return 1;
+    return 0;
+}
+
+/* Arma en `salida` el programa con las constantes plegadas. 0 bien, 2 sin memoria. */
+static int plegar_constantes(const Ast *entrada, Ast *salida)
+{
+    Plegado p = {salida, NULL, 0, 0, 0, 0};
+    const AstNodo *raiz = entrada->raiz;
+    /* 1. Constantes globales, en orden (una puede usar las anteriores). */
+    for (const AstNodo *n = raiz->primer_hijo; n; n = n->siguiente) {
+        if (n->tipo != AST_CONSTANTE || !hijo(n, 0)) continue;
+        const AstNodo *id = hijo(n, 0), *tipo = hijo(n, 1), *valor = hijo(n, 2);
+        int escalar = pl_tipo_escalar(n);
+        int64_t v;
+        int b;
+        if (escalar >= 0 && !hijo(n, 3) && pl_evaluar(&p, valor, &v, &b, 0) && b == escalar)
+            pl_agregar(&p, (PlEntrada){id->texto, PL_VALOR, v, b, NULL});
+        else if (tipo && tipo->tipo == AST_TIPO_ARREGLO && valor &&
+                 valor->tipo == AST_LITERAL_COLECCION && !hijo(n, 3))
+            pl_agregar(&p, (PlEntrada){id->texto, PL_ARREGLO, 0, 0, n});
+        else
+            pl_sombra(&p, id->texto);               /* Se queda como esta */
+    }
+    p.globales = p.n;
+    /* 2. Copia: las constantes plegadas o convertidas desaparecen. */
+    AstNodo *nueva = ast_crear(salida, AST_PROGRAMA, raiz->texto, raiz->ubicacion);
+    if (!nueva) p.error = 1;
+    for (const AstNodo *n = raiz->primer_hijo; !p.error && n; n = n->siguiente) {
+        if (n->tipo == AST_CONSTANTE && hijo(n, 0)) {
+            const PlEntrada *k = NULL;
+            for (size_t g = 0; g < p.globales; ++g)
+                if (strcmp(p.v[g].nombre, hijo(n, 0)->texto) == 0) k = &p.v[g];
+            /* Desaparecen las booleanas plegadas y los arreglos (que se
+             * declaran dentro de las funciones). Las declare_int globales,
+             * siguen declaradas porque van a la seccion de datos del binario:
+             * las plegadas con su valor (su expresion podria nombrar un
+             * arreglo que ya no es global) y las demas tal cual, con sus
+             * errores de siempre. */
+            if (k && (k->clase == PL_ARREGLO || (k->clase == PL_VALOR && k->es_bool))) continue;
+            AstNodo *r;
+            if (k && k->clase == PL_VALOR) {
+                const AstNodo *id = hijo(n, 0), *tipo = hijo(n, 1), *valor = hijo(n, 2);
+                AstNodo *i, *t, *l;
+                r = ast_crear(salida, n->tipo, n->texto, n->ubicacion);
+                if (!r || !(i = pl_igual(&p, id)) || !(t = pl_igual(&p, tipo)) ||
+                    !(l = pl_literal(&p, k->valor, 0, valor->ubicacion))) { p.error = 1; break; }
+                ast_agregar_hijo(r, i);
+                ast_agregar_hijo(r, t);
+                ast_agregar_hijo(r, l);
+            } else r = pl_igual(&p, n);
+            if (!r) break;
+            ast_agregar_hijo(nueva, r);
+            continue;
+        }
+        p.n = p.globales;
+        AstNodo *k = pl_copiar(&p, n);
+        if (!k) break;
+        if (k != OMITIR) ast_agregar_hijo(nueva, k);
+    }
+    free(p.v);
+    if (p.error) return 2;
+    salida->raiz = nueva;
+    return 0;
+}
+
+/* Analisis semantico de un AST transformado (fusionado o plegado), con
+ * tabla nueva. Con `silencioso`, los mensajes se descartan. 0, 1 o 2. */
+static int analizar_transformado(Cargador *c, const Ast *arbol, const char *ruta,
+                                 SimTabla *tabla, int silencioso)
+{
+    FILE *diag = silencioso ? tmpfile() : c->diagnosticos;
+    if (!diag) return 2;
+    int r = 2;
+    if (sim_inicializar(tabla) == SIM_OK) {
+        r = analizar_semantica_con_modulos(arbol, tabla, ruta, diag, SEM_PROGRAMA_PRINCIPAL,
+                                           resolver_importacion, c);
+        if (r != 0) r = r == 2 ? 2 : 1;
+        else if (!sim_verificar_pre_memoria(tabla, diag)) r = 2;
+        if (r != 0) sim_liberar(tabla);
+    }
+    if (silencioso) fclose(diag);
+    return r;
+}
+
 int sem_visitar_proyecto(const char *archivo_principal, FILE *diagnosticos,
                         SemProyectoVisitante visitante, void *contexto)
 {
@@ -659,42 +1168,53 @@ int sem_visitar_proyecto(const char *archivo_principal, FILE *diagnosticos,
         char *normalizada = normalizar_ruta(archivo_principal);
         Modulo *principal = normalizada ? buscar(&c, normalizada) : NULL;
         free(normalizada);
-        if (!principal || principal->estado != MOD_VALIDO)
-            r = 2;
-        else if (!tiene_importaciones(principal)) {
-            r = visitante(contexto, &principal->arbol, &principal->tabla,
-                          c.diagnosticos);
-            if (r != 0 && r != 1 && r != 2) r = 2;
-        } else {
-            /* Con `bring`: se entrega el programa enlazado. */
-            Ast fusion = {0};
-            SimTabla tabla = {0};          /* sim_inicializar espera una tabla en cero */
-            int hay_tabla = 0;
+        if (!principal || principal->estado != MOD_VALIDO) {
+            liberar(&c);
+            return 2;
+        }
+        /* El backend recibe, en orden de preferencia: el programa plegado,
+         * el programa enlazado (con bring) o el AST original. */
+        const Ast *arbol = &principal->arbol;
+        SimTabla *tabla = &principal->tabla;
+        Ast fusion = {0}, plegado = {0};
+        SimTabla tabla_fusion = {0}, tabla_plegado = {0};   /* sim_inicializar espera ceros */
+        int hay_fusion = 0, hay_plegado = 0;
+
+        if (tiene_importaciones(principal)) {
             r = fusionar(&c, principal, &fusion);
-            if (r == 0) {
-                if (sim_inicializar(&tabla) != SIM_OK) r = 2;
-                else {
-                    hay_tabla = 1;
-                    int s = analizar_semantica_con_modulos(&fusion, &tabla, principal->ruta,
-                                                           c.diagnosticos, SEM_PROGRAMA_PRINCIPAL,
-                                                           resolver_importacion, &c);
-                    if (s != 0) {
-                        fprintf(c.diagnosticos, "%s: error de enlace: el programa con sus modulos "
-                                "no paso el analisis semantico\n", principal->ruta);
-                        r = s == 2 ? 2 : 1;
-                    } else if (!sim_verificar_pre_memoria(&tabla, c.diagnosticos)) r = 2;
-                }
-            } else {
+            if (r != 0) {
                 fprintf(c.diagnosticos, "%s: error de enlace: no se pudieron unir los modulos\n",
                         principal->ruta);
+            } else {
+                r = analizar_transformado(&c, &fusion, principal->ruta, &tabla_fusion, 0);
+                if (r != 0)
+                    fprintf(c.diagnosticos, "%s: error de enlace: el programa con sus modulos "
+                            "no paso el analisis semantico\n", principal->ruta);
+                else {
+                    hay_fusion = 1;
+                    arbol = &fusion;
+                    tabla = &tabla_fusion;
+                }
             }
-            if (r == 0) {
-                r = visitante(contexto, &fusion, &tabla, c.diagnosticos);
-                if (r != 0 && r != 1 && r != 2) r = 2;
-            }
-            if (hay_tabla) sim_liberar(&tabla);
-            ast_liberar(&fusion);
         }
+        if (r == 0 && pl_tiene_constantes(arbol->raiz)) {
+            int q = plegar_constantes(arbol, &plegado);
+            if (q == 2) r = 2;
+            else if (analizar_transformado(&c, &plegado, principal->ruta, &tabla_plegado, 1) == 0) {
+                hay_plegado = 1;
+                arbol = &plegado;
+                tabla = &tabla_plegado;
+            }
+            /* Si el plegado no pasa la semantica se usa el AST anterior. */
+        }
+        if (r == 0) {
+            r = visitante(contexto, arbol, tabla, c.diagnosticos);
+            if (r != 0 && r != 1 && r != 2) r = 2;
+        }
+        if (hay_plegado) sim_liberar(&tabla_plegado);
+        if (hay_fusion) sim_liberar(&tabla_fusion);
+        ast_liberar(&plegado);
+        ast_liberar(&fusion);
     }
     liberar(&c);
     return r;
