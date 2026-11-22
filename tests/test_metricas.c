@@ -73,6 +73,10 @@ static void verificar_coherencia(const MetMedicion *m)
     /* main terminó: el PC está en el salto final. */
     VERIFICAR(s->pc == m->direccion_fin);
     VERIFICAR(s->traps == 0);
+    /* Tiempo de compilación (mediana): las fases caben en el total. */
+    const IdeAsmTiempos *t = &m->compilacion;
+    VERIFICAR(t->analisis > 0.0 && t->generacion > 0.0 && t->codificacion > 0.0);
+    VERIFICAR(t->analisis + t->generacion + t->codificacion <= t->total);
 }
 
 /*
@@ -112,10 +116,11 @@ int main(int argc, char **argv)
         VERIFICAR(m.bundles > 0 && m.direccion_fin > 0);
         if (argc > 1) VERIFICAR(m.sim.ciclos == ciclo_fin_paso_a_paso(argv[1], m.direccion_fin));
         printf("factorial: %llu ciclos, IPC %.3f, %llu instrucciones utiles, "
-               "%llu bundles NOP, fin en 0x%x\n",
+               "%llu bundles NOP, fin en 0x%x, compilacion %.3f ms\n",
                (unsigned long long)m.sim.ciclos, m.sim.ipc,
                (unsigned long long)m.sim.instrucciones_utiles,
-               (unsigned long long)m.sim.bundles_nop, (unsigned)m.direccion_fin);
+               (unsigned long long)m.sim.bundles_nop, (unsigned)m.direccion_fin,
+               m.compilacion.total);
     }
     met_liberar(&m);
 

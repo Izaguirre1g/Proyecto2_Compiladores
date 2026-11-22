@@ -12,13 +12,33 @@
  *   5. Armar el .bin completo (formato BALB: cabecera + código + datos de
  *      las constantes globales), igual que balc, pero en memoria.
  * No escribe ningún archivo .asm ni .bin.
+ *
+ * Además mide cuánto tarda cada fase (IdeAsmTiempos): el tiempo de
+ * compilación que muestran las ventanas Ensamblador y Métricas.
  */
+/* clock_gettime y CLOCK_MONOTONIC son de POSIX, no de C11: hay que pedirlos
+ * antes de incluir cualquier cabecera del sistema. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "ide_ensamblador.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+/*
+ * La hora actual en milisegundos, según el reloj MONÓTONO: siempre avanza y
+ * no salta si alguien cambia la hora del sistema. Solo sirve para restar
+ * dos momentos (cuánto tardó algo), no para saber la hora del día.
+ */
+static double ahora_ms(void)
+{
+    struct timespec t;
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0.0;
+    return (double)t.tv_sec * 1000.0 + (double)t.tv_nsec / 1e6;
+}
 
 #include "cli.h"
 #include "codificacion_binaria.h"
@@ -49,6 +69,8 @@ typedef struct {
     const char *explicacion; /* Si la asignación de memoria falló: por qué, en español. */
     FbDatos *datos;         /* Valores iniciales de las globales, para el .bin (paso 5).
                              * Se piden aquí porque el AST se libera al salir del visitante. */
+    double entrada_ms;      /* Cuándo entró al visitante: ahí terminó el análisis. */
+    double salida_ms;       /* Cuándo salió: ahí terminó la generación. */
 } Contexto;
 
 /*
@@ -74,16 +96,13 @@ static const char *explicar_memoria(MemProyectoResultado r)
 }
 
 /*
- * Lo llama el análisis semántico cuando el programa es válido. Son los
- * mismos pasos que compilar_proyecto() de cli.c.
+ * El backend: los mismos pasos que compilar_proyecto() de cli.c.
  * Devuelve 0 si se generó; 1 si el backend no pudo (el motivo queda en
  * "diag"); 2 si faltó memoria.
  */
-static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
+static int generar(Contexto *c, const Ast *arbol, SimTabla *tabla, FILE *diag)
 {
-    Contexto *c = datos;
     IdeEnsamblador *s = c->salida;
-    c->llego = 1;
 
     /* Memoria: globales desde gp y la pila desde su tope hacia abajo. */
     MemProyectoMapa mapa = {0};
@@ -127,6 +146,21 @@ static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
     s->funciones = resumen.funciones;
     s->saltos = resumen.saltos.saltos;
     s->reescritos = resumen.saltos.relajados;
+    return estado;
+}
+
+/*
+ * Lo llama el análisis semántico cuando el programa es válido. Anota el
+ * momento en que entra (fin del análisis) y en que sale (fin de la
+ * generación), y entre los dos hace el backend.
+ */
+static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
+{
+    Contexto *c = datos;
+    c->llego = 1;
+    c->entrada_ms = ahora_ms();
+    int estado = generar(c, arbol, tabla, diag);
+    c->salida_ms = ahora_ms();
     return estado;
 }
 
@@ -210,6 +244,7 @@ static char *copiar(const char *s)
 int ide_ensamblador_generar(const char *texto, size_t largo, const char *ruta, IdeEnsamblador *s)
 {
     memset(s, 0, sizeof *s);
+    const double inicio_ms = ahora_ms();   /* Para el tiempo total de compilación. */
 
     /* Paso 1: el texto del editor, en el archivo temporal. */
     char *temporal = ide_ruta_temporal(ruta);
@@ -224,10 +259,17 @@ int ide_ensamblador_generar(const char *texto, size_t largo, const char *ruta, I
     FbDatos *datos = malloc(sizeof *datos);
     FILE *diag = datos != NULL ? tmpfile() : NULL;
     if (diag != NULL) {
-        Contexto c = {s, 0, 0, NULL, datos};
+        Contexto c = {s, 0, 0, NULL, datos, 0.0, 0.0};
+        const double analisis_ms = ahora_ms();
         int resultado = sem_visitar_proyecto(temporal, diag, visitante, &c);
+        /* Análisis: desde que empieza hasta que el semántico llama al
+         * visitante. Si no lo llamó (hay errores), hasta que terminó. */
+        s->tiempos.analisis = (c.llego ? c.entrada_ms : ahora_ms()) - analisis_ms;
+        if (c.llego) s->tiempos.generacion = c.salida_ms - c.entrada_ms;
         if (resultado == 0 && c.llego) {
+            const double codificacion_ms = ahora_ms();
             int codificado = codificar(s, datos, diag);
+            s->tiempos.codificacion = ahora_ms() - codificacion_ms;
             if (codificado == 0) {
                 s->estado = IDE_ASM_LISTO;
                 estado = 0;
@@ -264,6 +306,7 @@ int ide_ensamblador_generar(const char *texto, size_t largo, const char *ruta, I
     free(datos);
     remove(temporal);
     free(temporal);
+    s->tiempos.total = ahora_ms() - inicio_ms;
     if (estado != 0) ide_ensamblador_liberar(s);
     return estado;
 }

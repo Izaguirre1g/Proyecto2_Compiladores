@@ -4,6 +4,8 @@
  * Pasos de met_medir:
  *   1. Generar el ensamblador y el .bin con el botón Ensamblador
  *      (ide_ensamblador_generar): es el mismo binario que hace balc.
+ *      Se compila MET_COMPILACIONES veces para medir el tiempo de
+ *      compilación (la mediana: ver medir_compilacion).
  *   2. Buscar en el ensamblador la dirección del salto final del arranque
  *      (sye x0,0: un salto a sí mismo).
  *   3. Escribir el .bin en un archivo temporal oculto, porque el simulador
@@ -195,6 +197,35 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
     return resultado;
 }
 
+/* Orden de qsort: de la compilación más rápida a la más lenta (por el total). */
+static int comparar_tiempos(const void *a, const void *b)
+{
+    double x = ((const IdeAsmTiempos *)a)->total, y = ((const IdeAsmTiempos *)b)->total;
+    return (x > y) - (x < y);
+}
+
+/*
+ * Tiempo de compilación: "primera" es la compilación que ya se hizo; se
+ * compila MET_COMPILACIONES - 1 veces más (solo para medir) y se toma la
+ * corrida MEDIANA por tiempo total, con sus fases. Así las fases suman lo
+ * mismo que ese total. Devuelve 0 bien, -1 si una compilación falló.
+ */
+static int medir_compilacion(const char *texto, size_t largo, const char *ruta,
+                             const IdeAsmTiempos *primera, IdeAsmTiempos *mediana)
+{
+    IdeAsmTiempos corridas[MET_COMPILACIONES];
+    corridas[0] = *primera;
+    for (int i = 1; i < MET_COMPILACIONES; ++i) {
+        IdeEnsamblador otra;
+        if (ide_ensamblador_generar(texto, largo, ruta, &otra) != 0) return -1;
+        corridas[i] = otra.tiempos;
+        ide_ensamblador_liberar(&otra);
+    }
+    qsort(corridas, MET_COMPILACIONES, sizeof corridas[0], comparar_tiempos);
+    *mediana = corridas[MET_COMPILACIONES / 2];
+    return 0;
+}
+
 int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presupuesto,
               MetMedicion *m)
 {
@@ -208,6 +239,12 @@ int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presup
         m->estado = MET_CON_ERRORES;
         ide_ensamblador_liberar(&a);
         return 0;
+    }
+    /* El tiempo de compilación (solo si el programa es válido: con errores
+     * la compilación se detiene en el semántico y no hay nada que medir). */
+    if (medir_compilacion(texto, largo, ruta, &a.tiempos, &m->compilacion) != 0) {
+        ide_ensamblador_liberar(&a);
+        return -1;
     }
     if (a.estado == IDE_ASM_SIN_BACKEND) {
         m->estado = MET_SIN_BACKEND;

@@ -84,6 +84,13 @@ static void prueba_texto_sin_guardar(void)
     VERIFICAR(a.ensamblador != NULL && strstr(a.ensamblador, "# __arranque:") != NULL);
     VERIFICAR(a.ensamblador != NULL && strstr(a.ensamblador, "# __fn_main:") != NULL);
     VERIFICAR(a.funciones == 1);
+    /* El tiempo de compilación: cada fase tardó algo, y las tres caben en el
+     * total (que además incluye escribir y borrar el archivo temporal). */
+    const IdeAsmTiempos *t = &a.tiempos;
+    VERIFICAR(t->analisis > 0.0 && t->generacion > 0.0 && t->codificacion > 0.0);
+    VERIFICAR(t->analisis + t->generacion + t->codificacion <= t->total);
+    printf("compilacion: %.3f ms (analisis %.3f, generacion %.3f, codificacion %.3f)\n",
+           t->total, t->analisis, t->generacion, t->codificacion);
     ide_ensamblador_liberar(&a);
 }
 
@@ -95,6 +102,9 @@ static void prueba_con_errores(void)
     VERIFICAR(ide_ensamblador_generar(texto, strlen(texto), "examples/dce/editor.bal", &a) == 0);
     VERIFICAR(a.estado == IDE_ASM_CON_ERRORES);
     VERIFICAR(a.ensamblador == NULL);
+    /* Con errores solo corre el análisis: no hay generación ni codificación. */
+    VERIFICAR(a.tiempos.analisis > 0.0 && a.tiempos.generacion == 0.0 && a.tiempos.codificacion == 0.0);
+    VERIFICAR(a.tiempos.analisis <= a.tiempos.total);
     ide_ensamblador_liberar(&a);
 }
 
