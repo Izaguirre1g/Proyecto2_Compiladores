@@ -156,13 +156,15 @@ static double dato(const IdeOptNivel *n, int simulado, double valor)
 /* Pestaña "Comparación": la gráfica de los tres niveles. */
 static GtkWidget *pestana_comparacion(const IdeOptimizacion *r)
 {
-    MetFilaComparacion filas[7];
+    MetFilaComparacion filas[8];
     memset(filas, 0, sizeof filas);
-    const char *nombres[7] = {"Ciclos", "Instrucciones ejecutadas", "IPC (instrucciones por ciclo)",
-                              "Bundles solo NOP ejecutados", "Tamaño del programa (bundles)",
-                              "Tamaño del código (bytes)", "Tiempo de compilación (ms)"};
-    const int decimales[7] = {-1, -1, 3, -1, -1, -1, 3};
-    for (int f = 0; f < 7; ++f) {
+    /* Las 4 primeras salen del simulador; las demás, del programa compilado. */
+    const char *nombres[8] = {"Ciclos", "Instrucciones ejecutadas", "IPC (instrucciones por ciclo)",
+                              "Bundles solo NOP ejecutados", "Instrucciones en el código",
+                              "Tamaño del programa (bundles)", "Tamaño del código (bytes)",
+                              "Tiempo de compilación (ms)"};
+    const int decimales[8] = {-1, -1, 3, -1, -1, -1, -1, 3};
+    for (int f = 0; f < 8; ++f) {
         filas[f].nombre = nombres[f];
         filas[f].decimales = decimales[f];
         filas[f].etiqueta_corta[1] = "-O1";
@@ -170,8 +172,9 @@ static GtkWidget *pestana_comparacion(const IdeOptimizacion *r)
         for (int i = 0; i < 3; ++i) {
             const IdeOptNivel *n = nivel_i(r, i);
             const SimMetricasResumen *m = &n->simulacion.sim;
-            double v[7] = {(double)m->ciclos, (double)m->instrucciones_utiles, m->ipc, (double)m->bundles_nop,
-                           (double)n->bundles, (double)n->bundles * MET_BYTES_BUNDLE, n->tiempos.total};
+            double v[8] = {(double)m->ciclos, (double)m->instrucciones_utiles, m->ipc, (double)m->bundles_nop,
+                           (double)n->instrucciones, (double)n->bundles,
+                           (double)n->bundles * MET_BYTES_BUNDLE, n->tiempos.total};
             filas[f].valor[i] = dato(n, f < 4, v[f]);
         }
     }
@@ -179,11 +182,72 @@ static GtkWidget *pestana_comparacion(const IdeOptimizacion *r)
                                "-O2 (IR optimizada + cadena VLIW)"};
     gchar *sub = g_strdup_printf("Cada fila tiene su propia escala. Debajo del nombre: cuánto cambia cada nivel "
                                  "respecto de -O0. Tiempo: mediana de %d compilaciones", MET_COMPILACIONES);
-    GtkWidget *g = met_grafica_comparacion("-O0, -O1 y -O2", sub, leyendas, 3, filas, 7);
+    GtkWidget *g = met_grafica_comparacion("-O0, -O1 y -O2", sub, leyendas, 3, filas, 8);
     g_free(sub);
     GtkWidget *recuadro = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(recuadro), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(recuadro), g);
+    return recuadro;
+}
+
+/* Un valor que solo existe si el nivel compiló (si no, NAN: "no disponible"). */
+static double si_compilo(const IdeOptNivel *n, size_t valor)
+{
+    return n->compilado ? (double)valor : NAN;
+}
+
+/*
+ * Pestaña "Instrucciones": el efecto de cada optimización sobre la cantidad
+ * de instrucciones, en dos gráficas (lo que pide la sección 6 del enunciado:
+ * conteo antes/después e instrucciones eliminadas, reordenadas y renombradas).
+ */
+static GtkWidget *pestana_instrucciones(const IdeOptimizacion *r)
+{
+    GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+    /* 1. Instrucciones de la IR antes y después de optimizar. */
+    MetFilaComparacion ir[3];
+    memset(ir, 0, sizeof ir);
+    ir[0].nombre = "-O1 · DCE";
+    ir[0].valor[0] = si_compilo(&r->o1, r->o1_ir_antes);
+    ir[0].valor[1] = si_compilo(&r->o1, r->o1_ir_despues);
+    ir[1].nombre = "-O2 · pasadas 1 a 4";
+    ir[1].valor[0] = si_compilo(&r->o2, r->o2_ir_antes);
+    ir[1].valor[1] = si_compilo(&r->o2, r->o2_ir_despues);
+    ir[2].nombre = "-O2 · con el spilling";
+    ir[2].valor[0] = si_compilo(&r->o2, r->o2_ir_antes);
+    ir[2].valor[1] = si_compilo(&r->o2, r->o2_ir_spilling);
+    for (int i = 0; i < 3; ++i) ir[i].decimales = -1;
+    const char *leyendas_ir[2] = {"Antes de optimizar", "Después de optimizar"};
+    gtk_box_pack_start(GTK_BOX(caja), met_grafica_comparacion(
+        "Instrucciones de la IR antes y después",
+        "Instrucciones de tres direcciones. El unrolling y el spilling pueden subir el conteo",
+        leyendas_ir, 2, ir, 3), FALSE, FALSE, 0);
+
+    /* 2. Cuántas instrucciones tocó cada optimización. */
+    MetFilaComparacion cambios[6];
+    memset(cambios, 0, sizeof cambios);
+    const char *nombres[6] = {"-O1 · eliminadas (DCE)", "-O2 · eliminadas (DCE)",
+                              "-O2 · reordenadas", "-O2 · renombradas",
+                              "-O2 · WAR y WAW quitadas", "-O2 · a la pila (spilling)"};
+    double valores[6] = {si_compilo(&r->o1, r->o1_eliminadas_ir), si_compilo(&r->o2, r->dce),
+                         si_compilo(&r->o2, r->reordenadas), si_compilo(&r->o2, r->renombradas),
+                         si_compilo(&r->o2, r->war_eliminadas + r->waw_eliminadas),
+                         si_compilo(&r->o2, r->spills)};
+    for (int i = 0; i < 6; ++i) {
+        cambios[i].nombre = nombres[i];
+        cambios[i].valor[0] = valores[i];
+        cambios[i].decimales = -1;
+    }
+    const char *leyenda_cambios[1] = {"Instrucciones"};
+    gtk_box_pack_start(GTK_BOX(caja), met_grafica_comparacion(
+        "Instrucciones eliminadas, reordenadas y renombradas",
+        "Lo que hizo cada optimización con la IR. Todas las barras con la misma escala",
+        leyenda_cambios, 1, cambios, 6), TRUE, TRUE, 0);
+
+    GtkWidget *recuadro = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(recuadro), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(recuadro), caja);
     return recuadro;
 }
 
@@ -389,6 +453,7 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
 
     GtkWidget *pestanas = gtk_notebook_new();
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_comparacion(r), gtk_label_new("Comparación"));
+    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_instrucciones(r), gtk_label_new("Instrucciones"));
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_pasadas(r), gtk_label_new("Qué hace cada nivel"));
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_resultado(r), gtk_label_new("Resultado de main"));
     GtkWidget *asm_niveles[3];

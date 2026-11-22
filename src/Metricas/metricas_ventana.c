@@ -46,9 +46,9 @@ static const Color SERIES[MAX_SERIES] = {COLOR(0x3987E5),  /* Azul: serie 1. */
 /* Una gráfica de barras horizontales                                 */
 /* ------------------------------------------------------------------ */
 
-/* La gráfica más larga es "Antes y después del DCE": ciclos, instrucciones,
- * bundles NOP, IPC, tamaño en bundles, tamaño en bytes y tiempo de compilación. */
-#define MAX_FILAS 7
+/* Las gráficas más largas: "Antes y después del DCE" (7 filas) y la
+ * comparación de niveles -O0/-O1/-O2 (8 filas). */
+#define MAX_FILAS 8
 
 /* Una fila: su nombre y una barra por serie (1 a MAX_SERIES). */
 typedef struct {
@@ -489,7 +489,13 @@ GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
         snprintf(p->leyendas[s], sizeof p->leyendas[s], "%s", leyendas[s]);
         g->leyenda[s] = p->leyendas[s];
     }
-    g->escala_por_fila = 1;
+    /* Con 2 o 3 series se compara la barra de cada serie dentro de su fila
+     * (cada fila con su escala). Con una sola serie se comparan las filas
+     * entre sí: todas con la misma escala, la del valor más grande. */
+    g->escala_por_fila = series > 1;
+    g->maximo = 0;
+    for (int i = 0; i < cantidad && i < MAX_FILAS; ++i)
+        if (!isnan(filas[i].valor[0])) g->maximo = fmax(g->maximo, filas[i].valor[0]);
     for (int i = 0; i < cantidad && i < MAX_FILAS; ++i) {
         const MetFilaComparacion *e = &filas[i];
         Fila *f = &g->filas[g->cantidad++];

@@ -71,6 +71,12 @@ static void verificar_los_dos(const char *ruta, const IdeOptimizacion *r)
               r->o2.simulacion.estado == MET_LISTO);
     VERIFICAR(r->mismo_o1 == 1 && r->mismo_o2 == 1 && r->mismo_resultado == 1);
     VERIFICAR(r->o1_codigo != NULL && r->o1.tiempos.total > 0.0);
+    /* Conteos de instrucciones (pestaña Instrucciones): cada nivel tiene
+     * instrucciones en su código, y hay IR antes y después de optimizar. */
+    VERIFICAR(r->o0.instrucciones > 0 && r->o1.instrucciones > 0 && r->o2.instrucciones > 0);
+    VERIFICAR(r->o0.instrucciones <= r->o0.bundles * 4);
+    VERIFICAR(r->o1_ir_antes > 0 && r->o1_ir_despues <= r->o1_ir_antes);
+    VERIFICAR(r->o2_ir_antes > 0 && r->o2_ir_despues > 0 && r->o2_ir_spilling > 0);
     VERIFICAR(r->o0.bundles > 0 && r->o2.bundles > 0);
     VERIFICAR(r->o0.simulacion.sim.ciclos > 0 && r->o2.simulacion.sim.ciclos > 0);
     VERIFICAR(r->o0.tiempos.total > 0.0 && r->o2.tiempos.total > 0.0);
@@ -107,6 +113,10 @@ int main(void)
     VERIFICAR(r.o1_cambio && r.o1_eliminadas_ir > 0 && r.o1_borradas > 0);
     VERIFICAR(valor(&r.o1, "resultados") && strcmp(valor(&r.o1, "resultados"), "[16, 15]") == 0);
     VERIFICAR(r.o1.bundles < r.o0.bundles);
+    /* El DCE de -O1 quita instrucciones de la IR y del código. */
+    VERIFICAR(r.o1_ir_despues < r.o1_ir_antes);
+    VERIFICAR(r.o1_ir_antes - r.o1_ir_despues == r.o1_eliminadas_ir);
+    VERIFICAR(r.o1.instrucciones < r.o0.instrucciones);
     VERIFICAR(r.o1.simulacion.sim.ciclos < r.o0.simulacion.sim.ciclos);
     ide_optimizacion_liberar(&r);
 

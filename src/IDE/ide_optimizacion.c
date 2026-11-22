@@ -94,6 +94,41 @@ static char *primer_error(const char *texto)
     return NULL;
 }
 
+/*
+ * Cuántas instrucciones tiene un ensamblador VLIW sin contar los NOP. Cada
+ * línea que no es comentario ni etiqueta es un bundle con sus slots
+ * separados por '|'; se cuenta cada slot que no es "nop":
+ *     sumai x3,x0,0 | nop | nop | nop     -> 1
+ *     nop                                 -> 0 (bundle vacío)
+ *     __vliw_b1:                          -> etiqueta, no es un bundle
+ */
+static size_t contar_instrucciones(const char *ensamblador)
+{
+    size_t total = 0;
+    for (const char *linea = ensamblador; linea != NULL && *linea != '\0';) {
+        size_t largo = strcspn(linea, "\n");
+        size_t codigo = strcspn(linea, "#\n");       /* Sin el comentario del final. */
+        size_t inicio = strspn(linea, " \t");
+        int etiqueta = codigo > 0 && linea[codigo - 1] == ':';
+        if (inicio < codigo && !etiqueta) {
+            /* Recorre los slots: [inicio, codigo) separados por '|'. */
+            size_t a = inicio;
+            while (a < codigo) {
+                size_t b = a;
+                while (b < codigo && linea[b] != '|') b++;
+                size_t i = a, j = b;
+                while (i < j && (linea[i] == ' ' || linea[i] == '\t')) i++;
+                while (j > i && (linea[j - 1] == ' ' || linea[j - 1] == '\t')) j--;
+                if (j > i && !(j - i == 3 && strncmp(linea + i, "nop", 3) == 0)) total++;
+                a = b + 1;
+            }
+        }
+        linea += largo;
+        if (*linea == '\n') linea++;
+    }
+    return total;
+}
+
 /* Imprime una IR en un texto propio (NULL si falló). */
 static char *texto_de_ir(const IrPrograma *ir)
 {
@@ -137,6 +172,7 @@ typedef struct {
     size_t cantidad_variables;
     size_t dce, unroll, renombradas, reordenadas, spills, cargas, guardados, generaciones;
     size_t war, waw;
+    size_t ir_antes_cant, ir_despues_cant, ir_spilling_cant;   /* Instrucciones de cada IR. */
     char *ir_antes, *ir_despues, *ir_spilling;
     double entrada_ms, salida_ms;   /* Para el tiempo de cada fase. */
 } CompilacionO2;
@@ -217,6 +253,9 @@ static int visitante_o2(void *datos, const Ast *arbol, SimTabla *tabla, FILE *di
         c->cargas = r.metricas.cargas;
         c->guardados = r.metricas.almacenes;
         c->generaciones = r.generaciones;
+        c->ir_antes_cant = r.original.cantidad;
+        c->ir_despues_cant = r.optimizada.cantidad;
+        c->ir_spilling_cant = r.spilling.cantidad;
         c->ir_antes = texto_de_ir(&r.original);
         c->ir_despues = texto_de_ir(&r.optimizada);
         c->ir_spilling = texto_de_ir(&r.spilling);
@@ -296,6 +335,7 @@ typedef struct {
     char *motivo;              /* Si listo es 0: por qué no. */
     char *codigo;              /* El código que se compila (el nuevo o, sin cambios, el original). */
     size_t eliminadas, borradas, cambiadas, conservadas;
+    size_t ir_antes, ir_despues;   /* Instrucciones de la IR antes y después del DCE. */
     int cambio;                /* 1 si "codigo" es distinto del original. */
 } PreparacionO1;
 
@@ -334,6 +374,8 @@ static int preparar_o1(const char *texto, size_t largo, const char *ruta, Prepar
         p->listo = 1;
         p->codigo = dce.codigo_nuevo != NULL ? copiar(dce.codigo_nuevo) : copiar(texto);
         p->eliminadas = dce.resultado.cantidad_eliminadas;
+        p->ir_antes = dce.resultado.instrucciones_antes;
+        p->ir_despues = dce.resultado.instrucciones_despues;
         p->borradas = dce.sentencias_borradas;
         p->cambiadas = dce.sentencias_cambiadas;
         p->conservadas = dce.sentencias_conservadas;
@@ -542,6 +584,7 @@ static int nivel_tradicional(IdeOptNivel *n, const char *codigo, const char *tex
         n->ensamblador = a.ensamblador;      /* Se adueña de los textos de "a". */
         a.ensamblador = NULL;
         n->bundles = a.bundles;
+        n->instrucciones = contar_instrucciones(n->ensamblador);
         n->marco_main = a.marco_main;
         n->variables = a.variables;
         n->cantidad_variables = a.cantidad_variables;
@@ -590,6 +633,8 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
             r->o1_borradas = p.borradas;
             r->o1_cambiadas = p.cambiadas;
             r->o1_conservadas = p.conservadas;
+            r->o1_ir_antes = p.ir_antes;
+            r->o1_ir_despues = p.ir_despues;
             r->o1_cambio = p.cambio;
             r->o1_codigo = p.codigo;
             p.codigo = NULL;
@@ -612,6 +657,7 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
             o2->ensamblador = c.ensamblador;
             c.ensamblador = NULL;
             o2->bundles = c.bundles;
+            o2->instrucciones = contar_instrucciones(o2->ensamblador);
             o2->marco_main = c.marco_main;
             o2->variables = c.variables;
             o2->cantidad_variables = c.cantidad_variables;
@@ -626,6 +672,9 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
             r->cargas_spill = c.cargas;
             r->guardados_spill = c.guardados;
             r->generaciones = c.generaciones;
+            r->o2_ir_antes = c.ir_antes_cant;
+            r->o2_ir_despues = c.ir_despues_cant;
+            r->o2_ir_spilling = c.ir_spilling_cant;
             r->ir_antes = c.ir_antes;
             r->ir_despues = c.ir_despues;
             r->ir_spilling = c.ir_spilling;

@@ -52,6 +52,8 @@ typedef struct {
     char *motivo;             /* Si compilado es 0: por qué no (en español). */
     char *ensamblador;        /* El .asm del nivel. */
     size_t bundles;           /* Bundles del programa. */
+    size_t instrucciones;     /* Instrucciones del programa sin contar los NOP (conteo
+                               * estático, en el ensamblador: lo que ocupa código). */
     IdeAsmTiempos tiempos;    /* Tiempo de compilación por fase (mediana). */
     MetMedicion simulacion;   /* Métricas del simulador hasta que main termina. */
     size_t marco_main;        /* Bytes del marco de main (para leer sus variables). */
@@ -68,6 +70,10 @@ typedef struct {
     size_t o1_borradas, o1_cambiadas, o1_conservadas;  /* Sentencias del código BAL. */
     int o1_cambio;                  /* 1 si el código que se compiló es distinto del original. */
     char *o1_codigo;                /* El código BAL que compila -O1 (sin el código muerto). */
+    /* Instrucciones de la IR antes y después de optimizar (conteo estático). */
+    size_t o1_ir_antes, o1_ir_despues;           /* -O1: antes y después del DCE. */
+    size_t o2_ir_antes, o2_ir_despues;           /* -O2: antes y después de las pasadas 1 a 4. */
+    size_t o2_ir_spilling;                       /* -O2: después del spilling (pasada 5). */
     /* Lo que hizo cada pasada de -O2 (lo mismo que imprime "balc -O2"). */
     size_t dce, unroll, renombradas, reordenadas;
     size_t war_eliminadas, waw_eliminadas;   /* Dependencias que quitó el renombramiento. */

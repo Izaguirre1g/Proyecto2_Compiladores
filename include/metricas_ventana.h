@@ -39,8 +39,10 @@ typedef struct {
 /*
  * Una gráfica de barras que compara 2 o 3 series fila por fila (cada fila
  * con su propia escala), como "Antes y después del DCE". Debajo del nombre
- * de cada fila va cuánto cambia cada serie respecto de la primera. Máximo 7
- * filas. Los textos se copian. La usa la ventana de niveles -O0 / -O1 / -O2.
+ * de cada fila va cuánto cambia cada serie respecto de la primera. Con UNA
+ * serie, todas las filas usan la misma escala (se comparan entre sí).
+ * Máximo 8 filas. Los textos se copian. La usa la ventana de niveles
+ * -O0 / -O1 / -O2.
  */
 GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
                                    const char *const *leyendas, int series,
