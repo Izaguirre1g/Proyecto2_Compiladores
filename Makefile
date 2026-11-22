@@ -88,7 +88,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-optimizacion test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -826,11 +826,12 @@ GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
 ide: balc-ide
 
-# ir_defuse.c llega dos veces: en IDE_RO_SRC (para test_ide_reordenamiento) y
-# en IDE_DCE_SRC (Makefile.ir_defuse.mk). Se enlaza una sola vez: si no, el
-# enlazador da "multiple definition".
+# Las listas de fuentes repiten archivos (por ejemplo ir_defuse.c está en
+# IDE_RO_SRC y en IDE_DCE_SRC, y el botón -O0 / -O2 usa casi todo balc):
+# $(sort ...) las ordena y deja cada archivo UNA vez; si no, el enlazador da
+# "multiple definition". IDE_OPT_SRC se define al final de este Makefile.
 balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c include/ide_reordenamiento.h include/ide_reordenamiento_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(IDE)/ide_gtk.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(filter-out $(IR)/ir_defuse.c,$(IDE_RO_SRC)) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) -o $@ $(GTK_LIBS) -lm
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(sort $(IDE)/ide_gtk.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) $(IDE_OPT_SRC)) -o $@ $(GTK_LIBS) -lm
 
 # Eliminacion de codigo muerto (DCE) con analisis de variables vivas, sobre
 # la IR. La prueba arma la IR desde programas BAL (examples/dce/) con el parser,
@@ -927,3 +928,21 @@ balc: src/ir_vliw_programa.c include/ir_vliw_programa.h
 # Versionado virtual local: paso separado del spilling y del banco físico.
 SRC += src/ir_renombramiento.c
 balc: src/ir_renombramiento.c include/ir_renombramiento.h
+
+# Botón -O0 / -O2 del IDE (src/IDE/ide_optimizacion.c): compila con -O2 igual
+# que balc (ir_vliw_programa), así que necesita las mismas fuentes que balc,
+# sin su main ni la línea de comandos. Va AL FINAL porque SRC se completa con
+# los "+=" de arriba y de los Makefile.*.mk incluidos. Es "=" (no ":="): se
+# expande cuando se usa, con SRC ya completa.
+IDE_OPT_SRC = $(IDE)/ide_optimizacion.c $(IDE)/ide_optimizacion_ventana.c \
+	$(filter-out $(CLI)/main.c $(CLI)/cli.c tools/vliw/optimizacion_cli.c,$(SRC))
+balc-ide: $(IDE_OPT_SRC) include/ide_optimizacion.h include/ide_optimizacion_ventana.h
+
+# La prueba, sin ventanas: compara -O0 y -O2 en el simulador.
+IDE_OPT_PRUEBA_SRC = $(sort $(IDE)/ide_optimizacion.c $(MET_SRC) $(SIM_SRC) \
+	$(filter-out $(CLI)/main.c $(CLI)/cli.c tools/vliw/optimizacion_cli.c,$(SRC)))
+tests/test_ide_optimizacion: tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h include/metricas.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+.PHONY: test-ide-optimizacion
+test-ide-optimizacion: tests/test_ide_optimizacion
+	./tests/test_ide_optimizacion

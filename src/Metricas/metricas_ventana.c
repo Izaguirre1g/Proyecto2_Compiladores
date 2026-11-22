@@ -460,6 +460,34 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
     fila_dce(g, "Tiempo de compilación (ms)", antes->compilacion.total, despues->compilacion.total, 3);
 }
 
+/* La gráfica de met_grafica_comparacion: dueña de sus leyendas, para que
+ * no dependan de quien la pidió. Se libera cuando se destruye el widget. */
+typedef struct {
+    Grafica g;
+    char leyendas[2][96];
+} GraficaPropia;
+
+GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
+                                   const char *leyenda0, const char *leyenda1,
+                                   const MetFilaComparacion *filas, int cantidad)
+{
+    GraficaPropia *p = g_new0(GraficaPropia, 1);
+    Grafica *g = &p->g;
+    snprintf(g->titulo, sizeof g->titulo, "%s", titulo);
+    snprintf(g->subtitulo, sizeof g->subtitulo, "%s", subtitulo);
+    snprintf(p->leyendas[0], sizeof p->leyendas[0], "%s", leyenda0);
+    snprintf(p->leyendas[1], sizeof p->leyendas[1], "%s", leyenda1);
+    g->series = 2;
+    g->leyenda[0] = p->leyendas[0];
+    g->leyenda[1] = p->leyendas[1];
+    g->escala_por_fila = 1;
+    for (int i = 0; i < cantidad && i < MAX_FILAS; ++i)
+        fila_dce(g, filas[i].nombre, filas[i].valor[0], filas[i].valor[1], filas[i].decimales);
+    GtkWidget *area = widget_grafica(g);
+    g_object_set_data_full(G_OBJECT(area), "grafica", p, g_free);
+    return area;
+}
+
 /* Mide el código del editor y, si tiene código muerto, también el código
  * sin él (el mismo que da "Aplicar al código" del botón Código muerto). */
 static void calcular(Datos *d, const char *texto, const char *ruta)

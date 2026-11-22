@@ -29,9 +29,14 @@
 #include "ide_analisis.h"
 #include "ide_ensamblador.h"
 
-/* Cada cuántos ciclos se revisa el PC en el paso 4. Conviene que no sea
- * múltiplo de 3 (ver llego_al_fin). */
-#define MET_TRAMO 1000u
+/* Cada cuántos ciclos se revisa el PC en el paso 4. Es PRIMO: el ciclo
+ * final dura pocos ciclos (3 en -O0, 5 en -O2), y si el tramo fuera su
+ * múltiplo, cada revisión vería el PC siempre en el mismo punto del ciclo. */
+#define MET_TRAMO 997u
+
+/* Cuántos ciclos seguidos tiene que quedarse el PC en el ciclo final para
+ * aceptar que main terminó (ver sigue_en_el_fin). */
+#define MET_SOSTENIDO 40u
 
 /* Copia una cadena (NULL si falta memoria). */
 static char *copiar(const char *s)
@@ -85,18 +90,18 @@ static int buscar_fin(const char *ensamblador, uint32_t *direccion)
 }
 
 /*
- * El PC ya pasó por el salto final. Cuando main termina, el procesador
- * repite para siempre tres ciclos:
- *     busca el salto final       -> después el PC queda en fin + 16
- *     busca el bundle siguiente  -> después el PC queda en fin + 32
- *     el salto se ejecuta        -> después el PC vuelve a fin
- * fin + 32 no se usa como señal, porque ahí puede empezar main (el código
- * que se ejecuta ANTES de terminar). Como MET_TRAMO no es múltiplo de 3,
- * en dos revisiones seguidas el PC no cae las dos veces en fin + 32.
+ * ¿Está el PC dentro del ciclo final? Cuando main termina, el procesador
+ * repite para siempre el ciclo final del arranque:
+ *   -O0: busca fin, fin + 16 y fin + 32, y el salto lo regresa a fin;
+ *   -O2: busca fin ... fin + 64 (5 bundles) y vuelve a fin.
+ * Ojo: el PC también puede pasar UNA vez por esas direcciones sin que main
+ * haya terminado (en -O2, al arrancar, el procesador busca el bundle de
+ * fin antes de que la llamada a main se ejecute). Por eso no basta con
+ * verlo una vez: ver sigue_en_el_fin.
  */
-static int llego_al_fin(uint32_t pc, uint32_t fin)
+static int llego_al_fin(uint32_t pc, uint32_t fin, uint32_t ancho)
 {
-    return pc == fin || pc == fin + MET_BYTES_BUNDLE;
+    return pc >= fin && pc <= fin + ancho;
 }
 
 /* Explicación de un error del pipeline (sim_pipeline.h). */
@@ -131,17 +136,38 @@ static int revisar(const SimEjecucion *e, SimPipelineEstado *pipeline)
 }
 
 /*
+ * ¿Se queda el PC en el ciclo final durante MET_SOSTENIDO ciclos? Avanza
+ * ciclo por ciclo. 1 si se quedó (main terminó de verdad), 0 si salió (era
+ * un paso de una sola vez) o -1 si el simulador falló.
+ */
+static int sigue_en_el_fin(SimEjecucion *e, uint32_t fin, uint32_t ancho, SimPipelineEstado *pipeline)
+{
+    SimMetricasResumen r;
+    for (unsigned i = 0; i < MET_SOSTENIDO; ++i) {
+        sim_ejecucion_avanzar(e);
+        if (revisar(e, pipeline) != 0 || sim_ejecucion_resultados(e, &r) != SIM_METRICAS_OK) return -1;
+        if (*pipeline == SIM_PIPE_TERMINADO) return 1;
+        if (!llego_al_fin(r.pc, fin, ancho)) return 0;
+    }
+    return 1;
+}
+
+/*
  * Pasos 4 y 5. Corre "ruta" y deja en m->sim las métricas hasta el primer
  * ciclo en que el PC llega al salto final (o hasta el presupuesto).
+ * Si "memoria" no es NULL, al terminar main copia ahí la memoria de datos
+ * (MET_BYTES_MEMORIA bytes): ahí quedan las variables de main.
  */
-static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipeline)
+static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipeline,
+                     uint8_t *memoria)
 {
     const uint32_t fin = m->direccion_fin;
+    const uint32_t ancho = m->ancho_fin != 0 ? m->ancho_fin : MET_ANCHO_FIN_O0;
     SimEjecucion *e = NULL;
     if (sim_ejecucion_crear(ruta, SIM_EJECUCION_BALB, SIM_BUSQUEDA_FINITA, &e, NULL) !=
         SIM_EJECUCION_OK) return CORRIDA_ERROR;
 
-    /* Paso 4: por tramos, hasta ver el PC en el salto final. */
+    /* Paso 4: por tramos, hasta ver el PC en el ciclo final y que se quede ahí. */
     SimMetricasResumen r;
     uint64_t visto = 0;   /* Ciclo de la revisión que vio el fin. */
     int estado = 0;
@@ -149,7 +175,12 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
         sim_ejecucion_ejecutar(e, MET_TRAMO);
         if ((estado = revisar(e, pipeline)) != 0) break;
         if (sim_ejecucion_resultados(e, &r) != SIM_METRICAS_OK) { estado = CORRIDA_ERROR; break; }
-        if (llego_al_fin(r.pc, fin) || *pipeline == SIM_PIPE_TERMINADO) { visto = r.ciclos; break; }
+        if (*pipeline == SIM_PIPE_TERMINADO) { visto = r.ciclos; break; }
+        if (llego_al_fin(r.pc, fin, ancho)) {
+            int queda = sigue_en_el_fin(e, fin, ancho, pipeline);
+            if (queda < 0) { estado = CORRIDA_ERROR; break; }
+            if (queda == 1) { visto = r.ciclos; break; }
+        }
         if (r.ciclos >= m->presupuesto) {
             /* No terminó: se quedan las métricas hasta aquí. */
             m->sim = r;
@@ -166,13 +197,19 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
     if (*pipeline == SIM_PIPE_TERMINADO) {
         /* El código se acabó sin llegar al salto final: son las métricas finales. */
         m->sim = r;
+        if (memoria != NULL && sim_ejecucion_memoria(e, memoria, MET_BYTES_MEMORIA) != SIM_EJECUCION_OK) {
+            sim_ejecucion_liberar(&e);
+            return CORRIDA_ERROR;
+        }
         sim_ejecucion_liberar(&e);
         return CORRIDA_FIN;
     }
 
-    /* Paso 5: desde cero otra vez. El fin está después de la revisión que
-     * NO lo vio (dos tramos atrás, por si una revisión cayó en fin + 32):
-     * se corre de un golpe hasta ahí y después ciclo por ciclo. */
+    /* Paso 5: desde cero otra vez. Como cada revisión mira todo el ciclo
+     * final, main terminó en el último tramo antes de "visto" (se dejan dos
+     * de margen): se corre de un golpe hasta ahí y después ciclo por ciclo,
+     * buscando el PRIMER ciclo con el PC en fin a partir del cual el PC ya
+     * no sale del ciclo final. */
     sim_ejecucion_liberar(&e);
     if (sim_ejecucion_crear(ruta, SIM_EJECUCION_BALB, SIM_BUSQUEDA_FINITA, &e, NULL) !=
         SIM_EJECUCION_OK) return CORRIDA_ERROR;
@@ -180,12 +217,25 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
     if (desde > 0) sim_ejecucion_ejecutar(e, desde);
 
     Corrida resultado = CORRIDA_ERROR;
-    for (uint64_t ciclo = desde; ciclo <= visto; ++ciclo) {
+    int hay_candidato = 0;            /* Ya se vio el PC en fin y sigue en el ciclo final. */
+    SimMetricasResumen candidato;     /* Las métricas de ese primer ciclo. */
+    uint64_t ciclo_candidato = 0;
+    for (uint64_t ciclo = desde; ciclo <= visto + MET_SOSTENIDO; ++ciclo) {
         if (sim_ejecucion_resultados(e, &r) != SIM_METRICAS_OK) break;
-        if (r.pc == fin) {
-            /* Primer ciclo con el PC en el salto final: main ya regresó. */
-            m->sim = r;
+        if (!llego_al_fin(r.pc, fin, ancho)) {
+            hay_candidato = 0;        /* Salió: era un paso de una sola vez. */
+        } else if (!hay_candidato && r.pc == fin) {
+            hay_candidato = 1;        /* Primer ciclo con el PC en el salto final. */
+            candidato = r;
+            ciclo_candidato = ciclo;
+        }
+        if (hay_candidato && ciclo - ciclo_candidato >= MET_SOSTENIDO) {
+            /* Se quedó: main ya había regresado en el ciclo candidato. En el
+             * ciclo final no se escribe memoria, así que es la misma de ese ciclo. */
+            m->sim = candidato;
             resultado = CORRIDA_FIN;
+            if (memoria != NULL && sim_ejecucion_memoria(e, memoria, MET_BYTES_MEMORIA) != SIM_EJECUCION_OK)
+                resultado = CORRIDA_ERROR;
             break;
         }
         sim_ejecucion_avanzar(e);
@@ -224,6 +274,59 @@ static int medir_compilacion(const char *texto, size_t largo, const char *ruta,
     return 0;
 }
 
+int met_buscar_fin(const char *ensamblador, uint32_t *direccion)
+{
+    if (ensamblador == NULL || direccion == NULL) return -1;
+    return buscar_fin(ensamblador, direccion);
+}
+
+int met_simular(const unsigned char *balb, size_t largo_balb, const char *ruta,
+                uint8_t *memoria, MetMedicion *m)
+{
+    if (balb == NULL || m == NULL) return -1;
+    if (m->presupuesto == 0) m->presupuesto = MET_PRESUPUESTO_DEFECTO;
+
+    /* Paso 3: junto al archivo, oculto: ".ide_<nombre>.bal.bin". */
+    char *temporal = ide_ruta_temporal(ruta);
+    char *bin = temporal != NULL ? malloc(strlen(temporal) + 5) : NULL;
+    int estado = -1;
+    if (bin != NULL) {
+        strcpy(bin, temporal);
+        strcat(bin, ".bin");
+        if (ide_escribir_archivo(bin, (const char *)balb, largo_balb) == 0) {
+            /* Pasos 4 y 5. */
+            SimPipelineEstado pipeline = SIM_PIPE_ACTIVO;
+            char texto_motivo[160];
+            switch (correr(bin, m, &pipeline, memoria)) {
+                case CORRIDA_FIN:
+                    m->estado = MET_LISTO;
+                    estado = 0;
+                    break;
+                case CORRIDA_PRESUPUESTO:
+                    m->estado = MET_SIN_TERMINAR;
+                    snprintf(texto_motivo, sizeof texto_motivo,
+                             "el programa no terminó en %llu ciclos (¿un ciclo infinito?)",
+                             (unsigned long long)m->presupuesto);
+                    m->motivo = copiar(texto_motivo);
+                    estado = m->motivo != NULL ? 0 : -1;
+                    break;
+                case CORRIDA_ERROR:
+                    m->estado = MET_FALLO_SIMULADOR;
+                    m->motivo = copiar(explicar_pipeline(pipeline));
+                    estado = m->motivo != NULL ? 0 : -1;
+                    break;
+                case CORRIDA_SIN_MEMORIA:
+                default:
+                    break;
+            }
+        }
+        remove(bin);
+    }
+    free(bin);
+    free(temporal);
+    return estado;
+}
+
 int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presupuesto,
               MetMedicion *m)
 {
@@ -260,44 +363,8 @@ int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presup
         return m->motivo != NULL ? 0 : -1;
     }
 
-    /* Paso 3: junto al archivo, oculto: ".ide_<nombre>.bal.bin". */
-    char *temporal = ide_ruta_temporal(ruta);
-    char *bin = temporal != NULL ? malloc(strlen(temporal) + 5) : NULL;
-    int estado = -1;
-    if (bin != NULL) {
-        strcpy(bin, temporal);
-        strcat(bin, ".bin");
-        if (ide_escribir_archivo(bin, (const char *)a.balb, a.largo_balb) == 0) {
-            /* Pasos 4 y 5. */
-            SimPipelineEstado pipeline = SIM_PIPE_ACTIVO;
-            char texto_motivo[160];
-            switch (correr(bin, m, &pipeline)) {
-                case CORRIDA_FIN:
-                    m->estado = MET_LISTO;
-                    estado = 0;
-                    break;
-                case CORRIDA_PRESUPUESTO:
-                    m->estado = MET_SIN_TERMINAR;
-                    snprintf(texto_motivo, sizeof texto_motivo,
-                             "el programa no terminó en %llu ciclos (¿un ciclo infinito?)",
-                             (unsigned long long)m->presupuesto);
-                    m->motivo = copiar(texto_motivo);
-                    estado = m->motivo != NULL ? 0 : -1;
-                    break;
-                case CORRIDA_ERROR:
-                    m->estado = MET_FALLO_SIMULADOR;
-                    m->motivo = copiar(explicar_pipeline(pipeline));
-                    estado = m->motivo != NULL ? 0 : -1;
-                    break;
-                case CORRIDA_SIN_MEMORIA:
-                default:
-                    break;
-            }
-        }
-        remove(bin);
-    }
-    free(bin);
-    free(temporal);
+    /* Pasos 3 a 5. */
+    int estado = met_simular(a.balb, a.largo_balb, ruta, NULL, m);
     ide_ensamblador_liberar(&a);
     if (estado != 0) met_liberar(m);
     return estado;
