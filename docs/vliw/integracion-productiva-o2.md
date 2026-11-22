@@ -45,8 +45,15 @@ LOAD/STORE con ancho de uno o cuatro bytes; funciones; parámetros; ARG/CALL;
 RETURN; SPILL_LOAD/STORE. Multiplicación, división, residuo y potencia reutilizan
 las expansiones del generador tradicional, no instrucciones ISA inventadas.
 
-Los errores constantes de división/residuo por cero se rechazan. Las variantes
-que fallan dinámicamente conservan las secuencias de control del backend
+Los errores constantes de división/residuo por cero y los exponentes negativos
+constantes se rechazan. El preflight propaga constantes solo dentro de regiones
+rectilíneas (COPY, operaciones unarias, suma/resta/multiplicación,
+comparaciones y booleanos); no
+propaga a través de etiquetas, saltos, argumentos, llamadas ni retornos. Así reconoce, por
+ejemplo, `neumann 0` y `neumann 1` cuando el operando llega en un temporal, sin
+suponer que una definición condicional domina un uso posterior. Los rechazos
+conservan el índice y la línea de la instrucción IR que origina el problema.
+Las variantes que fallan dinámicamente conservan las secuencias de control del backend
 tradicional; no se convierten en un HALT o trap nuevo. Una región que pueda
 fallar no participa en el versionado de escrituras retrasadas.
 
@@ -93,15 +100,19 @@ el programa. Las pruebas observan RA/SP/GP y siembran x16..31 con centinelas.
 
 `dce_eliminar()` conserva su política histórica. La variante
 `dce_eliminar_con_observables()` añade raíces prestadas a OUT en salidas de
-función. O2 acredita como observables todos los objetos nombrados de main y
-las definiciones globales. La política es uniforme y conservadora: no consulta
-IDs, resultados esperados ni categorías del manifiesto de evaluación.
+función. O2 acredita como observables los objetos escritos dentro de `main` y
+las definiciones globales. El ámbito de `main` termina explícitamente en
+`IR_END_FUNC`: una variable local de una función auxiliar no se convierte en
+observable por aparecer después de `main` en el orden de la IR. La política es
+uniforme y conservadora: no consulta IDs, resultados esperados ni categorías
+del manifiesto de evaluación.
 
 Esto impide perder un `total` final que BAL no vuelve a leer. Aún se eliminan
 escrituras reemplazadas, versiones temporales muertas y locales muertos de
 otras funciones. No se eliminan llamadas, stores ni operaciones peligrosas.
 Las cuentas DCE incluyen instrucciones introducidas por pasadas anteriores.
-Revisión requerida de José por el contrato adicional de observación.
+La regresión `o2_observables_ambito.bal` comprueba que una función auxiliar
+posterior a `main` sigue alcanzable pero su variable local muerta se elimina.
 
 ## Símbolos y reubicaciones
 
@@ -141,6 +152,19 @@ transacción conjunta frente a fallos del filesystem. Esos errores se informan.
 `tests/vliw/test_ir_vliw_programa.py` compila el backend y sondas en temporales,
 prueba valores independientes, ámbitos, recursión, cinco argumentos, globales,
 bytes adyacentes, marco lejano, capacidad, ocho registros y fallos de reserva.
+El controlador C `tests/vliw/test_ir_renombramiento.c` se compila dentro de
+un directorio temporal por `tests/vliw/test_ir_vliw_programa.py`; no se genera
+un ejecutable persistente en `tests/vliw/`. El ejecutor oficial invoca los tres
+modos de regresión sobre sus fixtures:
+
+```sh
+# Solo las tres regresiones agregadas para este contrato
+python3 tests/vliw/test_ir_vliw_programa.py -k o2_
+
+# Suite completa del productor O2
+python3 tests/vliw/test_ir_vliw_programa.py
+```
+
 El pequeño intérprete de pruebas de renombramiento solo sirve como oráculo de
 COPY/suma; no reemplaza ninguna ejecución BAL, M2 o RTL.
 

@@ -19,8 +19,11 @@ class ProgramaTests(unittest.TestCase):
         line=next(l for l in recipe.splitlines() if 'src/Linea_Comandos/main.c' in l and ' -o ' in l)
         tokens=shlex.split(line);sources=[s for s in tokens if s.endswith('.c') and s!='src/Linea_Comandos/main.c']
         flags=['-std=c11','-Wall','-Wextra','-Werror','-pedantic','-Iinclude','-Iloop_unrolling','-Ireordenamiento','-Isrc/Analisis_Lexico','-Isrc/Analisis_Sintactico','-Isrc/Generacion_Codigo']
-        cc=shlex.split(os.environ.get('CC','cc'));cls.driver=cls.dir/'nombres';cls.sonda=cls.dir/'sonda'
+        cc=shlex.split(os.environ.get('CC','cc'));cls.driver=cls.dir/'nombres';cls.productor_driver=cls.dir/'programa';cls.sonda=cls.dir/'sonda'
         subprocess.run(cc+flags+sources+['tests/vliw/test_ir_renombramiento.c','-Wl,--wrap=malloc','-Wl,--wrap=calloc','-o',str(cls.driver)],cwd=cls.root,check=True,capture_output=True)
+        # La sonda del productor tiene su propio main y contrato. No reutiliza
+        # el driver de renombramiento, cuyos modos son versiones/raices/etc.
+        subprocess.run(cc+flags+sources+['tests/vliw/test_ir_vliw_programa_driver.c','-Wl,--wrap=malloc','-Wl,--wrap=calloc','-o',str(cls.productor_driver)],cwd=cls.root,check=True,capture_output=True)
         sim=sorted(str(p.relative_to(cls.root)) for p in (cls.root/'src/Simulador_VLIW').glob('*.c'))
         subprocess.run(cc+flags+['tools/vliw/sonda_o2.c',*sim,'-o',str(cls.sonda)],cwd=cls.root,check=True,capture_output=True)
     def grupo(self,nombre):
@@ -90,8 +93,8 @@ class ProgramaTests(unittest.TestCase):
     def productor(self,grupo):
         d=Path(tempfile.mkdtemp(dir=self.dir));f=d/'caso.bal'
         f.write_text("create_funk #declare_infinite_void# main() { resultado * declare_int : 37; }")
-        p=subprocess.run([str(self.driver),grupo,str(f)],capture_output=True,text=True)
-        self.assertEqual(p.returncode,0,p.stderr)
+        p=subprocess.run([str(self.productor_driver),grupo,str(f)],capture_output=True,text=True)
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
         if p.stdout:print(p.stdout.strip(),flush=True)
     # El driver usa ocho registros y la misma cadena real, mientras el CLI
     # usa tres; así la API no queda acreditada solo para su configuración por defecto.
@@ -127,4 +130,21 @@ class ProgramaTests(unittest.TestCase):
         self.assertEqual(observables(caso,meta,datos)['cuadrado4']['direccion'],65524)
         datos[65524]=17
         with self.assertRaises(ValueError):observables(caso,meta,datos)
+    # El driver C se construye en setUpClass dentro de un temporal. No existe
+    # como tests/vliw/test_ir_renombramiento en el checkout: estas llamadas
+    # ejercitan sus nuevos modos a través del ejecutor oficial.
+    def productor_fixture(self,grupo,nombre):
+        f=self.root/'tests/vliw/fixtures'/nombre
+        p=subprocess.run([str(self.driver),grupo,str(f)],capture_output=True,text=True)
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+
+    def test_21_o2_observables_ambito(self):
+        self.productor_fixture('observables','o2_observables_ambito.bal')
+
+    def test_22_o2_division_cero_unario(self):
+        self.productor_fixture('division_cero','o2_division_cero_unario.bal')
+
+    def test_23_o2_exponente_negativo(self):
+        self.productor_fixture('exponente_negativo','o2_exponente_negativo.bal')
+
 if __name__=='__main__':unittest.main()
