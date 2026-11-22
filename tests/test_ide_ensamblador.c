@@ -109,10 +109,10 @@ static void prueba_con_errores(void)
 }
 
 /*
- * El backend todavía no soporta parámetros que sean arreglos (memory.c).
- * El IDE lo explica en español, sin confundirlo con los avisos "[OK]" del
- * semántico. Los ejemplos del DCE (examples/dce/) usan arreglos como
- * parámetros, así que caen en este caso.
+ * Arreglos de una dimensión como parámetros: balc los pasa por su dirección
+ * (mem_asignar_proyecto_referencias, en cli.c) y el IDE hace lo mismo. Los
+ * ejemplos del DCE (examples/dce/) los usan. Antes el backend no los
+ * aceptaba; ahora el IDE tiene que generar su ensamblador igual que balc.
  */
 static void prueba_parametro_arreglo(void)
 {
@@ -122,11 +122,32 @@ static void prueba_parametro_arreglo(void)
     if (texto == NULL) return;
     IdeEnsamblador a;
     VERIFICAR(ide_ensamblador_generar(texto, largo, "examples/dce/dce_llamadas.bal", &a) == 0);
-    VERIFICAR(a.estado == IDE_ASM_SIN_BACKEND);
-    VERIFICAR(a.motivo != NULL && strstr(a.motivo, "parámetros que sean arreglos") != NULL);
-    VERIFICAR(a.motivo != NULL && strstr(a.motivo, "[OK]") == NULL);
+    VERIFICAR(a.estado == IDE_ASM_LISTO);
+    VERIFICAR(a.motivo == NULL);
+    VERIFICAR(a.ensamblador != NULL && strstr(a.ensamblador, "# __fn_registrar:") != NULL);
+    VERIFICAR(a.balb != NULL && a.bundles > 0);
     ide_ensamblador_liberar(&a);
     free(texto);
+}
+
+/* Un parámetro que el backend todavía no acepta (un arreglo de dos
+ * dimensiones): el IDE lo explica en español, sin los avisos "[OK]". */
+static void prueba_parametro_no_soportado(void)
+{
+    const char *texto =
+        "create_funk #declare_int# primero(m * declare_int[][]) {\n"
+        "    give m[0][0];\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    m * declare_int[2][2] : [[1, 2], [3, 4]];\n"
+        "    x * declare_int : primero(m);\n"
+        "}\n";
+    IdeEnsamblador a;
+    VERIFICAR(ide_ensamblador_generar(texto, strlen(texto), "examples/dce/editor.bal", &a) == 0);
+    VERIFICAR(a.estado == IDE_ASM_SIN_BACKEND || a.estado == IDE_ASM_CON_ERRORES);
+    if (a.estado == IDE_ASM_SIN_BACKEND)
+        VERIFICAR(a.motivo != NULL && strstr(a.motivo, "[OK]") == NULL);
+    ide_ensamblador_liberar(&a);
 }
 
 int main(void)
@@ -136,6 +157,7 @@ int main(void)
     prueba_texto_sin_guardar();
     prueba_con_errores();
     prueba_parametro_arreglo();
+    prueba_parametro_no_soportado();
 
     if (fallos > 0) {
         fprintf(stderr, "test_ide_ensamblador: %d fallos\n", fallos);

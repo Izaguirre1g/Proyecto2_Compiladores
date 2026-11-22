@@ -101,8 +101,10 @@ static void prueba_llamadas(void)
         VERIFICAR(strstr(d.codigo_nuevo, "registrar(v, 7);") != NULL);
     }
     VERIFICAR(d.sentencias_borradas == 2 && d.sentencias_cambiadas == 2);
-    /* El backend no acepta arreglos como parámetros: no hay ensamblador. */
-    VERIFICAR(!d.hay_ensamblador && d.motivo_ensamblador != NULL);
+    /* Los arreglos como parámetros ya los acepta el backend (balc los pasa
+     * por su dirección, y el IDE igual): hay ensamblador del original y del
+     * código nuevo. */
+    VERIFICAR(d.hay_ensamblador && d.motivo_ensamblador == NULL);
 
     ide_dce_liberar(&d);
     free(texto);

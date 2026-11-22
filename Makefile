@@ -88,7 +88,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-optimizacion test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-optimizacion test-pruebas-obligatorias test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -975,3 +975,12 @@ tests/test_ide_optimizacion: tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC)
 .PHONY: test-ide-optimizacion
 test-ide-optimizacion: tests/test_ide_optimizacion
 	./tests/test_ide_optimizacion
+
+# Pruebas obligatorias del enunciado (tests/Pruebas_obligatorias/): 15
+# programas, 3 por optimización. Compara -O0 y -O2 en el simulador con los
+# resultados esperados y revisa que cada optimización actúe.
+tests/test_pruebas_obligatorias: tests/test_pruebas_obligatorias.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pruebas_obligatorias.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+.PHONY: test-pruebas-obligatorias
+test-pruebas-obligatorias: tests/test_pruebas_obligatorias
+	./tests/test_pruebas_obligatorias
