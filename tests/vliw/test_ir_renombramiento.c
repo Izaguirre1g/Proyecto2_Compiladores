@@ -10,6 +10,8 @@
 #include "ir_vliw_programa.h"
 #include <assert.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 static long cuenta=-1;
@@ -49,11 +51,28 @@ static int32_t interpretar(const IrPrograma *p)
     }
     return leer(v,n,"resultado");
 }
+enum { MODO_NORMAL, MODO_RECURSOS, MODO_OBSERVABLES, MODO_DIVISION, MODO_EXPONENTE };
+static int contiene(const IrPrograma *ir,const char *nombre)
+{
+    for(size_t i=0;i<ir->cantidad;++i) {
+        const IrInstr *x=&ir->codigo[i];
+        const char *campos[]={x->dst,x->a,x->b};
+        for(size_t k=0;k<3;++k)if(campos[k] && !strcmp(campos[k],nombre))return 1;
+    }
+    return 0;
+}
+static int diagnostico_contiene(FILE *f,const char *fragmento)
+{
+    char buffer[4096]={0};rewind(f);
+    size_t n=fread(buffer,1,sizeof buffer-1,f);buffer[n]='\0';
+    return strstr(buffer,fragmento)!=NULL;
+}
 /* La tabla se prepara una vez. Cada fallo afecta únicamente la construcción
  * privada: ninguna salida parcial ni mutación del AST/tabla queda publicada.
- * El caso exitoso usa ocho registros, independiente del CLI que usa tres. */
+ * Los modos observables/aritmética son regresiones del productor O2 completo. */
 static int prueba_programa(void *ctx,const Ast *ast,SimTabla *tabla,FILE *diag)
 {
+    int modo=ctx?*(const int *)ctx:MODO_NORMAL;
     MemProyectoMapa mapa={0};
     assert(mem_asignar_proyecto_referencias(tabla,16384,32768,32768,&mapa)==MEM_PROYECTO_OK);
     SimTabla tabla_antes=*tabla;Ast ast_antes=*ast;IrVliwPrograma out={0};
@@ -61,13 +80,43 @@ static int prueba_programa(void *ctx,const Ast *ast,SimTabla *tabla,FILE *diag)
     out.pc_fin=1;assert(ir_vliw_programa(ast,tabla,8,&out,NULL)==2);
     /* No se prueba memoria inaccesible: los argumentos siempre apuntan a
      * objetos reales y vivos, incluso en los rechazos de estructura. */
-    out.pc_fin=0;int exito=0;
-    long limite=ctx?5000:1;
-    for(long i=0;i<limite;++i) {
-        cuenta=ctx?i:-1;int rc=ir_vliw_programa(ast,tabla,8,&out,diag);cuenta=-1;
+    out.pc_fin=0;
+    if(modo==MODO_DIVISION || modo==MODO_EXPONENTE) {
+        int rc=ir_vliw_programa(ast,tabla,8,&out,diag);
+        const char *esperado=modo==MODO_DIVISION ?
+            "division/residuo por cero constante" : "exponente negativo constante";
+        assert(rc==1 && !out.cadena && !out.reporte_json && !out.original.codigo &&
+               !out.optimizada.codigo && !out.spilling.codigo);
+        assert(diagnostico_contiene(diag,esperado));
+        assert(diagnostico_contiene(diag,"línea 2"));
         assert(!memcmp(tabla,&tabla_antes,sizeof *tabla));assert(!memcmp(ast,&ast_antes,sizeof *ast));
-        if(!rc){if(ctx)printf("fallos_reserva_productor=%ld\n",i);assert(out.cadena && out.reporte_json);ir_vliw_programa_liberar(&out);exito=1;break;}
-        assert(!out.cadena && !out.reporte_json && !out.original.codigo && !out.optimizada.codigo && !out.spilling.codigo);
+        return 0;
+    }
+    int exito=0;long limite=modo==MODO_RECURSOS?5000:1;
+    for(long i=0;i<limite;++i) {
+        cuenta=modo==MODO_RECURSOS?i:-1;
+        int rc=ir_vliw_programa(ast,tabla,8,&out,diag);cuenta=-1;
+        assert(!memcmp(tabla,&tabla_antes,sizeof *tabla));assert(!memcmp(ast,&ast_antes,sizeof *ast));
+        if(!rc) {
+            if(modo==MODO_RECURSOS)printf("fallos_reserva_productor=%ld\n",i);
+            assert(out.cadena && out.reporte_json);
+            if(modo==MODO_OBSERVABLES) {
+                size_t id=0;bool encontrado=false;char alias[48];
+                for(const SimSimbolo *s=tabla->primero;s;s=s->siguiente_orden,++id)
+                    if(!strcmp(s->nombre,"basura")) {snprintf(alias,sizeof alias,"__bal_v%zu",id);encontrado=true;break;}
+                assert(encontrado && !contiene(&out.optimizada,alias));
+                bool auxiliar=false,llamada=false;
+                for(size_t j=0;j<out.optimizada.cantidad;++j) {
+                    const IrInstr *x=&out.optimizada.codigo[j];
+                    if(x->op==IR_FUNC && x->dst && !strcmp(x->dst,"auxiliar"))auxiliar=true;
+                    if(x->op==IR_CALL && x->a && !strcmp(x->a,"auxiliar"))llamada=true;
+                }
+                assert(auxiliar && llamada);
+            }
+            ir_vliw_programa_liberar(&out);exito=1;break;
+        }
+        assert(!out.cadena && !out.reporte_json && !out.original.codigo &&
+               !out.optimizada.codigo && !out.spilling.codigo);
     }
     assert(exito);return 0;
 }
@@ -76,8 +125,13 @@ int main(int argc,char **argv)
     assert(argc==2 || argc==3);
     if(argc==3) {
         FILE *diag=tmpfile();assert(diag);
-        int recursos=!strcmp(argv[1],"recursos_programa");
-        int rc=sem_visitar_proyecto(argv[2],diag,prueba_programa,recursos?(void *)&recursos:NULL);
+        int modo=MODO_NORMAL;
+        if(!strcmp(argv[1],"recursos_programa"))modo=MODO_RECURSOS;
+        else if(!strcmp(argv[1],"observables"))modo=MODO_OBSERVABLES;
+        else if(!strcmp(argv[1],"division_cero"))modo=MODO_DIVISION;
+        else if(!strcmp(argv[1],"exponente_negativo"))modo=MODO_EXPONENTE;
+        else assert(!strcmp(argv[1],"positivas"));
+        int rc=sem_visitar_proyecto(argv[2],diag,prueba_programa,&modo);
         fclose(diag);return rc;
     }
     IrPrograma p=entrada(),q={0};IrRenombramiento r={0};

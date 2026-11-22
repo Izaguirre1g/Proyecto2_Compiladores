@@ -163,24 +163,97 @@ static int podar_funciones(Productivo *p,IrPrograma *ir)
     if(!ok){ir_liberar(&nueva);return 0;}
     ir_liberar(ir);*ir=nueva;return 1;
 }
-/* Los errores constantes conservan el rechazo del backend BAL. Las variantes
- * dinámicas usan las secuencias existentes y su control de error en ejecución. */
-static int validar_aritmetica(Productivo *p,const IrPrograma *ir)
-{
-    for(size_t i=0;i<ir->cantidad;++i) {
-        const IrInstr *x=&ir->codigo[i];if(x->op!=IR_BIN || !x->b || !x->operador)continue;
-        char *fin;errno=0;long long b=strtoll(x->b,&fin,10);
-        if(errno || fin==x->b || *fin)continue;
-        if((!strcmp(x->operador,"euclides") || !strcmp(x->operador,"euler")) && !b)
-            return fallo(p,"division/residuo por cero constante");
-        if(!strcmp(x->operador,"descartes") && b<0)return fallo(p,"exponente negativo constante");
-    }
-    return 1;
-}
-/* Solo $tN participa en el mapa de tipos previo a la asignación física. */
+/* Solo $tN participa en los mapas previos a la asignación física. */
 static unsigned numero_temporal(const char *s)
 {
     unsigned n;char extra;return s && sscanf(s,"$t%u%c",&n,&extra)==1?n:0;
+}
+typedef struct { size_t epoca; int32_t valor; bool conocida; } ConstanteTemporal;
+
+static int32_t desde_bits(uint32_t bits)
+{
+    int32_t valor;memcpy(&valor,&bits,sizeof valor);return valor;
+}
+/* Reconoce literales y temporales constantes de la misma región rectilínea.
+ * No propaga a través de saltos, etiquetas, llamadas ni retornos: no supone
+ * que una definición condicional domine un uso posterior. */
+static int constante_ir(const char *s,const ConstanteTemporal *v,size_t n,
+                        size_t epoca,int32_t *salida)
+{
+    if(!s)return 0;
+    if(!strcmp(s,"declare_true")){*salida=1;return 1;}
+    if(!strcmp(s,"declare_false")){*salida=0;return 1;}
+    size_t largo=strlen(s);
+    if(largo==3 && s[0]=='$' && s[2]=='$') {*salida=(unsigned char)s[1];return 1;}
+    errno=0;char *fin;long long numero=strtoll(s,&fin,10);
+    if(fin!=s && !*fin && !errno && numero>=INT32_MIN && numero<=INT32_MAX) {
+        *salida=(int32_t)numero;return 1;
+    }
+    unsigned t=numero_temporal(s);
+    if(t && t<=n && v[t].conocida && v[t].epoca==epoca) {
+        *salida=v[t].valor;return 1;
+    }
+    return 0;
+}
+static int evaluar_constante(const IrInstr *x,const ConstanteTemporal *v,
+                             size_t n,size_t epoca,int32_t *salida)
+{
+    int32_t a,b;
+    if(x->op==IR_COPY && constante_ir(x->a,v,n,epoca,salida))return 1;
+    if(x->op==IR_UNARY && x->operador && constante_ir(x->a,v,n,epoca,&a)) {
+        if(!strcmp(x->operador,"neumann"))*salida=desde_bits(0u-(uint32_t)a);
+        else if(!strcmp(x->operador,"bool"))*salida=a!=0;
+        else if(!strcmp(x->operador,"~"))*salida=a^1;
+        else return 0;
+        return 1;
+    }
+    if(x->op!=IR_BIN || !constante_ir(x->a,v,n,epoca,&a) ||
+       !constante_ir(x->b,v,n,epoca,&b) || !x->operador)return 0;
+    if(!strcmp(x->operador,"gauss"))*salida=desde_bits((uint32_t)a+(uint32_t)b);
+    else if(!strcmp(x->operador,"neumann"))*salida=desde_bits((uint32_t)a-(uint32_t)b);
+    else if(!strcmp(x->operador,"pitagoras"))*salida=desde_bits((uint32_t)a*(uint32_t)b);
+    else if(!strcmp(x->operador,"<"))*salida=a<b;
+    else if(!strcmp(x->operador,">"))*salida=a>b;
+    else if(!strcmp(x->operador,"<="))*salida=a<=b;
+    else if(!strcmp(x->operador,">="))*salida=a>=b;
+    else if(!strcmp(x->operador,"=="))*salida=a==b;
+    else if(!strcmp(x->operador,"=/="))*salida=a!=b;
+    else if(!strcmp(x->operador,"&&"))*salida=(a!=0)&&(b!=0);
+    else if(!strcmp(x->operador,"||"))*salida=(a!=0)||(b!=0);
+    else if(!strcmp(x->operador,"^"))*salida=a^b;
+    else return 0;
+    return 1;
+}
+/* Los errores aritméticos demostrablemente constantes se rechazan antes de
+ * bajar. La propagación se limita a cada región rectilínea y no cambia la
+ * semántica de expresiones que dependen de rutas dinámicas. */
+static int validar_aritmetica(Productivo *p,const IrPrograma *ir)
+{
+    if(ir->temporales>100000)return fallo(p,"capacidad de temporales excedida");
+    ConstanteTemporal *v=calloc((size_t)ir->temporales+1,sizeof *v);
+    if(!v)return 0;
+    size_t epoca=1;int ok=1;
+    for(size_t i=0;i<ir->cantidad && ok;++i) {
+        const IrInstr *x=&ir->codigo[i];int32_t b;
+        p->indice_ir=i;p->linea=x->linea;
+        if(x->op==IR_BIN && x->b && x->operador &&
+           constante_ir(x->b,v,ir->temporales,epoca,&b)) {
+            if((!strcmp(x->operador,"euclides") || !strcmp(x->operador,"euler")) && !b)
+                ok=fallo(p,"division/residuo por cero constante");
+            else if(!strcmp(x->operador,"descartes") && b<0)
+                ok=fallo(p,"exponente negativo constante");
+        }
+        unsigned d=numero_temporal(x->dst);
+        if(d && d<=ir->temporales) {
+            int32_t valor;bool conocida=evaluar_constante(x,v,ir->temporales,epoca,&valor)!=0;
+            v[d].conocida=false;
+            if(conocida)v[d]=(ConstanteTemporal){epoca,valor,true};
+        }
+        if(x->op==IR_LABEL || x->op==IR_JUMP || x->op==IR_JFALSE ||
+           x->op==IR_JTRUE || x->op==IR_FUNC || x->op==IR_END_FUNC ||
+           x->op==IR_CALL || x->op==IR_RETURN || x->op==IR_ARG) ++epoca;
+    }
+    free(v);return ok;
 }
 /* Las referencias conservan stride y ancho ANTES de spilling/unrolling.
  * Después de asignar registros ya no sería válido deducir su tipo de $rN. */
@@ -660,6 +733,7 @@ int ir_vliw_programa(const Ast *ast,const SimTabla *tabla,size_t registros,IrVli
             if(nraices==MAX_OP){fallo(p,"capacidad de observables excedida");goto fin;}
             raices[nraices++]=x->dst;
         }
+        if(x->op==IR_END_FUNC)main_ir=false;
     }
     if(lu_desenrollar(&r.optimizada,NULL,&lu,diag))goto fin;
     IrPrograma versionada={0};IrRenombramiento rn={0};

@@ -1,17 +1,16 @@
 # Propuesta de niveles de optimización
 
-## Actualización de cierre posterior al PR #69
+## Antecedente de planificación posterior al PR #69 (histórico)
 
-La [guía consolidada](entrega-final-javier.md) describe el estado vigente:
-`-O0` conserva el backend tradicional; `-O1` aplica DCE mediante BAL reescrito
-y recompilación tradicional, con rechazos explícitos. `-O2` continúa sin ruta
-productiva general y no hace fallback. La evaluación actual distingue pares
-semánticos, categorías pendientes y B1 inconcluso. Las secciones siguientes
-conservan el contexto histórico de sus campañas; sus cifras no son resultados
-nuevos de esta entrega. No se completa el productor BAL general ni su ABI.
+La [guía consolidada](entrega-final-javier.md) y el [contrato O2](integracion-productiva-o2.md)
+describen el estado vigente: `-O0` conserva el backend tradicional; `-O1`
+utiliza DCE mediante BAL reescrito y recompilación tradicional; `-O2` cuenta con
+una ruta productiva optativa dentro del subconjunto y límites documentados, sin
+fallback. Las tablas y propuestas siguientes registran decisiones pendientes
+de aquella etapa; no describen el HEAD vigente ni sustituyen el contrato O2.
 
 
-## Estado vigente: PR #66 y PR #68
+## Estado de aquella etapa: PR #66 y PR #68 (histórico)
 
 Spilling y el productor parcial `ir_vliw_desde_ir` están integrados. PR #68
 comparte USE/DEF entre consumidores, publica el mapeo físico y el contrato
@@ -35,7 +34,7 @@ No se reutilizan CFG/DAG anteriores ni se generan máscaras virtuales como físi
 Los cuatro perfiles **no son** las opciones oficiales `-O0/-O1/-O2`.
 `gcc -O0..3` en Memcheck describe la compilación del verificador C, no un nivel BAL.
 
-## Propuesta productiva y condiciones
+## Propuesta productiva y condiciones de aquella etapa (superada)
 
 | Nivel propuesto | Ruta | Estado y condición |
 |---|---|---|
