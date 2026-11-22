@@ -10,6 +10,7 @@ typedef struct {
     GfResolverDestino destino;
     void *contexto_destinos;
     size_t bytes_marco;
+    int referencias;
 } GdContexto;
 
 static const SimAmbito *ambito_funcion(const SimTabla *tabla, const char *nombre)
@@ -35,6 +36,7 @@ static int pertenece(const SimAmbito *a, const SimAmbito *funcion)
 
 static const SimAmbito *ambito_del_uso(const GdContexto *c, const AstNodo *id)
 {
+    if(id->padre && id->padre->tipo==AST_PARAMETRO)return c->ambito;
     if (!c->ambito->bloque) return c->ambito; /* Tablas manuales antiguas. */
     for (const AstNodo *n = id; n; n = n->padre) {
         if (n->tipo != AST_BLOQUE) continue;
@@ -119,6 +121,13 @@ static int arreglo(void *datos, const AstNodo *id, GbArreglo *r)
 {
     GdContexto *c = datos;
     const SimSimbolo *s = buscar(c, id);
+    if(c->referencias && s && r && s->tipo==SIM_TIPO_INT &&
+       (s->es_parametro || s->clase==SIM_PARAMETRO) && s->dimensiones==1 &&
+       s->almacen==SIM_ALMACEN_PARAMETRO && s->bytes==4 &&
+       s->desplazamiento>=4 && s->desplazamiento<=1020) {
+        *r=(GbArreglo){GB_ARREGLO_REFERENCIA_SP,(int)s->desplazamiento,1,{0}};
+        return 1;
+    }
     if (!s || !r || s->tipo != SIM_TIPO_INT || s->clase != SIM_VARIABLE ||
         !s->dimensiones || s->dimensiones > GB_MAX_DIMENSIONES || !s->longitudes)
         return 0;
@@ -159,10 +168,10 @@ static int resolver_destino(void *datos, const AstNodo *id, unsigned *direccion)
            (*direccion & 15u) == 0;
 }
 
-int gd_generar_funcion(const AstNodo *funcion, const SimTabla *tabla,
+static int generar_funcion(const AstNodo *funcion, const SimTabla *tabla,
                        size_t bytes_marco, GfResolverDestino destino,
                        void *contexto_destinos, FILE *salida,
-                       FILE *diagnosticos)
+                       FILE *diagnosticos, int referencias)
 {
     if (!funcion || funcion->tipo != AST_FUNCION || !tabla || !tabla->global ||
         !salida || bytes_marco < 4 || bytes_marco % 4 ||
@@ -181,7 +190,27 @@ int gd_generar_funcion(const AstNodo *funcion, const SimTabla *tabla,
         if (pertenece(s->ambito, ambito) &&
             s->almacen != SIM_ALMACEN_PARAMETRO &&
             s->almacen != SIM_ALMACEN_LOCAL) return 1;
-    GdContexto c = {tabla, ambito, destino, contexto_destinos, bytes_marco};
+    GdContexto c = {tabla, ambito, destino, contexto_destinos, bytes_marco, referencias};
     return gf_generar_funcion_arreglos(funcion, bytes_marco, referencia, arreglo,
                                       resolver_destino, &c, salida, diagnosticos);
 }
+
+/* Reutiliza exactamente la búsqueda lexical del generador tradicional.
+ * Se publica identidad, nunca un offset deducido del texto del nombre. */
+const SimSimbolo *gd_resolver_simbolo(const SimTabla *tabla,
+    const char *funcion, const AstNodo *id)
+{
+    if (!tabla || !tabla->global || !id) return NULL;
+    const SimAmbito *a=funcion?ambito_funcion(tabla,funcion):tabla->global;
+    if (!a) return NULL;
+    GdContexto c={.tabla=tabla,.ambito=a};
+    return buscar(&c,id);
+}
+
+/* La extensión de referencias requiere una selección explícita. */
+int gd_generar_funcion(const AstNodo *fn,const SimTabla *t,size_t marco,
+    GfResolverDestino destino,void *ctx,FILE *out,FILE *diag)
+{ return generar_funcion(fn,t,marco,destino,ctx,out,diag,0); }
+int gd_generar_funcion_referencias(const AstNodo *fn,const SimTabla *t,size_t marco,
+    GfResolverDestino destino,void *ctx,FILE *out,FILE *diag)
+{ return generar_funcion(fn,t,marco,destino,ctx,out,diag,1); }

@@ -11,7 +11,8 @@ typedef enum {
     IR_FUNC, IR_END_FUNC, IR_PARAM_DECL, IR_COPY, IR_BIN, IR_UNARY,
     IR_LABEL, IR_JUMP, IR_JFALSE, IR_JTRUE, IR_ARG, IR_CALL, IR_RETURN,
     IR_ARRAY_DECL, IR_ARRAY_DIM, IR_INDEX_REF, IR_LOAD, IR_STORE,
-    IR_LIST_DECL, IR_LIST_ADD, IR_LIST_REMOVE, IR_SIZE
+    IR_LIST_DECL, IR_LIST_ADD, IR_LIST_REMOVE, IR_SIZE,
+    IR_SPILL_LOAD, IR_SPILL_STORE
 } IrOp;
 /* Cada instruccion identifica sus operandos por nombre. Las referencias
  * de indice son valores de direccion logica y no registros de CPU. */
@@ -37,6 +38,10 @@ typedef struct {
  * hay error de memoria/argumentos. No modifica el AST ni la tabla semantica.
  * Un error deja el programa vacio; el mensaje incluye ubicacion del nodo. */
 int ir_desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos);
+/* Variante optativa: inicializadores globales en __o2_init_global. Misma
+ * propiedad y errores que ir_desde_ast; el consumidor debe llamar esa función
+ * antes de main, con su marco particular. No enlaza unidades importadas. */
+int ir_desde_ast_programa(const Ast *ast, IrPrograma *ir, FILE *diagnosticos);
 int ir_bloques_basicos(IrPrograma *ir);
 int ir_imprimir(const IrPrograma *ir, FILE *salida);
 void ir_liberar(IrPrograma *ir);

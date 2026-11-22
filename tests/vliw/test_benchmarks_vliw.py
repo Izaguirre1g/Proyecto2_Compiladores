@@ -27,6 +27,35 @@ spec = importlib.util.spec_from_file_location('b2_probado', ROOT/'tools/vliw/ben
 b2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(b2)
 
 
+# Lee estado e identidad de arranque del proceso observado. El nombre entre
+# paréntesis puede contener espacios: dividir toda la línea por espacios no
+# conserva las posiciones de los campos. Ausencia significa que ya se recogió;
+# otros errores se propagan, porque no prueban que el descendiente terminó.
+def estado_descendiente(pid):
+    try:
+        campos = (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+    except FileNotFoundError:
+        return None
+    return campos[0], campos[19]
+
+
+# SIGKILL se entrega de forma asíncrona; esperar al padre no recoge al huérfano.
+# Observamos la identidad PID+inicio hasta su desaparición o estado Z, siempre
+# con plazo monotónico. Un PID reutilizado ya no es el descendiente original y
+# nunca se señala desde esta espera. Los intervalos breves solo evitan sondeo
+# ocupado: cada vuelta comprueba el estado, sin aceptar R/S al vencer el plazo.
+def esperar_descendiente(pid, inicio, timeout):
+    limite = time.monotonic() + timeout
+    while True:
+        estado = estado_descendiente(pid)
+        if estado is None or estado[1] != inicio or estado[0] == 'Z':
+            return True
+        restante = limite - time.monotonic()
+        if restante <= 0:
+            return False
+        time.sleep(min(0.005, restante))
+
+
 class BenchmarksTests(unittest.TestCase):
     # Compila las bibliotecas y sondas reales una vez para la suite y prepara los recursos
     # compartidos en directorios de prueba.
@@ -533,16 +562,21 @@ class BenchmarksTests(unittest.TestCase):
         self.assertEqual(r['casos'][0]['resultado'],b2.INFRA)
         self.assertIn('timeout',r['casos'][0]['diagnostico']['error'])
 
-    # Crea procesos hijos y exige que el grupo completo quede recogido al cancelar.
+    # El padre registra la identidad del hijo antes del timeout. Después de
+    # cancelar el grupo, exigimos terminación efectiva; no confundimos que
+    # killpg haya retornado con que el kernel ya haya procesado ambas señales.
     def test_37_grupo_hijos_y_limpieza(self):
-        pid=self.d/'hijo.pid'
-        cuerpo='import subprocess,sys,time\np=subprocess.Popen([sys.executable,"-c","import time;time.sleep(10)"])\nopen('+repr(str(pid))+',"w").write(str(p.pid))\ntime.sleep(10)'
-        r=self.lote(exe=self.falso(cuerpo),timeout=0.25)
-        self.assertEqual(r['casos'][0]['resultado'],b2.INFRA)
-        estado=Path('/proc')/pid.read_text().strip()/'stat'
-        # Un descendiente huérfano puede esperar al reaper del sistema como Z;
-        # no debe quedar un proceso ejecutándose tras cerrar el grupo.
-        if estado.exists(): self.assertEqual(estado.read_text().split()[2],'Z')
+        pid = self.d/'hijo.pid'
+        cuerpo = ('import subprocess,sys,time,json\n'
+                  'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(10)"])\n'
+                  'inicio=open("/proc/"+str(p.pid)+"/stat").read().rsplit(")",1)[1].split()[19]\n'
+                  'open('+repr(str(pid))+',"w").write(json.dumps([p.pid,inicio]))\n'
+                  'time.sleep(10)')
+        r = self.lote(exe=self.falso(cuerpo), timeout=0.25)
+        self.assertEqual(r['casos'][0]['resultado'], b2.INFRA)
+        hijo, inicio = json.loads(pid.read_text())
+        self.assertTrue(esperar_descendiente(hijo, inicio, 1),
+                        'el descendiente original sigue activo tras cancelar su grupo')
 
     # Comprueba diferencias negativas en CSV y separación entre datos diagnósticos y
     # estadísticas validadas.
@@ -609,6 +643,47 @@ class BenchmarksTests(unittest.TestCase):
         self.assertTrue(c['proceso_iniciado'])
         self.assertEqual(c['resultado'],b2.INFRA)
         self.assertIn('sin selector',c['diagnostico']['error'])
+
+
+    # La secuencia R/S/Z representa una señal pendiente: la primera lectura
+    # no acredita limpieza. El sondeo debe continuar hasta observar muerte.
+    def test_43_espera_descendiente_asincrono(self):
+        with mock.patch(__name__+'.estado_descendiente', side_effect=[('R','17'), ('S','17'), ('Z','17')]) as leer, \
+             mock.patch.object(time, 'sleep'):
+            self.assertTrue(esperar_descendiente(123, '17', 1))
+        self.assertEqual(leer.call_count, 3)
+
+    # Un proceso que conserva su identidad y permanece activo hasta el límite
+    # no puede aceptarse como limpio, aunque ya se haya enviado SIGKILL.
+    def test_44_descendiente_activo_agota_plazo(self):
+        with mock.patch(__name__+'.estado_descendiente', return_value=('R','17')), \
+             mock.patch.object(time, 'monotonic', side_effect=[0, 0, 2]), \
+             mock.patch.object(time, 'sleep'):
+            self.assertFalse(esperar_descendiente(123, '17', 1))
+
+    # Ausencia y zombi ya no ejecutan código; una identidad nueva indica
+    # reutilización del PID, no permiso para matar un proceso ajeno.
+    def test_45_identidad_descendiente_y_recoleccion(self):
+        for estado in (None, ('Z','17'), ('R','18')):
+            with self.subTest(estado=estado), \
+                 mock.patch(__name__+'.estado_descendiente', return_value=estado), \
+                 mock.patch.object(os, 'kill') as matar:
+                self.assertTrue(esperar_descendiente(123, '17', 0))
+                matar.assert_not_called()
+
+    # El padre termina, pero el hijo conserva stdout/stderr heredados. B2 debe
+    # agotar el plazo de captura, cancelar el grupo y no aceptar un JSON parcial.
+    def test_46_pipes_heredados_y_descendiente(self):
+        pid = self.d/'hijo.pid'
+        cuerpo = ('import subprocess,sys,json\n'
+                  'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(10)"])\n'
+                  'inicio=open("/proc/"+str(p.pid)+"/stat").read().rsplit(")",1)[1].split()[19]\n'
+                  'open('+repr(str(pid))+',"w").write(json.dumps([p.pid,inicio]))')
+        r = self.lote(exe=self.falso(cuerpo), timeout=0.25)
+        self.assertEqual(r['casos'][0]['resultado'], b2.INFRA)
+        self.assertIn('timeout', r['casos'][0]['diagnostico']['error'])
+        hijo, inicio = json.loads(pid.read_text())
+        self.assertTrue(esperar_descendiente(hijo, inicio, 1))
 
 
 if __name__=='__main__':

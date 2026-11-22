@@ -11,6 +11,7 @@
  *   5. Tipo 2: código inalcanzable (constantes y grafo de flujo).
  */
 #include "dce.h"
+#include "ir_defuse.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -19,21 +20,6 @@
 /* ================================================================== */
 /* 1. Usos, definiciones y efectos de cada instrucción                */
 /* ================================================================== */
-
-/*
- * ¿Es este operando una VARIABLE? Los operandos de la IR son cadenas, y
- * pueden ser:
- *   - variables del programa (x, total) o temporales ($t3): SÍ;
- *   - números (5, -2), textos ("hola"), caracteres ('a') y los valores
- *     declare_true / declare_false: NO, son constantes.
- */
-static int es_variable(const char *s)
-{
-    if (s == NULL || s[0] == '\0') return 0;
-    if (strcmp(s, "declare_true") == 0 || strcmp(s, "declare_false") == 0) return 0;
-    return s[0] == '$' || s[0] == '_' || (s[0] >= 'a' && s[0] <= 'z') ||
-           (s[0] >= 'A' && s[0] <= 'Z');
-}
 
 /* ¿Es "s" un número entero escrito tal cual (con signo opcional)?
  * Si lo es, deja su valor en "valor". */
@@ -47,61 +33,11 @@ static int es_numero(const char *s, long long *valor)
     return 1;
 }
 
-/*
- * La variable que la instrucción ASIGNA (su "def"), o NULL si no asigna
- * ninguna. En la IR el destino está en "dst":
- *     x = a          (copia)          $t1 = a gauss b   (binaria)
- *     $t2 = ~ a      (unaria)         $t3 = ref v[i]    (referencia)
- *     $t4 = load $t3 (lectura)        $t5 = size xs     (tamaño)
- *     $t6 = call f, 2 (llamada)       param_decl n      (parámetro)
- * En store, add y remove el "dst" NO se asigna: es el lugar de memoria donde
- * se escribe, así que cuenta como un USO (ver usos()).
- */
-static const char *definicion(const IrInstr *x)
+/* La semantica de operandos y efectos pertenece a la API comun de IR.
+ * Ninguna de estas pasadas interpreta por su cuenta los campos dst/a/b. */
+static int consultar(const IrInstr *x, IrDefUse *du)
 {
-    switch (x->op) {
-        case IR_COPY: case IR_BIN: case IR_UNARY: case IR_INDEX_REF:
-        case IR_LOAD: case IR_SIZE: case IR_CALL: case IR_PARAM_DECL:
-            return x->dst;
-        default:
-            return NULL;
-    }
-}
-
-/*
- * Las variables que la instrucción LEE (su "use"). Deja hasta 3 en "u" y
- * devuelve cuántas. Las constantes no cuentan.
- * Ojo: en "call f, 2" ni "f" (el nombre de la función) ni "2" (la cantidad
- * de argumentos) son variables; los argumentos ya se leyeron en los "arg".
- */
-static int usos(const IrInstr *x, const char *u[3])
-{
-    const char *posibles[3] = {NULL, NULL, NULL};
-    switch (x->op) {
-        case IR_COPY: case IR_UNARY: case IR_LOAD: case IR_SIZE:
-        case IR_JFALSE: case IR_JTRUE: case IR_ARG: case IR_RETURN:
-            posibles[0] = x->a;
-            break;
-        case IR_BIN: case IR_INDEX_REF:
-            posibles[0] = x->a;
-            posibles[1] = x->b;
-            break;
-        case IR_STORE: case IR_LIST_ADD: case IR_LIST_REMOVE:
-            posibles[0] = x->dst;  /* Dónde se escribe. */
-            posibles[1] = x->a;    /* Qué se escribe. */
-            break;
-        case IR_ARRAY_DIM:
-            posibles[0] = x->dst;  /* El arreglo. */
-            posibles[1] = x->b;    /* El tamaño de la dimensión. */
-            break;
-        default:
-            break;
-    }
-    int cuantos = 0;
-    for (int i = 0; i < 3; ++i) {
-        if (es_variable(posibles[i])) u[cuantos++] = posibles[i];
-    }
-    return cuantos;
+    return ir_consultar_def_usos(x, du) == 0 ? 0 : 2;
 }
 
 /*
@@ -209,13 +145,14 @@ static int armar_variables(const IrPrograma *ir, DceVivas *v)
 
     for (size_t i = 0; i < ir->cantidad; ++i) {
         const IrInstr *x = &ir->codigo[i];
-        const char *u[3];
-        int n = usos(x, u);
-        for (int k = 0; k < n; ++k) {
-            if (agregar_nombre(&lista, &cantidad, &capacidad, u[k]) != 0) goto sin_memoria;
+        IrDefUse du;
+        if (consultar(x, &du)) goto sin_memoria;
+        for (size_t k = 0; k < du.cantidad_usos; ++k) {
+            if (agregar_nombre(&lista, &cantidad, &capacidad, du.usos[k]) != 0) goto sin_memoria;
         }
-        const char *d = definicion(x);
-        if (es_variable(d) && agregar_nombre(&lista, &cantidad, &capacidad, d) != 0) goto sin_memoria;
+        for (size_t k = 0; k < du.cantidad_definiciones; ++k) {
+            if (agregar_nombre(&lista, &cantidad, &capacidad, du.definiciones[k]) != 0) goto sin_memoria;
+        }
     }
 
     /* Ordenar y quitar repetidos. */
@@ -300,11 +237,11 @@ static int resultado_de_main(const IrPrograma *ir, ResultadoMain *m)
         const IrInstr *x = &ir->codigo[i];
         if (x->op == IR_FUNC) en_main = x->dst && strcmp(x->dst, "main") == 0;
         if (!en_main) continue;
-        const char *u[3];
-        int n = usos(x, u);
-        for (int k = 0; k < n; ++k) {
-            if (u[k][0] == '$') continue;  /* Temporal: no es una variable del programa. */
-            if (agregar_nombre(&lista, &cantidad, &capacidad, u[k]) != 0) {
+        IrDefUse du;
+        if (consultar(x, &du)) { free(lista); return 2; }
+        for (size_t k = 0; k < du.cantidad_usos; ++k) {
+            if (du.usos[k][0] == '$') continue; /* Los registros no son resultado de BAL. */
+            if (agregar_nombre(&lista, &cantidad, &capacidad, du.usos[k]) != 0) {
                 free(lista);
                 return 2;
             }
@@ -339,20 +276,22 @@ static int es_resultado(const ResultadoMain *m, const char *nombre)
            bsearch(&nombre, m->nombres, m->cantidad, sizeof *m->nombres, comparar_nombres) != NULL;
 }
 
-static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado);
+static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado,
+                          const char *const *observables, size_t cantidad_observables);
 
 int dce_calcular_vivas(const IrPrograma *ir, DceVivas *v)
 {
     if (ir == NULL || v == NULL) return 2;
     ResultadoMain m;
     if (resultado_de_main(ir, &m) != 0) return 2;
-    int estado = calcular_vivas(ir, v, &m);
+    int estado = calcular_vivas(ir, v, &m, NULL, 0);
     liberar_resultado_main(&m);
     return estado;
 }
 
 /* Variables vivas, con el resultado de main ya calculado (ver Paso 1b). */
-static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado)
+static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain *resultado,
+                          const char *const *observables, size_t cantidad_observables)
 {
     if (ir == NULL || v == NULL) return 2;
     memset(v, 0, sizeof *v);
@@ -387,14 +326,16 @@ static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain
     for (size_t b = 0; b < nb; ++b) {
         unsigned char *usa = v->usa + b * nv, *define = v->define + b * nv;
         for (size_t i = ir->bloques[b].inicio; i < ir->bloques[b].fin; ++i) {
-            const char *u[3];
-            int n = usos(&ir->codigo[i], u);
-            for (int k = 0; k < n; ++k) {
-                size_t j = numero_de(v, u[k]);
+            IrDefUse du;
+            if (consultar(&ir->codigo[i], &du)) { dce_liberar_vivas(v); return 2; }
+            for (size_t k = 0; k < du.cantidad_usos; ++k) {
+                size_t j = numero_de(v, du.usos[k]);
                 if (j != SIZE_MAX && !define[j]) usa[j] = 1;
             }
-            size_t d = numero_de(v, definicion(&ir->codigo[i]));
-            if (d != SIZE_MAX) define[d] = 1;
+            for (size_t k = 0; k < du.cantidad_definiciones; ++k) {
+                size_t d = numero_de(v, du.definiciones[k]);
+                if (d != SIZE_MAX) define[d] = 1;
+            }
         }
     }
 
@@ -446,6 +387,14 @@ static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain
     /* Las variables que se leen en main (calculadas con el programa original). */
     for (size_t j = 0; j < nv; ++j) de_main[j] = (unsigned char)es_resultado(resultado, v->variables[j]);
 
+    /* Las raíces externas expresan memoria observada por el consumidor.
+     * No añadimos instrucciones ficticias: solo cambia OUT al salir de las funciones.
+     * Los nombres son préstamos durante esta llamada y nunca se liberan aquí. */
+    for (size_t k = 0; k < cantidad_observables; ++k) {
+        size_t j = numero_de(v, observables[k]);
+        if (j != SIZE_MAX) de_main[j] |= 2;
+    }
+
     /*
      * Paso 2: algoritmo iterativo hasta el punto fijo (diapositiva 27).
      * Se empieza con todos los IN y OUT vacíos y se repite:
@@ -467,7 +416,8 @@ static int calcular_vivas(const IrPrograma *ir, DceVivas *v, const ResultadoMain
             const IrBloque *bloque = &ir->bloques[b];
             for (size_t j = 0; j < nv; ++j) {
                 /* Al final de main, sus variables siguen vivas (paso 1b). */
-                unsigned char nuevo_out = final_main[b] & de_main[j];
+                unsigned char nuevo_out = (final_main[b] && (de_main[j] & 1)) ||
+                    (!bloque->cantidad_sucesores && (de_main[j] & 2));
                 for (size_t s = 0; s < bloque->cantidad_sucesores; ++s) {
                     nuevo_out |= v->entrada[bloque->sucesores[s] * nv + j];
                 }
@@ -588,7 +538,9 @@ static size_t marcar_muertas(const IrPrograma *ir, const DceVivas *v, unsigned c
         if (nv) memcpy(vivas, v->salida + b * nv, nv);
         for (size_t i = ir->bloques[b].fin; i-- > ir->bloques[b].inicio;) {
             const IrInstr *x = &ir->codigo[i];
-            size_t d = numero_de(v, definicion(x));
+            IrDefUse du;
+            if (consultar(x, &du)) { free(vivas); return SIZE_MAX; }
+            size_t d = du.cantidad_definiciones ? numero_de(v, du.definiciones[0]) : SIZE_MAX;
             int muerta = d != SIZE_MAX && !vivas[d];
 
             if (muerta && se_puede_eliminar(x)) {
@@ -601,10 +553,8 @@ static size_t marcar_muertas(const IrPrograma *ir, const DceVivas *v, unsigned c
             if (muerta && puede_fallar(x)) r->riesgosas_conservadas++;
 
             if (d != SIZE_MAX) vivas[d] = 0;
-            const char *u[3];
-            int n = usos(x, u);
-            for (int k = 0; k < n; ++k) {
-                size_t j = numero_de(v, u[k]);
+            for (size_t k = 0; k < du.cantidad_usos; ++k) {
+                size_t j = numero_de(v, du.usos[k]);
                 if (j != SIZE_MAX) vivas[j] = 1;
             }
         }
@@ -749,7 +699,11 @@ static size_t resolver_condiciones(IrPrograma *ir, DceResultado *r)
             return SIZE_MAX;
         }
         for (size_t i = inicio; i < fin; ++i) {
-            const char *d = definicion(&ir->codigo[i]);
+            IrDefUse du;
+            if (consultar(&ir->codigo[i], &du)) {
+                free(tabla); free(borrar); return SIZE_MAX;
+            }
+            const char *d = du.cantidad_definiciones ? du.definiciones[0] : NULL;
             /* Solo temporales: las variables no se propagan (ver arriba). */
             if (d == NULL || d[0] != '$') continue;
             Constante *c = buscar_constante(tabla, cantidad, d);
@@ -766,7 +720,11 @@ static size_t resolver_condiciones(IrPrograma *ir, DceResultado *r)
             cambio = 0;
             for (size_t i = inicio; i < fin; ++i) {
                 const IrInstr *x = &ir->codigo[i];
-                const char *d = definicion(x);
+                IrDefUse du;
+                if (consultar(x, &du)) {
+                    free(tabla); free(borrar); return SIZE_MAX;
+                }
+                const char *d = du.cantidad_definiciones ? du.definiciones[0] : NULL;
                 Constante *c = d ? buscar_constante(tabla, cantidad, d) : NULL;
                 if (c == NULL || c->definiciones != 1 || c->conocido) continue;
                 long long a = 0, b = 0, v = 0;
@@ -901,9 +859,12 @@ static size_t quitar_inalcanzables(IrPrograma *ir, DceResultado *r)
     return estado == 0 ? quitadas : SIZE_MAX;
 }
 
-int dce_eliminar(IrPrograma *ir, DceResultado *r)
+int dce_eliminar_con_observables(IrPrograma *ir, DceResultado *r,
+                                const char *const *observables, size_t cantidad)
 {
-    if (ir == NULL || r == NULL) return 2;
+    if (ir == NULL || r == NULL || (cantidad && !observables)) return 2;
+    for (size_t i = 0; i < cantidad; ++i)
+        if (!observables[i] || !observables[i][0]) return 2;
     memset(r, 0, sizeof *r);
     r->instrucciones_antes = ir->cantidad;
 
@@ -923,7 +884,11 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
 
         /* Tipo 1: variables vivas. */
         DceVivas vivas;
-        if (dce_calcular_vivas(ir, &vivas) != 0) return 2;
+        ResultadoMain m;
+        if (resultado_de_main(ir, &m) != 0) return 2;
+        int viva_estado = calcular_vivas(ir, &vivas, &m, observables, cantidad);
+        liberar_resultado_main(&m);
+        if (viva_estado != 0) return 2;
         r->pasadas++;
 
         unsigned char *borrar = calloc(ir->cantidad ? ir->cantidad : 1, 1);
@@ -945,6 +910,12 @@ int dce_eliminar(IrPrograma *ir, DceResultado *r)
 
     r->instrucciones_despues = ir->cantidad;
     return 0;
+}
+
+/* La API histórica conserva exactamente su política de observación. */
+int dce_eliminar(IrPrograma *ir, DceResultado *r)
+{
+    return dce_eliminar_con_observables(ir, r, NULL, 0);
 }
 
 int dce_imprimir_resultado(const DceResultado *r, FILE *f)

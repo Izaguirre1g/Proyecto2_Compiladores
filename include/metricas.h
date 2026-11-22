@@ -41,6 +41,9 @@
  * se considera que no terminó (probablemente tiene un ciclo infinito). */
 #define MET_PRESUPUESTO_DEFECTO 5000000u
 
+/* 128 bits de instrucciones por bundle, incluidos NOP y guardas emitidas. */
+#define MET_BYTES_BUNDLE 16u
+
 /* Cómo terminó la medición. */
 typedef enum {
     MET_LISTO = 0,         /* main terminó: las métricas son del programa completo. */
@@ -71,6 +74,33 @@ typedef struct {
  */
 int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presupuesto,
               MetMedicion *m);
+
+/* Tamaño estático de instrucciones: bundles emitidos * 16. No mide el BALB
+ * completo ni memoria de datos. Acepta cero bundles; devuelve -1 si bytes es
+ * NULL o si el producto excede SIZE_MAX, sin modificar la salida. Es puro:
+ * un futuro consumidor O0/O2 debe pasar el conteo emitido por CADA variante. */
+int met_calcular_bytes_codigo(size_t bundles, size_t *bytes);
+
+/* Obtiene el tamaño de una medición LISTO o SIN_TERMINAR. La disponibilidad
+ * del código es independiente del presupuesto dinámico; errores y ausencia
+ * de backend devuelven -1 sin publicar un cero que parezca una medición. */
+int met_tamano_codigo(const MetMedicion *m, size_t *bytes);
+
+typedef struct {
+    size_t original_bytes;
+    size_t optimizado_bytes;
+    size_t diferencia_bytes;       /* Magnitud absoluta, sin resta unsigned negativa. */
+    int reduccion;                 /* 1 si optimizado < original. */
+    int porcentaje_definido;       /* 0 cuando el original tiene cero bytes. */
+    double variacion_porcentual;   /* 100*(optimizado-original)/original: negativa al reducir. */
+} MetComparacionTamano;
+
+/* Compara únicamente tamaños estáticos de dos mediciones con código disponible;
+ * no exige igual presupuesto ni consulta sus métricas de ejecución. Devuelve
+ * 0 en éxito, -1 ante argumentos/mediciones inválidos u overflow; la salida
+ * queda intacta ante error. No reserva memoria ni establece un nivel O2. */
+int met_comparar_tamano_codigo(const MetMedicion *antes, const MetMedicion *despues,
+                              MetComparacionTamano *comparacion);
 
 /*
  * Porcentaje de "parte" sobre "total" (0 si total es 0). Para las gráficas:

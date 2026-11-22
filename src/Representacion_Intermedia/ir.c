@@ -394,15 +394,33 @@ static void sentencia(Generador *g, const AstNodo *n) {
 /* Punto de entrada del generador: valida el AST, recorre funciones,
  * construye la secuencia IR y calcula los bloques basicos.
  * Si algo falla, libera la salida parcial antes de devolver el error. */
-int ir_desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos) {
+static int desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos, int globales) {
     if (!ast||!ir||!ast->raiz||ast->raiz->tipo!=AST_PROGRAMA) return 2;
     /* contrato: el llamador entrega IrPrograma inicializado a cero */
     if (ir->codigo||ir->bloques||ir->cantidad||ir->cantidad_bloques) return 2;
     Generador g={ir,diagnosticos,0};
+    /* El arranque O2 ejecuta la inicialización dentro de una función propia:
+     * así sus temporales y spills tienen marco, RA y vida útil ordinarios.
+     * La API histórica conserva el rechazo de declaraciones globales. */
+    int tiene_globales=0;
+    if(globales)for(const AstNodo *p=ast->raiz->primer_hijo;p;p=p->siguiente) {
+        if(p->tipo==AST_CONSTANTE || p->tipo==AST_DECLARACION)tiene_globales=1;
+        if(p->tipo==AST_FUNCION && hijo(p,0) && hijo(p,0)->texto &&
+           !strcmp(hijo(p,0)->texto,"__o2_init_global")) {
+            error(&g,p,"nombre reservado para inicializacion global");break;
+        }
+    }
+    if(tiene_globales && !g.estado) {
+        emitir(&g,IR_FUNC,"__o2_init_global",NULL,NULL,NULL,ast->raiz);
+        for(const AstNodo *p=ast->raiz->primer_hijo;p&&!g.estado;p=p->siguiente)
+            if(p->tipo==AST_CONSTANTE || p->tipo==AST_DECLARACION)sentencia(&g,p);
+        if(!g.estado)emitir(&g,IR_END_FUNC,"__o2_init_global",NULL,NULL,NULL,ast->raiz);
+    }
     /* Los imports ya se revisaron semanticamente, pero el enlazado de
      * codigo importado sigue pendiente. Aqui solo emitimos funciones locales. */
     for(const AstNodo *p=ast->raiz->primer_hijo;p&&!g.estado;p=p->siguiente) {
         if (p->tipo==AST_IMPORTACION) continue; /* validada antes por semantica */
+        if(globales && (p->tipo==AST_CONSTANTE || p->tipo==AST_DECLARACION))continue;
         if(p->tipo!=AST_FUNCION) {error(&g,p,"declaracion global aun no soportada");break;}
         const AstNodo *id=hijo(p,0),*params=hijo(p,2),*cuerpo=hijo(p,3);
         if (!id||!id->texto) {error(&g,p,"funcion sin nombre");break;}
@@ -420,6 +438,15 @@ int ir_desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos) {
     int estado=ir_bloques_basicos(ir);
     if(estado) ir_liberar(ir);
     return estado;
+}
+/* Ambos caminos comparten el generador de expresiones y sentencias. */
+int ir_desde_ast(const Ast *ast, IrPrograma *ir, FILE *diagnosticos)
+{
+    return desde_ast(ast,ir,diagnosticos,0);
+}
+int ir_desde_ast_programa(const Ast *ast, IrPrograma *ir, FILE *diagnosticos)
+{
+    return desde_ast(ast,ir,diagnosticos,1);
 }
 /* Libera cadenas, instrucciones y aristas del CFG; deja la salida vacia. */
 void ir_liberar(IrPrograma *ir) {
@@ -528,6 +555,9 @@ int ir_imprimir(const IrPrograma *ir, FILE *f) {
             case IR_LIST_ADD:fprintf(f,"add %s, %s",x->dst,x->a);break;
             case IR_LIST_REMOVE:fprintf(f,"remove %s, %s",x->dst,x->a);break;
             case IR_SIZE:fprintf(f,"%s = size %s",x->dst,x->a);break;
+            /* Estas instrucciones usan ranuras logicas; el backend define offsets. */
+            case IR_SPILL_LOAD:fprintf(f,"%s = spill_load %s",x->dst,x->a);break;
+            case IR_SPILL_STORE:fprintf(f,"spill_store %s, %s",x->dst,x->a);break;
             }
             fprintf(f," ; linea %zu\n",x->linea);
         }

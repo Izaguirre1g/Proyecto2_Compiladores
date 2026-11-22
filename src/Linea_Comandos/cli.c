@@ -1,3 +1,7 @@
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+
 #include "formato_binario.h"
 #include "cli.h"
 #include "lexer.h"
@@ -11,13 +15,20 @@
 #include "diagnosticos.h"
 #include "clones.h"
 #include "ir.h"
+#include "ir_spilling.h"
+#include "ir_vliw.h"
 #include "dce.h"
 #include "loop_unrolling.h"
 #include "ro_json.h"
 #include "lu_reporte.h"
 #include "reordenamiento.h"
 #include "ro_reporte.h"
+#include "../../tools/vliw/optimizacion_cli.h"
+#include "ir_vliw_programa.h"
 
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,7 +190,12 @@ typedef struct {
     int simbolos;           /* -m */
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
+    const char *fuente_optimizada; /* Préstamo de la copia privada de -O1. */
+    int nivel, nivel_explicito; /* Sin opción: ruta histórica; O2 utiliza IR. */
     int ir;                 /* --ir: IR de tres direcciones */
+    int ir_spilling;        /* --ir-spilling: IR con registros limitados */
+    int vliw_ir;            /* --vliw-ir: vista previa del productor fisico */
+    unsigned vliw_regs;    /* --vliw-ir=N: registros temporales (3..8) */
     int dce;                /* --dce: IR + variables vivas + eliminacion de codigo muerto */
     int unroll;             /* --unroll[=k]: IR antes/despues del loop unrolling */
     unsigned unroll_factor; /* k de --unroll=k (0: valor por defecto) */
@@ -200,6 +216,9 @@ static void usage(FILE *out) {
           "     balc -x [-o <archivo>] [-v] [-p] <archivo.asm>\n"
           "Compila el fuente y genera el binario (<fuente>.bin) y la imagen de IMEM (.mem).\n"
           "-o <archivo>  nombre del binario de salida (por defecto, el del fuente con .bin)\n"
+          "-O0           referencia tradicional, sin pasadas opcionales\n"
+          "-O1           DCE real con BAL reescrito y backend tradicional (un archivo)\n"
+          "-O2           IR optimizada, spilling y cadena VLIW de programa completo\n"
           "-v            muestra cada fase del compilador y las decisiones importantes\n"
           "-s            genera tambien el ensamblador (.asm)\n"
           "-t            imprime el arbol sintactico (AST)\n"
@@ -208,6 +227,10 @@ static void usage(FILE *out) {
           "-p            muestra los paquetes generados en ensamblador y en binario\n"
           "--ast-json    exporta solamente el AST como JSON por stdout\n"
           "--ir          valida la semantica y muestra la IR y sus bloques basicos\n"
+          "--ir-spilling  muestra la IR con spilling usando 3 registros\n"
+          "--vliw-ir[=N] genera fragmento fisico desde IR/spilling (N=3..8; defecto 3)\n"
+          "              solo el subconjunto soportado; NO es binario BAL ejecutable\n"
+          "              -s guarda .vliw.asm y .vliw.mem; -p muestra bundles\n"
           "--dce         como --ir, y ademas calcula las variables vivas y elimina\n"
           "              el codigo muerto (muestra la IR antes y despues)\n"
           "--unroll[=k]  muestra la IR antes y despues del loop unrolling (factor k,\n"
@@ -229,9 +252,31 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
     int posicional = 0;
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        /* Los niveles no se mezclan ni seleccionan una degradación implícita. */
+        if (!posicional && !strncmp(arg,"-O",2)) {
+            if (c->nivel_explicito || strlen(arg)!=3 || arg[2]<'0' || arg[2]>'2') {
+                fputs("nivel inválido o repetido: use -O0, -O1 o -O2\n",stderr);return -1;
+            }
+            c->nivel_explicito=1;c->nivel=arg[2]-'0';continue;
+        }
         if (!posicional && !strcmp(arg, "--ast-json")) { c->ast_json = 1; continue; }
         if (!posicional && !strcmp(arg, "--diagnosticos")) { c->diagnosticos = 1; continue; }
         if (!posicional && !strcmp(arg, "--ir")) { c->ir = 1; continue; }
+        if (!posicional && !strcmp(arg, "--ir-spilling")) { c->ir_spilling = 1; continue; }
+        if (!posicional && (!strcmp(arg, "--vliw-ir") || !strncmp(arg, "--vliw-ir=", 10))) {
+            c->vliw_ir = 1;
+            c->vliw_regs = 3;
+            if (arg[9] == '=') {
+                char *fin = NULL;
+                unsigned long n = strtoul(arg + 10, &fin, 10);
+                if (!arg[10] || *fin || n < 3 || n > 8) {
+                    fputs("--vliw-ir=N necesita entre 3 y 8 registros\n", stderr);
+                    return -1;
+                }
+                c->vliw_regs = (unsigned)n;
+            }
+            continue;
+        }
         /* --dce trabaja sobre la IR: cuenta como --ir (y tiene sus mismas reglas). */
         if (!posicional && !strcmp(arg, "--dce")) { c->ir = 1; c->dce = 1; continue; }
         if (!posicional && !strncmp(arg, "--unroll", 8) && (arg[8] == '\0' || arg[8] == '=')) {
@@ -298,8 +343,29 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
-    if (c->ir && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
+    /* O0 conserva la compilación normal; O1 nunca convierte vistas IR/JSON
+     * ni ensamblador existente en una supuesta optimización productiva. */
+    if (c->nivel_explicito && (c->ir || c->ir_spilling || c->vliw_ir || c->ast_json ||
+        c->diagnosticos || c->desde_ensamblador)) {
+        fputs("-O requiere compilación BAL normal; incompatible con vistas o -x\n",stderr);return -1;
+    }
+    /* El producto VLIW de IR es un fragmento para inspeccion, no un .bin
+     * ejecutable. Prohibir salidas que impliquen enlazado o ABI completos. */
+    if (c->vliw_ir && (c->ir || c->ir_spilling || c->dce || c->unroll ||
+                       c->reorder || c->reorder_json || c->desde_ensamblador ||
+                       c->ast_json || c->diagnosticos || c->simbolos || c->salida)) {
+        fputs("--vliw-ir solo admite -v, -t, -s, -p y un fuente .bal; "
+              "no admite -o/-x ni otras pasadas\n", stderr);
+        return -1;
+    }
+    /* Los modos de visualizacion de IR son excluyentes. */
+    if (c->ir && c->ir_spilling) {
+        fputs("--ir y --ir-spilling no se pueden combinar\n", stderr);
+        return -1;
+    }
+    if ((c->ir || c->ir_spilling) && (c->ast_json || c->diagnosticos || c->detallado || c->ensamblador ||
                   c->ast || c->simbolos || c->desde_ensamblador || c->paquetes || c->salida)) {
+        fputs("--ir y --ir-spilling se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         fputs("--ir, --dce, --unroll y --reorder se ejecutan de forma independiente (sin otras banderas)\n", stderr);
         return -1;
     }
@@ -475,7 +541,7 @@ static int compilar_proyecto(void *ctx, const Ast *arbol, SimTabla *tabla, FILE 
     const Compilacion *op = b->opciones;
     if (op->detallado) puts("[fase 3] semántico: declaraciones, tipos, ámbitos y llamadas válidos");
     MemProyectoMapa mapa = {0};
-    MemProyectoResultado r = mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
+    MemProyectoResultado r = mem_asignar_proyecto_referencias(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
                                                   CLI_CAPACIDAD_MARCO, &mapa);
     if (r != MEM_PROYECTO_OK) {
         fprintf(diagnosticos, "asignacion de memoria no disponible (codigo %d)\n", (int)r);
@@ -492,7 +558,7 @@ static int compilar_proyecto(void *ctx, const Ast *arbol, SimTabla *tabla, FILE 
     rr_inicializar(&funciones);
     FILE *temporal = tmpfile();
     if (!temporal) { perror("tmpfile"); return 2; }
-    int ok = ef_enlazar(arbol, tabla, 0, &arranque, &funciones, temporal,
+    int ok = ef_enlazar_referencias(arbol, tabla, 0, &arranque, &funciones, temporal,
                         diagnosticos, &b->resumen) == 0;
     if (ok) ok = fb_preparar_datos(arbol, tabla, (uint32_t)mapa.globales.gp_base,
                                    mapa.globales.bytes_globales, &b->datos, diagnosticos) == 0;
@@ -560,7 +626,7 @@ static int contar_tokens(const char *fuente, size_t largo, const char *nombre,
 static int frontend(const Compilacion *op)
 {
     size_t largo = 0;
-    char *fuente = read_source(op->entrada, &largo);
+    char *fuente = read_source(op->fuente_optimizada?op->fuente_optimizada:op->entrada, &largo);
     if (!fuente) return 2;
     int estado = 0;
     if (op->detallado) {
@@ -611,7 +677,7 @@ static int compilar(const Compilacion *op)
     } else {
         if (op->detallado || op->ast) estado = frontend(op);
         if (estado == 0)
-            estado = sem_visitar_proyecto(op->entrada, stderr, compilar_proyecto, &datos);
+            estado = sem_visitar_proyecto(op->fuente_optimizada?op->fuente_optimizada:op->entrada, stderr, compilar_proyecto, &datos);
     }
 
     if (estado == 0 && op->ensamblador) {
@@ -855,14 +921,290 @@ static int visitante_ir(void *ctx, const Ast *arbol, SimTabla *tabla, FILE *diag
     return estado;
 }
 
+/* Ruta explicita de inspeccion del productor fisico. Solo se aceptan
+ * fragmentos para los que ir_vliw_desde_ir acredita ISA, CFG/DAG y ABI acotada.
+ * A diferencia de compilar_proyecto, no se afirma enlazado ni ejecutabilidad. */
+static int visitante_vliw_ir(void *ctx, const Ast *arbol, SimTabla *tabla,
+                            FILE *diag)
+{
+    const Compilacion *op = ctx;
+    IrPrograma ir = {0};
+    IrVliwResultado resultado = {0};
+    MemProyectoMapa mapa = {0};
+    int estado = 1;
+    if (mem_asignar_proyecto(tabla, CLI_GP_BASE, CLI_FIN_GLOBALES,
+                             CLI_CAPACIDAD_MARCO, &mapa) != MEM_PROYECTO_OK) {
+        fputs("--vliw-ir: no se pudo calcular el marco de memoria\n", diag);
+        return 1;
+    }
+    /* La funcion aislada necesita reservar al menos RA en sp+0. Aun
+     * con marco real, variables/parametros se rechazan en el lowering. */
+    size_t marco = mapa.marco_maximo_bytes > 4 ? mapa.marco_maximo_bytes : 4;
+    estado = ir_desde_ast(arbol, &ir, diag);
+    if (estado) goto fin;
+    /* IR valida no implica que el productor fisico pueda traducirla.
+     * Mantener error por defecto hasta que todos los pasos VLIW terminen. */
+    estado = 1;
+    IrVliwConfiguracion cfg = {op->vliw_regs, marco};
+    IrVliwEstado rc = ir_vliw_desde_ir(&ir, &cfg, &resultado, diag);
+    if (rc != IR_VLIW_OK) {
+        fprintf(diag, "--vliw-ir: productor fisico rechazado (estado %d); "
+                      "no se genero codigo. El modo tradicional sigue intacto.\n",
+                (int)rc);
+        goto fin;
+    }
+    if (!resultado.cadena || !resultado.cadena->codificado) {
+        fputs("--vliw-ir: sin bundles codificados\n", diag);
+        goto fin;
+    }
+    if (op->detallado) {
+        puts("[IR despues del register spilling]");
+        if (ir_imprimir(&resultado.despues_spilling, stdout)) { estado=2; goto fin; }
+    }
+    printf("[VLIW IR] registros=%u, marco=%zu bytes, "
+           "spills=%zu, loads=%zu, stores=%zu, bundles=%zu\n",
+           op->vliw_regs, resultado.backend.marco.bytes_marco,
+           resultado.metricas.ranuras, resultado.metricas.cargas,
+           resultado.metricas.almacenes, resultado.cadena->codigo.cantidad);
+    puts("[ADVERTENCIA] Fragmento fisico: sin arranque, retorno ni fin BAL. "
+         "NO es un ejecutable autocontenido.");
+    if (op->paquetes) {
+        puts("[bundles VLIW / ensamblador]");
+        if (fputs(resultado.cadena->asm_texto, stdout) == EOF ||
+            cb_escribir_listado(&resultado.cadena->codigo, stdout)) {
+            estado=2;
+            goto fin;
+        }
+    }
+    if (op->ensamblador) {
+        char *asm_ruta = cambiar_extension(op->entrada, ".bal", ".vliw.asm");
+        char *mem_ruta = cambiar_extension(op->entrada, ".bal", ".vliw.mem");
+        if (!asm_ruta || !mem_ruta ||
+            !strcmp(asm_ruta, op->entrada) || !strcmp(mem_ruta, op->entrada)) {
+            fputs("--vliw-ir: nombres de salida invalidos\n", diag);
+            estado=2;
+        } else if (!escribir_archivo(asm_ruta, NULL, NULL,
+                                     resultado.cadena->asm_texto, NULL) ||
+                   !escribir_archivo(mem_ruta, &resultado.cadena->codigo,
+                                     cb_escribir_mem, NULL, NULL)) {
+            fputs("--vliw-ir: no se pudieron guardar los fragmentos\n", diag);
+            estado=2;
+        } else {
+            printf("[VLIW IR] fragmentos %s y %s (no ejecutables)\n",
+                   asm_ruta, mem_ruta);
+        }
+        free(asm_ruta);
+        free(mem_ruta);
+        if (estado == 2) goto fin;
+    }
+    estado = ferror(stdout) ? 2 : 0;
+fin:
+    ir_vliw_liberar(&resultado);
+    ir_liberar(&ir);
+    return estado;
+}
+
+/* Ejecuta la pasada de registros limitados solo para inspeccionar la IR.
+ * No reemplaza la ruta AST -> ensamblador del compilador principal. */
+static int visitante_ir_spilling(void *ctx, const Ast *arbol,
+                                SimTabla *tabla, FILE *diag)
+{
+    (void)ctx;
+    (void)tabla;
+    IrPrograma original = {0};
+    IrPrograma reescrita = {0};
+    IrSpillingMetricas metricas = {0};
+    int estado = ir_desde_ast(arbol, &original, diag);
+    if (estado == 0)
+        estado = ir_aplicar_spilling(&original, &reescrita, 3, &metricas);
+    if (estado == 0) {
+        puts("[IR con register spilling: 3 registros]");
+        estado = ir_imprimir(&reescrita, stdout);
+        if (estado == 0)
+            printf("[spilling] ranuras=%zu cargas=%zu almacenes=%zu desalojos=%zu\n",
+                   metricas.ranuras, metricas.cargas, metricas.almacenes,
+                   metricas.desalojos);
+    } else {
+        fputs("No se pudo generar la IR con spilling\n", diag);
+    }
+    ir_liberar(&reescrita);
+    ir_liberar(&original);
+    return estado;
+}
+
+/* Identidad de una ruta antes de publicar: la ruta resuelta permite comparar
+ * salidas nuevas; dispositivo/inodo reconoce también enlaces duros existentes.
+ * Cada ruta pertenece a esta validación y se libera o transfiere al llamador. */
+typedef struct {
+    char *ruta;
+    struct stat archivo;
+    int existe;
+} DestinoO2;
+
+/* Resuelve el padre de una salida inexistente sin exigir realpath del archivo.
+ * Los destinos existentes deben ser archivos regulares: un enlace colgante,
+ * directorio o dispositivo no es un artefacto publicable. No crea archivos.
+ * En éxito, el llamador posee destino->ruta; en error no conserva reservas. */
+static int resolver_destino_o2(const char *ruta, int salida, DestinoO2 *destino)
+{
+    if (!ruta || !*ruta) return 0;
+    struct stat enlace;
+    if (lstat(ruta, &enlace) == 0) {
+        if (stat(ruta, &destino->archivo) != 0 ||
+            !S_ISREG(destino->archivo.st_mode)) return 0;
+        destino->existe = 1;
+        destino->ruta = realpath(ruta, NULL);
+        if (!destino->ruta) return 0;
+    } else {
+        if (errno != ENOENT || !salida) return 0;
+        char *copia = strdup(ruta);
+        if (!copia) return 0;
+        char *barra = strrchr(copia, '/');
+        const char *nombre = barra ? barra + 1 : copia;
+        char *padre;
+        if (!*nombre) { free(copia); return 0; }
+        if (barra) {
+            *barra = '\0';
+            padre = realpath(barra == copia ? "/" : copia, NULL);
+        } else padre = realpath(".", NULL);
+        if (!padre) { free(copia); return 0; }
+        size_t a = strlen(padre), b = strlen(nombre);
+        if (a > SIZE_MAX - b - 2) { free(padre); free(copia); return 0; }
+        destino->ruta = malloc(a + b + 2);
+        if (destino->ruta) snprintf(destino->ruta, a + b + 2, "%s/%s", padre, nombre);
+        free(padre); free(copia);
+        if (!destino->ruta) return 0;
+    }
+    if (salida) {
+        /* Resolver el enlace final evita volver a seguirlo al publicar. El padre
+         * debe existir y admitir escritura/búsqueda; los errores posteriores de
+         * E/S siguen siendo posibles, sin prometer una transacción multiarquivo. */
+        char *padre = strdup(destino->ruta);
+        if (!padre) { free(destino->ruta); destino->ruta = NULL; return 0; }
+        char *barra = strrchr(padre, '/');
+        *barra = '\0';
+        int valido = access(*padre ? padre : "/", W_OK | X_OK) == 0 &&
+            (!destino->existe || access(destino->ruta, W_OK) == 0);
+        free(padre);
+        if (!valido) { free(destino->ruta); destino->ruta = NULL; return 0; }
+    }
+    return 1;
+}
+
+/* Contrasta todas las salidas y la fuente antes de cualquier fopen de salida.
+ * Solo tras éxito transfiere las rutas canónicas al visitante; ante rechazo
+ * deja sus cadenas intactas y libera lo adquirido. Los padres deben permanecer
+ * estables durante la compilación: este preflight no bloquea el filesystem. */
+static int validar_destinos_o2(const char *fuente, char **rutas, size_t cantidad, FILE *diag)
+{
+    DestinoO2 destinos[8] = {{0}};
+    int valido = 0;
+    if (cantidad != 7 || !resolver_destino_o2(fuente, 0, &destinos[0])) {
+        fputs("O2: ruta fuente inválida para validar destinos\n", diag);
+        goto fin;
+    }
+    for (size_t i = 0; i < cantidad; ++i) {
+        if (!resolver_destino_o2(rutas[i], 1, &destinos[i + 1])) {
+            fprintf(diag, "O2: destino inválido: %s\n", rutas[i] ? rutas[i] : "(sin memoria)");
+            goto fin;
+        }
+        for (size_t j = 0; j <= i; ++j) {
+            const DestinoO2 *a = &destinos[j], *b = &destinos[i + 1];
+            if (!strcmp(a->ruta, b->ruta) ||
+                (a->existe && b->existe && a->archivo.st_dev == b->archivo.st_dev &&
+                 a->archivo.st_ino == b->archivo.st_ino)) {
+                fprintf(diag, "O2: colisión de destinos: %s y %s\n", j ? rutas[j - 1] : fuente, rutas[i]);
+                goto fin;
+            }
+        }
+    }
+    /* Ninguna salida ha sido abierta. Publicamos solo la colección completa
+     * de nombres comprobados y liberamos las cadenas originales del visitante. */
+    for (size_t i = 0; i < cantidad; ++i) {
+        free(rutas[i]); rutas[i] = destinos[i + 1].ruta; destinos[i + 1].ruta = NULL;
+    }
+    valido = 1;
+fin:
+    for (size_t i = 0; i < 8; ++i) free(destinos[i].ruta);
+    return valido;
+}
+
+/* O2 consume la IR transformada, no el AST original como backend de respaldo.
+ * El resultado C es atómico; los archivos se crean solo después del enlace y
+ * de todas las validaciones. Los módulos se rechazan antes de publicar. */
+static int visitante_o2(void *ctx,const Ast *ast,SimTabla *tabla,FILE *diag)
+{
+    const Compilacion *op=ctx;MemProyectoMapa mapa={0};IrVliwPrograma r={0};
+    int estado=1;
+    for(const AstNodo *n=ast->raiz->primer_hijo;n;n=n->siguiente)
+        if(n->tipo==AST_IMPORTACION) {fputs("O2: módulos sin enlace IR acreditado\n",diag);return 1;}
+    if(mem_asignar_proyecto_referencias(tabla,CLI_GP_BASE,CLI_FIN_GLOBALES,CLI_TOPE_PILA-CLI_FIN_GLOBALES,&mapa)!=MEM_PROYECTO_OK) {
+        fputs("O2: memoria/ABI no soportados para esta unidad\n",diag);return 1;
+    }
+    estado=ir_vliw_programa(ast,tabla,3,&r,diag);
+    if(estado) {ir_vliw_programa_liberar(&r);return estado;}
+    char *asm_ruta=cambiar_extension(op->entrada,".bal",".asm");
+    char *bin=op->salida?cambiar_extension(op->salida,"",""):cambiar_extension(op->entrada,".bal",".bin");
+    char *mem=bin?cambiar_extension(bin,".bin",".mem"):NULL;
+    char *meta=cambiar_extension(op->entrada,".bal",".o2.json");
+    char *antes=cambiar_extension(op->entrada,".bal",".o2-antes.ir");
+    char *despues=cambiar_extension(op->entrada,".bal",".o2-despues.ir");
+    char *spill=cambiar_extension(op->entrada,".bal",".o2-spilling.ir");
+    char *salidas[7]={asm_ruta,bin,mem,meta,antes,despues,spill};
+    if(!validar_destinos_o2(op->entrada,salidas,7,diag))estado=2;
+    asm_ruta=salidas[0];bin=salidas[1];mem=salidas[2];meta=salidas[3];
+    antes=salidas[4];despues=salidas[5];spill=salidas[6];
+    FbDatos datos={0};datos.base=CLI_GP_BASE;
+    if(!estado && (!escribir_archivo(asm_ruta,NULL,NULL,r.cadena->asm_texto,NULL)||!escribir_archivo(bin,&r.cadena->codigo,NULL,NULL,&datos)||!escribir_archivo(mem,&r.cadena->codigo,cb_escribir_mem,NULL,NULL)||!escribir_archivo(meta,NULL,NULL,r.reporte_json,NULL)))estado=2;
+    const char *rutas[3]={antes,despues,spill};const IrPrograma *irs[3]={&r.original,&r.optimizada,&r.spilling};
+    for(unsigned k=0;!estado && k<3;++k) {
+        FILE *f=fopen(rutas[k],"w");if(!f){estado=2;break;}
+        int io=ir_imprimir(irs[k],f);if(fclose(f))io=1;if(io)estado=2;
+    }
+    if(!estado)fprintf(diag,"[O2] DCE=%zu unroll=%zu rename=%zu reorder=%zu spills=%zu loads=%zu stores=%zu bundles=%zu generaciones=%zu\n",r.eliminadas,r.desenrollados,r.renombradas,r.movidas,r.metricas.ranuras,r.metricas.cargas,r.metricas.almacenes,r.cadena->codigo.cantidad,r.generaciones);
+    if(!estado && op->paquetes)fputs(r.cadena->visualizacion_json,stdout);
+    if(!estado && op->simbolos)imprimir_simbolos(tabla,&mapa,NULL);
+    free(asm_ruta);free(bin);free(mem);free(meta);free(antes);free(despues);free(spill);ir_vliw_programa_liberar(&r);return estado;
+}
+
 int cli_run(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "--clones")) return buscar_clones(argc, argv);
     Compilacion op = {0};
     int parsed = parse_compilacion(argc, argv, &op);
     if (parsed != 0) return parsed == 1 ? 0 : 2;
     if (op.ast_json) return exportar_ast_json(op.entrada);
+    if (op.vliw_ir) {
+        if (!termina_en(op.entrada, ".bal")) {
+            fputs("--vliw-ir necesita un archivo fuente .bal\n", stderr);
+            return 2;
+        }
+        if ((op.detallado || op.ast) && frontend(&op)) return 1;
+        return sem_visitar_proyecto(op.entrada, stderr, visitante_vliw_ir, &op);
+    }
+    if (op.ir_spilling)
+        return sem_visitar_proyecto(op.entrada, stderr, visitante_ir_spilling, NULL);
     if (op.ir) return sem_visitar_proyecto(op.entrada, stderr, visitante_ir, &op);
     if (op.diagnosticos) return exportar_diagnosticos(op.entrada);
+    if (op.nivel==2) {
+        if(!termina_en(op.entrada,".bal")) {fputs("-O2 requiere fuente .bal\n",stderr);return 2;}
+        return sem_visitar_proyecto(op.entrada,stderr,visitante_o2,&op);
+    }
+    if (op.nivel==1) {
+        if (!termina_en(op.entrada,".bal")) {
+            fputs("-O1 requiere un fuente .bal\n",stderr);return 2;
+        }
+        VliwOptFuente fuente={0};
+        int estado=vliw_opt_fuente_preparar(op.entrada,&fuente,stderr);
+        if (!estado) {
+            fprintf(stderr,"[O1] DCE: IR eliminadas=%zu; BAL borradas=%zu cambiadas=%zu conservadas=%zu; cambio=%d\n",
+                fuente.eliminadas_ir,fuente.borradas_bal,fuente.cambiadas_bal,fuente.conservadas_bal,fuente.cambio_bal);
+            op.fuente_optimizada=fuente.ruta;
+            /* El backend reconstruye memoria, símbolos, enlace y CB desde el
+             * BAL elegido; los nombres de salida conservan la entrada original. */
+            estado=compilar(&op);
+        }
+        vliw_opt_fuente_liberar(&fuente);return estado;
+    }
     return compilar(&op);
 }
 

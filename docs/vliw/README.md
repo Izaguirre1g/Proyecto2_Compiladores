@@ -1,8 +1,35 @@
 # Contribución VLIW — Simulador, calendarización y validación
 
-Esta carpeta es la entrada a los bloques S1–S8-C, M1/M2 y B1–B5. La reorganización
-R1 conserva algoritmos, ISA, APIs, métricas y formatos; no integra todavía el
-scheduler al backend BAL ni implementa niveles `-O0`, `-O1` o `-O2`.
+Esta carpeta es la entrada a los bloques S1–S8-C, M1/M2 y B1–B5 y a la
+integración productiva O0/O1/O2. PR #70 y #71 están fusionados; el estado vigente
+se describe en [entrega de Javier](entrega-final-javier.md) e
+[integración productiva O2](integracion-productiva-o2.md).
+
+O0 conserva el backend tradicional; O1 aplica DCE/reescritura BAL de José;
+O2 baja la IR optimizada al ISA, construye CFG/DAG y usa S7/verificador,
+S8-A/CB y enlace reales para el subconjunto admitido. No admite todo BAL.
+R1 fue una reorganización anterior: su falta de conexión productiva no describe
+el estado vigente.
+
+## Resultados identificados por campaña
+
+La auditoría externa del 17/11/2026 sobre Compiladores `13497a9` y Arquitectura
+`192050e` registró **26 suites / 460 métodos** por modalidad normal, ASan,
+UBSan, ASan+UBSan y LSan, sin FAIL ni SKIP; quince programas correctos en los
+tres niveles y cien contrastes RTL (90 oficiales y diez dirigidos, 20 programas
+únicos, modos de memoria 0/2, L2_MODEL=0). Es la campaña histórica
+`evidencias-cierre-definitivo-javier-p2`, no una ejecución de este parche.
+La corrección F-01 amplía la suite de niveles; sus nuevos resultados se guardan
+en `evidencias-javier-cierre-correcciones`, sin sumar métodos de versiones distintas.
+
+Campaña nueva F-01: **26 suites / 470 métodos por modalidad**, normal, ASan,
+UBSan, ASan+UBSan y LSan, FAIL=0 y SKIP=0. `make -B balc` y
+`make -B -k test` devuelven 0. La suite de niveles contiene 23 métodos y
+44 subcasos negativos con hashes conservados; las pruebas adicionales no
+se suman de nuevo al total. Valgrind ejecutó doce rutas (una válida y once
+rechazos), cero errores y cero bytes/bloques pendientes. La prueba O2/M2
+externa conserva el valor esperado 7 y coherencia ASM/BIN/MEM. No se repitió
+la campaña extensa de cien contrastes RTL; sí las suites con RTL aplicables.
 
 ## Organización y responsabilidades
 
@@ -10,8 +37,8 @@ scheduler al backend BAL ni implementa niveles `-O0`, `-O1` o `-O2`.
 |---|---|
 | `src/Simulador_VLIW/` | Cargador MEM/BALB, decodificador, ALU/LSU/BRU/cripto, pipeline, métricas, sesiones y comparador. |
 | `src/Calendarizacion_VLIW/` | S7 planifica metadatos; S8-A emite ASM; S8-C produce tabla, CSV, JSON y estadísticas. |
-| `include/` | Las trece cabeceras públicas conservan nombres, firmas, estructuras y enumeraciones. |
-| `tests/vliw/` | Las dieciséis suites Python y sus pruebas C; incluye escenarios normales, negativos y diferenciales. |
+| `include/` | Contratos públicos del simulador, scheduler, metadatos, CFG/DAG e integración. |
+| `tests/vliw/` | Suites Python y pruebas C; escenarios normales, negativos, diferenciales e integración productiva. |
 | `tests/vliw/rtl/` | Cinco bancos propios contra el procesador de referencia; no contienen sustitutos del RTL. |
 | `tools/vliw/` | CLIs M2/B1, B2–B5, sondas y validación reproducible. |
 | `docs/vliw/` | Contratos técnicos, comandos y limitaciones de cada bloque. |
@@ -90,9 +117,27 @@ un programa consigo mismo. No se cambia esa conclusión para convertirla en PASS
 
 ## Mostrar una calendarización
 
-S7 recibe operaciones, máscaras RAW/WAR/WAW, efectos, bloques, CFG y dependencias
-proporcionadas por otro productor. No analiza BAL directamente. Se puede compilar
-el puente **de prueba** existente para visualizar esos metadatos:
+El productor O2 proporciona operaciones físicas, máscaras, efectos, bloques,
+CFG y dependencias acreditados a S7. El selector recorre las listas por orden
+original determinista; el camino crítico informado por el DAG no cambia esa
+política. En una copia externa, la vista productiva se obtiene con:
+
+```bash
+make -B balc
+./balc -O0 caso.bal
+./balc -O1 caso.bal
+./balc -O2 -o resultado.bin caso.bal
+./balc -O2 -p caso.bal
+```
+
+Se publican ASM, BIN, MEM, `.o2.json` y tres IR; el preflight O2 comprueba las
+siete rutas entre sí y contra la fuente, incluyendo alias de ruta e identidad.
+Por ejemplo, `-O2 -o caso.o2.json caso.bal` debe rechazar antes de escribir.
+No hay transacción multiarquivo frente a fallos posteriores de E/S ni bloqueo
+de modificaciones concurrentes del filesystem.
+
+El puente **de prueba** anterior sigue disponible para visualizar metadatos
+explícitos sin pasar por BAL:
 
 ```bash
 cc "${flags[@]}" tests/vliw/test_vliw_visualizador.c \
@@ -143,16 +188,20 @@ capturas fuera del repositorio. Los comandos detallados de cada documento usan
 las rutas nuevas. B5 conserva ciclos históricos 3403/247/2748 cuando los comprueba
 la ejecución real: esos números no se fuerzan en la herramienta.
 
-## Límites e integración pendiente
+## Límites vigentes
 
-El backend debe producir `VliwEntrada`, dependencias y CFG completos y verificables
-para invocar S7. No basta una lista sin aristas para afirmar independencia.
-S8-A necesita destinos coherentes y S8-C no repara un plan inválido. Las APIs son
-bibliotecas separadas; el lowering/IR y la integración BAL→IR→scheduler pertenecen
-a trabajo posterior de sus responsables. R1 no implementa I1-A ni optimizaciones.
+El productor debe proporcionar `VliwEntrada`, dependencias y CFG completos;
+una lista sin aristas no demuestra independencia. S8-A necesita destinos
+coherentes y S8-C no repara un plan inválido. O2 ya conecta esa cadena para el
+subconjunto del [contrato productivo](integracion-productiva-o2.md); módulos,
+listas/texto, arrays dinámicos y otras características allí enumeradas se
+rechazan explícitamente. No se ofrece protección dinámica nueva contra
+desbordamiento de pila ni mejora universal de rendimiento.
 
-B5 mantiene el pipeline ACTIVO y un **corte candidato**, no una certificación del
-retorno semántico de main. Comparación M2 y métricas consistentes no prueban por
-sí solas equivalencia universal de optimizaciones. La futura integración debe
-conservar el Makefile actual de develop y revisar la referencia RTL; esta
-reorganización no fusiona ramas ni publica cambios.
+B5 conserva su corte candidato. La sonda O2 puede acreditar retorno de main,
+pero el pipeline sigue ACTIVO y B1/B2 mantiene INCONCLUSO; resultados BAL y
+contrastes M2/RTL no constituyen equivalencia universal entre optimizaciones.
+La selección literal de tres DCE con llamadas con efectos requiere revisión
+de José/equipo. ABI/lowering, pasadas, documentación formal, gráficas y defensa
+conservan las responsabilidades compartidas descritas en la guía de entrega.
+La bitácora real de horas es individual y no se obtiene de tiempos de pruebas.

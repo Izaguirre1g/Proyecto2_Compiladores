@@ -99,7 +99,7 @@ static void ejecutar(const IrPrograma *ir, Estado *e) {
         case IR_ARG: e->args[e->nargs++] = val(e, x->a); break;
         case IR_CALL: {
             unsigned long long s = 1;
-            anotar(e, "%s", 0); /* separador (el valor no se usa) */
+            anotar(e, "call(", 0); /* separador literal, sin formato de puntero */
             for (size_t i = 0; i < e->nargs; ++i) { s += e->args[i]; anotar(e, "%llu,", e->args[i]); }
             anotar(e, ";", 0);
             e->nargs = 0;
@@ -308,8 +308,8 @@ static void programa_azar(IrPrograma *ir, unsigned long s) {
         I(ir, IR_COPY, VARS[i], v, NULL, NULL);
     }
     bloque_azar(ir);
-    I(ir, IR_BIN, "$tc", VARS[azar(5)], VARS[azar(5)], "<");
-    I(ir, IR_JFALSE, "$L1", "$tc", NULL, NULL);
+    I(ir, IR_BIN, "$t0", VARS[azar(5)], VARS[azar(5)], "<");
+    I(ir, IR_JFALSE, "$L1", "$t0", NULL, NULL);
     bloque_azar(ir);
     I(ir, IR_JUMP, "$L2", NULL, NULL, NULL);
     I(ir, IR_LABEL, "$L1", NULL, NULL, NULL);

@@ -39,7 +39,7 @@ static int arreglo_desplazado(void *datos, const AstNodo *n, GbArreglo *a)
 {
     Referencias *ref = datos;
     if (!ref->arreglos || !ref->arreglos(ref->datos, n, a)) return 0;
-    if (a->base == 2) {
+    if (a->base == 2 || a->base == GB_ARREGLO_REFERENCIA_SP) {
         if (ref->reserva > 1020 || a->desplazamiento > 1023 - (int)ref->reserva)
             return 0;
         a->desplazamiento += (int)ref->reserva;
@@ -104,8 +104,22 @@ static int llamada(GfContexto *c, const AstNodo *n, size_t reserva)
     for (const AstNodo *a = args->primer_hijo; a; a = a->siguiente, ++i) {
         /* Cada argumento se evalua ANTES de crear su slot. Los accesos sp
          * posteriores compensan los slots temporales ya reservados. */
-        if (reserva > SIZE_MAX - 4 * i ||
-            !expresion_ext(c, a, reserva + 4 * i))
+        GbArreglo arreglo_arg;
+        int es_arreglo=a->tipo==AST_IDENTIFICADOR && c->arreglos &&
+                       c->arreglos(c->datos,a,&arreglo_arg);
+        int argumento_ok=0;
+        if(es_arreglo) {
+            /* Las direcciones se toman antes de reservar el siguiente slot.
+             * Se compensan todos los slots de llamadas exteriores/anidadas. */
+            size_t extra=(arreglo_arg.base==2 || arreglo_arg.base==GB_ARREGLO_REFERENCIA_SP)?reserva+4*i:0;
+            if(arreglo_arg.desplazamiento>=0 && extra<=1023 &&
+               (size_t)arreglo_arg.desplazamiento<=1023-extra)
+                argumento_ok=fprintf(c->salida,"%s x4,x%u,%zu\n",
+                    arreglo_arg.base==GB_ARREGLO_REFERENCIA_SP?"cargai":"sumai",
+                    arreglo_arg.base==GB_ARREGLO_REFERENCIA_SP?2:arreglo_arg.base,
+                    (size_t)arreglo_arg.desplazamiento+extra)>=0;
+        } else if(reserva<=SIZE_MAX-4*i)argumento_ok=expresion_ext(c,a,reserva+4*i);
+        if (!argumento_ok)
             return gf_fallo(c, a, "argumento fuera del subconjunto escalar");
         if (fprintf(c->salida, "restai x2, x2, 4\n"
                                "guardap x2, x4, 0\n") < 0) return 0;
@@ -163,6 +177,16 @@ static int asignacion_ext(GfContexto *c, const AstNodo *n)
     int declaracion = n->tipo == AST_DECLARACION;
     const AstNodo *id = n->primer_hijo;
     const AstNodo *valor = id ? id->siguiente : NULL;
+    /* a[i] : f(x);  primero el valor (queda en x4), despues la direccion
+     * del elemento. El indice no puede tener llamadas: pisarian x4. */
+    if (!declaracion && id && id->tipo == AST_INDICE && valor && !valor->siguiente) {
+        if (contiene_llamada(id))
+            return gf_fallo(c, id, "indice con llamadas aun no soportado");
+        if (!c->arreglos) return gf_fallo(c, id, "arreglo sin referencia semantica");
+        if (!expresion_ext(c, valor, 0)) return 0;
+        return gb_guardar_elemento(id, c->resolver, c->arreglos, c->datos,
+                                   c->salida, c->diagnosticos) == 0;
+    }
     if (!id || !valor || id->tipo != AST_IDENTIFICADOR)
         return gf_fallo(c, n, "asignacion invalida");
     GbReferencia ref;
@@ -258,9 +282,13 @@ int gf_generar_funcion_arreglos(const AstNodo *funcion, size_t bytes_marco,
     for (const AstNodo *p = params->primer_hijo; p; p = p->siguiente) {
         const AstNodo *pid = p->primer_hijo;
         const AstNodo *pt = pid ? pid->siguiente : NULL;
+        GbArreglo referencia_param;
+        int por_referencia=pid && pt && pt->tipo==AST_TIPO_ARREGLO && !pt->siguiente &&
+            arreglos && arreglos(datos,pid,&referencia_param) &&
+            referencia_param.base==GB_ARREGLO_REFERENCIA_SP && referencia_param.dimensiones==1;
         if (p->tipo != AST_PARAMETRO || !pid || pid->tipo != AST_IDENTIFICADOR ||
-            !pt || pt->tipo != AST_TIPO || !pt->texto || pt->siguiente ||
-            (strcmp(pt->texto, "declare_int") && strcmp(pt->texto, "declare_boolean")))
+            (!por_referencia && (!pt || pt->tipo != AST_TIPO || !pt->texto || pt->siguiente ||
+            (strcmp(pt->texto, "declare_int") && strcmp(pt->texto, "declare_boolean")))))
             return 1;
         ++cantidad;
     }

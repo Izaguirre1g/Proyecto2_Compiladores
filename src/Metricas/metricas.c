@@ -1,5 +1,6 @@
 /*
  * Métricas del código del editor (ver include/metricas.h).
+ * El tamaño estático procede de los bundles emitidos; no del simulador.
  *
  * Pasos de met_medir:
  *   1. Generar el ensamblador y el .bin con el botón Ensamblador
@@ -31,9 +32,6 @@
 /* Cada cuántos ciclos se revisa el PC en el paso 4. Conviene que no sea
  * múltiplo de 3 (ver llego_al_fin). */
 #define MET_TRAMO 1000u
-
-/* Cada bundle mide 16 bytes: 4 slots de 32 bits. */
-#define MET_BYTES_BUNDLE 16u
 
 /* Copia una cadena (NULL si falta memoria). */
 static char *copiar(const char *s)
@@ -303,6 +301,44 @@ int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presup
     ide_ensamblador_liberar(&a);
     if (estado != 0) met_liberar(m);
     return estado;
+}
+
+/* La conversión utiliza el conteo emitido, nunca bundles retirados o ciclos.
+ * Comprobamos antes de multiplicar para poder reutilizarla fuera de IMEM actual. */
+int met_calcular_bytes_codigo(size_t bundles, size_t *bytes)
+{
+    if (bytes == NULL || bundles > SIZE_MAX / MET_BYTES_BUNDLE) return -1;
+    *bytes = bundles * MET_BYTES_BUNDLE;
+    return 0;
+}
+
+/* Una ejecución cortada conserva su imagen completa. En cambio, un fallo de
+ * compilación no acredita una imagen, aunque el llamador dejara un conteo viejo. */
+int met_tamano_codigo(const MetMedicion *m, size_t *bytes)
+{
+    if (m == NULL || (m->estado != MET_LISTO && m->estado != MET_SIN_TERMINAR)) return -1;
+    return met_calcular_bytes_codigo(m->bundles, bytes);
+}
+
+/* Usamos una magnitud y un signo separado: dos tamaños size_t pueden diferir
+ * más que PTRDIFF_MAX. El porcentaje divide en coma flotante después de la
+ * resta exacta, sin multiplicar enteros por 100 ni dividir por cero. */
+int met_comparar_tamano_codigo(const MetMedicion *antes, const MetMedicion *despues,
+                              MetComparacionTamano *comparacion)
+{
+    MetComparacionTamano c = {0};
+    if (comparacion == NULL || met_tamano_codigo(antes, &c.original_bytes) != 0 ||
+        met_tamano_codigo(despues, &c.optimizado_bytes) != 0) return -1;
+    c.reduccion = c.optimizado_bytes < c.original_bytes;
+    c.diferencia_bytes = c.reduccion ? c.original_bytes - c.optimizado_bytes
+                                    : c.optimizado_bytes - c.original_bytes;
+    c.porcentaje_definido = c.original_bytes != 0;
+    if (c.porcentaje_definido) {
+        c.variacion_porcentual = 100.0 * ((double)c.diferencia_bytes / (double)c.original_bytes);
+        if (c.reduccion) c.variacion_porcentual = -c.variacion_porcentual;
+    }
+    *comparacion = c;
+    return 0;
 }
 
 double met_porcentaje(uint64_t parte, uint64_t total)
