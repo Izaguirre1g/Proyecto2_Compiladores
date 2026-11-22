@@ -8,6 +8,8 @@
  *   - Pestaña "Comparación": ciclos, instrucciones, IPC, tamaño y tiempo de
  *     compilación de cada nivel en una gráfica (azul -O0, naranja -O1,
  *     aqua -O2).
+ *   - Pestaña "Instrucciones": las instrucciones de la IR antes y después de
+ *     cada optimización, y cuántas eliminó, reordenó y renombró cada una.
  *   - Pestaña "Qué hace cada nivel": lo que hizo el DCE de -O1 y cada pasada
  *     de -O2, en orden.
  *   - Pestaña "Resultado de main": el valor final de cada variable de main
