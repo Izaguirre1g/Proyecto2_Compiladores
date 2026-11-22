@@ -58,6 +58,9 @@ typedef struct {
     char *motivo;             /* Explicación con SIN_BACKEND, SIN_TERMINAR o FALLO_SIMULADOR. */
     size_t bundles;           /* Tamaño del programa: bundles en memoria (métrica estática). */
     uint32_t direccion_fin;   /* Dirección del salto final del arranque (__arranque_fin). */
+    uint32_t ancho_fin;       /* Bytes después de direccion_fin que recorre el ciclo
+                               * final: 32 en -O0 (3 bundles) y 64 en -O2 (5 bundles).
+                               * 0 = MET_ANCHO_FIN_O0. */
     uint64_t presupuesto;     /* Ciclos máximos que se permitieron. */
     IdeAsmTiempos compilacion; /* Tiempo de compilación (mediana de MET_COMPILACIONES
                                 * corridas), por fase. Válido desde MET_SIN_BACKEND. */
@@ -101,6 +104,32 @@ typedef struct {
  * queda intacta ante error. No reserva memoria ni establece un nivel O2. */
 int met_comparar_tamano_codigo(const MetMedicion *antes, const MetMedicion *despues,
                               MetComparacionTamano *comparacion);
+
+/* El ciclo final de -O0: el PC pasa por fin, fin+16 y fin+32. */
+#define MET_ANCHO_FIN_O0 32u
+
+/* Bytes de la memoria de datos del simulador (64 KB). */
+#define MET_BYTES_MEMORIA 65536u
+
+/*
+ * Ejecuta un binario BALB ya armado (pasos 3 a 5 de met_medir), para medir
+ * un binario que no sale del botón Ensamblador, como el de -O2.
+ *   balb, largo_balb: el .bin completo.
+ *   ruta:     la del archivo del editor (el .bin temporal va a su lado), o NULL.
+ *   memoria:  si no es NULL, MET_BYTES_MEMORIA bytes donde se copia la
+ *             memoria de datos en el ciclo en que main termina.
+ *   m:        antes de llamar se llenan m->direccion_fin (la dirección del
+ *             ciclo final; ver met_buscar_fin) y, si se quiere, m->presupuesto.
+ *             Deja el estado, el motivo y las métricas del simulador.
+ * Devuelve 0 si se pudo intentar (el estado dice cómo terminó) o -1 si
+ * falló algo interno.
+ */
+int met_simular(const unsigned char *balb, size_t largo_balb, const char *ruta,
+                uint8_t *memoria, MetMedicion *m);
+
+/* La dirección del salto final del arranque de -O0 ("sye x0,0") en un
+ * ensamblador. 0 si la encontró, -1 si no. */
+int met_buscar_fin(const char *ensamblador, uint32_t *direccion);
 
 /*
  * Porcentaje de "parte" sobre "total" (0 si total es 0). Para las gráficas:

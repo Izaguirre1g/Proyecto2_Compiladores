@@ -95,6 +95,8 @@ static const char *explicar_memoria(MemProyectoResultado r)
     }
 }
 
+static size_t marco_de_main(const SimTabla *tabla);   /* Más abajo. */
+
 /*
  * El backend: los mismos pasos que compilar_proyecto() de cli.c.
  * Devuelve 0 si se generó; 1 si el backend no pudo (el motivo queda en
@@ -143,6 +145,17 @@ static int generar(Contexto *c, const Ast *arbol, SimTabla *tabla, FILE *diag)
     fclose(temporal);
     rr_liberar(&funciones);
 
+    /* Para leer el resultado de main en el simulador (ventana -O0 / -O2):
+     * el tamaño de su marco y dónde está cada variable. Se calcula DESPUÉS
+     * de generar el ensamblador, así no puede cambiar lo que ya se generó. */
+    if (estado == 0) {
+        s->marco_main = marco_de_main(tabla);
+        if (ide_variables_de_main(tabla, &s->variables, &s->cantidad_variables) != 0) {
+            c->sin_memoria = 1;
+            estado = 2;
+        }
+    }
+
     s->funciones = resumen.funciones;
     s->saltos = resumen.saltos.saltos;
     s->reescritos = resumen.saltos.relajados;
@@ -162,6 +175,78 @@ static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
     int estado = generar(c, arbol, tabla, diag);
     c->salida_ms = ahora_ms();
     return estado;
+}
+
+/* El ámbito de función que contiene a "a" (el hijo directo del global), o NULL. */
+static const SimAmbito *funcion_de(const SimTabla *tabla, const SimAmbito *a)
+{
+    while (a != NULL && a->padre != NULL && a->padre != tabla->global) a = a->padre;
+    return a != NULL && a->padre == tabla->global ? a : NULL;
+}
+
+/*
+ * Bytes del marco de main con la memoria ya asignada: donde termina su
+ * última variable (incluidas las de sus bloques), con un mínimo de 4 para
+ * ra y redondeado a múltiplo de 4. Es la misma regla que usa el enlazador
+ * (marco_de en src/Resolucion_y_Enlace/enlace_funciones.c, que es interna),
+ * así que es el mismo marco con que se generó el código de main.
+ */
+static size_t marco_de_main(const SimTabla *tabla)
+{
+    const SimAmbito *main_ambito = NULL;
+    for (const SimAmbito *a = tabla->global->siguiente_creacion; a != NULL; a = a->siguiente_creacion)
+        if (a->padre == tabla->global && a->nombre != NULL && strcmp(a->nombre, "main") == 0) main_ambito = a;
+    if (main_ambito == NULL) return 0;
+    size_t marco = 4;
+    for (const SimSimbolo *s = tabla->primero; s != NULL; s = s->siguiente_orden) {
+        const SimAmbito *a = s->ambito;
+        while (a != NULL && a != main_ambito) a = a->padre;
+        if (a == NULL || s->desplazamiento < 4) continue;
+        size_t fin = (size_t)s->desplazamiento + s->bytes;
+        if (fin > marco) marco = fin;
+    }
+    return (marco + 3) / 4 * 4;
+}
+
+int ide_variables_de_main(const SimTabla *tabla, IdeVarMain **variables, size_t *cantidad)
+{
+    *variables = NULL;
+    *cantidad = 0;
+    if (tabla == NULL || tabla->global == NULL) return 0;
+    size_t capacidad = 0;
+    /* En el orden en que se declararon (siguiente_orden), igual en -O0 y -O2. */
+    for (const SimSimbolo *s = tabla->primero; s != NULL; s = s->siguiente_orden) {
+        const SimAmbito *f = funcion_de(tabla, s->ambito);
+        if (f == NULL || f->nombre == NULL || strcmp(f->nombre, "main") != 0) continue;
+        if ((s->clase != SIM_VARIABLE && s->clase != SIM_CONSTANTE) ||
+            s->almacen != SIM_ALMACEN_LOCAL || s->desplazamiento < 0 || s->bytes == 0) continue;
+        if (s->tipo != SIM_TIPO_INT && s->tipo != SIM_TIPO_BOOLEAN && s->tipo != SIM_TIPO_CHAR) continue;
+        /* Un arreglo: tantos elementos como el producto de sus longitudes. */
+        size_t elementos = 1;
+        for (unsigned d = 0; d < s->dimensiones && s->longitudes != NULL; ++d) elementos *= s->longitudes[d];
+        if (elementos == 0 || s->bytes % elementos != 0) continue;
+        if (*cantidad == capacidad) {
+            size_t nueva = capacidad ? 2 * capacidad : 8;
+            IdeVarMain *otra = realloc(*variables, nueva * sizeof *otra);
+            if (otra == NULL) {
+                free(*variables);
+                *variables = NULL;
+                *cantidad = 0;
+                return -1;
+            }
+            *variables = otra;
+            capacidad = nueva;
+        }
+        IdeVarMain *v = &(*variables)[(*cantidad)++];
+        memset(v, 0, sizeof *v);
+        snprintf(v->nombre, sizeof v->nombre, "%s", s->nombre);
+        v->desplazamiento = s->desplazamiento;
+        v->elementos = elementos;
+        v->bytes_elemento = s->bytes / elementos;
+        v->es_boolean = s->tipo == SIM_TIPO_BOOLEAN;
+        v->es_char = s->tipo == SIM_TIPO_CHAR;
+    }
+    return 0;
 }
 
 /* Lee los bytes de un archivo temporal (pueden incluir ceros) y deja su
@@ -318,5 +403,6 @@ void ide_ensamblador_liberar(IdeEnsamblador *s)
     free(s->ensamblador);
     free(s->binario);
     free(s->balb);
+    free(s->variables);
     memset(s, 0, sizeof *s);
 }

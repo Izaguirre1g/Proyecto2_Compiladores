@@ -61,6 +61,11 @@
  *      de cada bloque básico con el módulo de Meibel (reordenamiento/), y
  *      muestra los ciclos antes y después, la IR lado a lado y el grafo de
  *      dependencias (ide_reordenamiento.c e ide_reordenamiento_ventana.c).
+ *  14. -O0 / -O2: el botón "-O0 / -O2" compila el código con los dos niveles
+ *      de optimización de balc, ejecuta los dos binarios en el simulador y
+ *      los compara: ciclos, tamaño, tiempo de compilación, qué hizo cada
+ *      pasada de -O2 y si el resultado de main es el mismo
+ *      (ide_optimizacion.c e ide_optimizacion_ventana.c).
  *
  * Atajos: Ctrl+N nuevo, Ctrl+O abrir, Ctrl+S guardar, Ctrl+. corregir.
  * Uso: ./balc-ide [archivo.bal]
@@ -79,6 +84,7 @@
 #include "ide_unrolling_ventana.h"
 #include "metricas_ventana.h"
 #include "ide_reordenamiento_ventana.h"
+#include "ide_optimizacion_ventana.h"
 #include "ide_nucleo.h"
 #include "ide_tabla_ll1.h"
 
@@ -1874,6 +1880,17 @@ static void al_pulsar_reordenamiento(GtkWidget *boton, gpointer datos)
     g_free(texto);
 }
 
+/* Botón "-O0 / -O2": compila el código del editor (aunque no esté guardado)
+ * con los dos niveles de optimización y los compara en el simulador. */
+static void al_pulsar_optimizacion(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    gchar *texto = texto_del_editor(ide);
+    ide_mostrar_optimizacion(GTK_WINDOW(ide->ventana), texto, ide->ruta, nombre_actual(ide));
+    g_free(texto);
+}
+
 /* Botón "Métricas": ejecuta el código del editor (aunque no esté guardado)
  * en el simulador VLIW y muestra sus métricas con gráficas. */
 static void al_pulsar_metricas(GtkWidget *boton, gpointer datos)
@@ -1928,6 +1945,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "Loop _unrolling", G_CALLBACK(al_pulsar_unrolling), ide);
     agregar_boton(barra, "Re_ordenamiento", G_CALLBACK(al_pulsar_reordenamiento), ide);
     agregar_boton(barra, "Mét_ricas", G_CALLBACK(al_pulsar_metricas), ide);
+    agregar_boton(barra, "-O_0 / -O2", G_CALLBACK(al_pulsar_optimizacion), ide);
     gtk_box_pack_start(GTK_BOX(columna), barra, FALSE, FALSE, 0);
 
     /* El editor (arriba) y la lista de errores (abajo), con un divisor movible. */

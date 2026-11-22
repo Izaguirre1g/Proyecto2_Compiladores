@@ -45,9 +45,35 @@ typedef struct {
     double total;
 } IdeAsmTiempos;
 
+/*
+ * Una variable local de main, para leer su valor en la memoria del
+ * simulador cuando main termina. El resultado de un programa BAL es el
+ * valor final de las variables de main (BAL no tiene print), así que con
+ * esto se comprueba que dos binarios (por ejemplo -O0 y -O2) hacen lo mismo.
+ * Su dirección es: tope de la pila (0x10000) - marco de main + desplazamiento.
+ */
+typedef struct {
+    char nombre[64];
+    long desplazamiento;     /* Desde sp dentro del marco de main. */
+    size_t elementos;        /* 1 si es escalar; si es arreglo, cuántos elementos. */
+    size_t bytes_elemento;   /* 4 (int, boolean) o 1 (char). */
+    int es_boolean;          /* Para escribir declare_true / declare_false. */
+    int es_char;             /* Para escribir el carácter. */
+} IdeVarMain;
+
+/* Llena la lista de variables locales de main de una tabla de símbolos con
+ * la memoria ya asignada (int, boolean y char; escalares y arreglos). No
+ * incluye text ni listas: su valor no está en el marco. Devuelve 0 bien o
+ * -1 sin memoria. Se libera con free(*variables). */
+struct SimTabla;
+int ide_variables_de_main(const struct SimTabla *tabla, IdeVarMain **variables, size_t *cantidad);
+
 typedef struct {
     IdeAsmEstado estado;
     IdeAsmTiempos tiempos; /* Cuánto tardó la compilación (ver arriba). */
+    size_t marco_main;     /* Bytes del marco de main (0 si no se generó). */
+    IdeVarMain *variables; /* Variables locales de main (ver arriba). */
+    size_t cantidad_variables;
     char *motivo;          /* Con IDE_ASM_SIN_BACKEND: lo que dijo el backend. */
     char *ensamblador;     /* El texto del .asm (bundles: 4 slots separados por '|'). */
     char *binario;         /* Cada bundle con su codificación (como "balc -p"). */
