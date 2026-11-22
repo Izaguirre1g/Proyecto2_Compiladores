@@ -546,7 +546,7 @@ static void calcular(Datos *d, const char *texto, const char *ruta)
         snprintf(d->nota_dce, sizeof d->nota_dce,
                  "El DCE no se pudo hacer: la IR todavía no soporta este programa (%s).",
                  dce.motivo ? dce.motivo : "");
-    } else if (dce.estado != IDE_DCE_LISTO || dce.codigo_nuevo == NULL) {
+    } else if (dce.estado != IDE_DCE_LISTO || dce.codigo_nuevo == NULL || dce.codigo_igual) {
         snprintf(d->nota_dce, sizeof d->nota_dce,
                  "Este código no tiene código muerto que se pueda quitar: no hay nada que comparar.");
     } else if (met_medir(dce.codigo_nuevo, strlen(dce.codigo_nuevo), ruta, 0, &d->sin_muerto) != 0 ||

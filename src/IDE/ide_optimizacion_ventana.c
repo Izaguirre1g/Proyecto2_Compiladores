@@ -209,6 +209,10 @@ static GtkWidget *pestana_pasadas(const IdeOptimizacion *r)
                         ? "El DCE con variables vivas quita de la IR las asignaciones que nadie usa y el código "
                           "inalcanzable; ese resultado se lleva al código BAL (pestaña Código de -O1) y se "
                           "compila con el backend tradicional."
+                        : r->o1_eliminadas_ir > 0
+                        ? "El DCE quitó de la IR cosas que no están escritas en el código BAL (por "
+                          "ejemplo, el salto que la IR pone después de un give dentro de un whether): "
+                          "no hay sentencias que borrar, así que -O1 compila el mismo código que -O0."
                         : "El DCE no encontró nada que quitar: -O1 compila el mismo código que -O0.");
     } else {
         gchar *e = g_markup_escape_text(r->o1.motivo ? r->o1.motivo : "motivo desconocido", -1);

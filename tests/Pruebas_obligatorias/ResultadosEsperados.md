@@ -302,11 +302,15 @@ Los programas son tan exigentes como permiten los dos backends:
   - no acepta una llamada como operando de otra operación (`f(x) gauss 1`), ni sentencias después de un `give`.
 - **`-O2`:** trabaja con 3 registros temporales (el spilling se ve en todos los programas).
 - **`-O1`:** reescribe el código BAL, así que solo puede quitar lo que es una
-  sentencia completa. Si el DCE quita algo de la IR que no se puede escribir
-  en BAL, `-O1` no compila el programa (igual que `balc -O1`). Pasa con dos
-  patrones comunes, que estos programas evitan a propósito:
+  sentencia completa. Hay dos patrones comunes en los que el DCE quita algo de
+  la IR que no está escrito en el código BAL:
   - un `give` dentro de un `whether` deja en la IR un salto inalcanzable;
   - un valor inicial que se pisa antes de leerse (la declaración necesita valor).
+
+  En esos casos `-O1` compila el código original, con `cambio=0` en el reporte
+  de `balc -O1`. Es el mismo binario que `-O0`, porque no había ninguna
+  sentencia que quitar. Estos programas evitan los dos patrones para que en los
+  de código muerto (07, 08 y 09) se vea lo que `-O1` sí elimina.
 
 Con estos programas `-O2` no siempre ejecuta menos ciclos. En el 10 y el 12
 ejecuta más, porque el spilling agrega cargas y guardados dentro de los

@@ -1537,8 +1537,9 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
                                r->riesgosas_conservadas == 1 ? "" : "s",
                                r->riesgosas_conservadas == 1 ? "" : "n");
     }
-    /* Y qué pasa con el ensamblador si se aplica el código nuevo. */
-    if (ide->dce.codigo_nuevo != NULL) {
+    /* Y qué pasa con el ensamblador si se aplica el código nuevo (si es
+     * una copia del original, no hay nada que aplicar: ver codigo_igual). */
+    if (ide->dce.codigo_nuevo != NULL && !ide->dce.codigo_igual) {
         if (ide->dce.hay_ensamblador == 1) {
             g_string_append_printf(resumen, "\nAl aplicarlo al código, el ensamblador pasa de "
                                             "%zu a %zu bundles.",
@@ -1556,7 +1557,8 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
     g_string_free(resumen, TRUE);
 
     gtk_widget_set_sensitive(ide->boton_detalle_dce, TRUE);
-    gtk_widget_set_sensitive(ide->boton_aplicar_dce, ide->dce.codigo_nuevo != NULL);
+    gtk_widget_set_sensitive(ide->boton_aplicar_dce,
+                             ide->dce.codigo_nuevo != NULL && !ide->dce.codigo_igual);
     ide->dce_mostrado = TRUE;
 }
 
@@ -1571,7 +1573,7 @@ static void al_pulsar_aplicar_dce(GtkWidget *boton, gpointer datos)
 {
     (void)boton;
     Ide *ide = datos;
-    if (!ide->dce_mostrado || ide->dce.codigo_nuevo == NULL) return;
+    if (!ide->dce_mostrado || ide->dce.codigo_nuevo == NULL || ide->dce.codigo_igual) return;
 
     /* Copiar lo necesario: al cambiar el texto, el resultado del DCE se libera. */
     gchar *nuevo = g_strdup(ide->dce.codigo_nuevo);
