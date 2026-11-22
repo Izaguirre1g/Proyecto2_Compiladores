@@ -92,7 +92,13 @@ void ide_mostrar_detalle_dce(GtkWindow *padre, const IdeDce *d)
     /* El código BAL sin el código muerto: es el que se compila al pulsar
      * "Aplicar al código", así que de él salen el ensamblador y el binario. */
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas),
-                             pestana_de_texto(d->codigo_nuevo != NULL ? d->codigo_nuevo
+                             pestana_de_texto(d->codigo_nuevo != NULL && !d->codigo_igual
+                                              ? d->codigo_nuevo
+                                              : d->codigo_igual
+                                              ? "El código no cambia: lo que quitó el DCE no está escrito en "
+                                                "el código BAL (por ejemplo, el salto que la IR pone después de "
+                                                "un give dentro de un whether, o un valor inicial que la "
+                                                "declaración necesita). Se compila el código original."
                                               : "El código no cambia: no hay sentencias que quitar."),
                              gtk_label_new("4. Código nuevo"));
 

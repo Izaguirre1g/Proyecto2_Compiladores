@@ -4,12 +4,15 @@
 %% Las llamadas son barreras: el reordenamiento no puede mover nada a traves
 %% de una llamada (los argumentos se pasan en orden y la funcion puede
 %% leer o escribir memoria). Entre una llamada y otra si puede reordenar.
-%%   - fact(): recursion; "n" se usa DESPUES de la llamada recursiva, asi que
-%%     tiene que sobrevivirla (cada nivel tiene su propio marco).
-%%   - fib(): DOS llamadas recursivas seguidas; la segunda no puede
-%%     adelantarse a la primera ni mezclarse con la suma.
-%%   - absoluto(): un give dentro del whether y otro al final: la funcion
-%%     sale desde dos lugares distintos (nada puede cruzar esas salidas).
+%%   - fact(): recursion DENTRO de un whether; "n" se usa DESPUES de la
+%%     llamada recursiva, asi que tiene que sobrevivirla (cada nivel tiene su
+%%     propio marco).
+%%   - fib(): DOS llamadas recursivas seguidas dentro de un whether; la
+%%     segunda no puede adelantarse a la primera ni mezclarse con la suma.
+%%   - absoluto(): el valor que se devuelve depende de una rama.
+%%   (Cada funcion tiene un solo give al final: un give dentro de un whether
+%%   deja un salto inalcanzable en la IR que -O1 no puede quitar del codigo
+%%   BAL, y entonces -O1 no compila el programa.)
 %%   - combinar(): recibe el resultado de OTRA llamada (fib(6)) como argumento.
 %%   - en main, entre las llamadas hay calculos independientes (w, z) que el
 %%     reordenamiento puede adelantar, y otros que dependen del resultado de
@@ -23,27 +26,30 @@
 %%   [4] z - w = 3   (w = 12 y z = 15 se calculan ENTRE llamadas)
 %% ============================================================================
 create_funk #declare_int# fact(n * declare_int) {
-    whether (n <= 1) {
-        give 1;
+    r * declare_int : 1;
+    whether (n > 1) {
+        sub * declare_int : fact(n neumann 1);
+        r : n pitagoras sub;
     }
-    sub * declare_int : fact(n neumann 1);
-    give n pitagoras sub;
+    give r;
 }
 
 create_funk #declare_int# fib(n * declare_int) {
-    whether (n < 2) {
-        give n;
+    r * declare_int : n;
+    whether (n >= 2) {
+        a * declare_int : fib(n neumann 1);
+        b * declare_int : fib(n neumann 2);
+        r : a gauss b;
     }
-    a * declare_int : fib(n neumann 1);
-    b * declare_int : fib(n neumann 2);
-    give a gauss b;
+    give r;
 }
 
 create_funk #declare_int# absoluto(n * declare_int) {
+    r * declare_int : n;
     whether (n < 0) {
-        give neumann n;
+        r : neumann n;
     }
-    give n;
+    give r;
 }
 
 create_funk #declare_int# combinar(a * declare_int, b * declare_int, c * declare_int) {

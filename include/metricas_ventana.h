@@ -29,18 +29,21 @@ void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta,
 /* Una fila de met_grafica_comparacion. */
 typedef struct {
     const char *nombre;
-    double valor[2];     /* Serie azul y serie naranja. */
+    double valor[3];     /* Una barra por serie (azul, naranja, aqua). NAN = ese dato no
+                          * existe (el nivel no compiló): se escribe "no disponible". */
     int decimales;       /* < 0: es un conteo (se escribe con miles). */
+    const char *etiqueta_corta[3];  /* Con 3 series: cómo se nombra cada serie en la
+                                     * nota del cambio ("-O1", "-O2"); la [0] no se usa. */
 } MetFilaComparacion;
 
 /*
- * Una gráfica de barras que compara dos series fila por fila (cada fila con
- * su propia escala), como "Antes y después del DCE". Debajo del nombre de
- * cada fila va cuánto cambió de la serie azul a la naranja. Máximo 7 filas.
- * Los textos se copian. La usa la ventana -O0 / -O2.
+ * Una gráfica de barras que compara 2 o 3 series fila por fila (cada fila
+ * con su propia escala), como "Antes y después del DCE". Debajo del nombre
+ * de cada fila va cuánto cambia cada serie respecto de la primera. Máximo 7
+ * filas. Los textos se copian. La usa la ventana de niveles -O0 / -O1 / -O2.
  */
 GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
-                                   const char *leyenda0, const char *leyenda1,
+                                   const char *const *leyendas, int series,
                                    const MetFilaComparacion *filas, int cantidad);
 
 #endif

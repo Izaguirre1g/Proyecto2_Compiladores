@@ -297,6 +297,52 @@ static void prueba_sin_codigo_muerto(void)
     ide_dce_liberar(&d);
 }
 
+/*
+ * El DCE quita algo de la IR que NO está escrito en el código BAL: el salto
+ * que la IR pone después de un give dentro de un whether (al final del if)
+ * nunca se ejecuta. No hay ninguna sentencia que borrar, así que el código
+ * nuevo es una copia del original, marcada con codigo_igual: -O1 lo compila
+ * en vez de rechazarlo, y el IDE no lo presenta como un cambio.
+ */
+static void prueba_codigo_igual(void)
+{
+    const char *texto =
+        "create_funk #declare_int# fact(n * declare_int) {\n"
+        "    whether (n <= 1) {\n"
+        "        give 1;\n"
+        "    }\n"
+        "    sub * declare_int : fact(n neumann 1);\n"
+        "    give n pitagoras sub;\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    resultados * declare_int[1] : [0];\n"
+        "    resultados[0] : fact(5);\n"
+        "}\n";
+    IdeDce d;
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
+    VERIFICAR(d.estado == IDE_DCE_LISTO);
+    VERIFICAR(d.resultado.cantidad_eliminadas > 0);        /* El salto inalcanzable. */
+    VERIFICAR(d.ir_despues != NULL);
+    VERIFICAR(d.codigo_igual == 1);
+    VERIFICAR(d.codigo_nuevo != NULL && strcmp(d.codigo_nuevo, texto) == 0);
+    VERIFICAR(d.sentencias_borradas == 0 && d.sentencias_cambiadas == 0);
+    /* Es el mismo programa: no hay ensamblador "antes y después" que comparar. */
+    VERIFICAR(d.hay_ensamblador == 0);
+    ide_dce_liberar(&d);
+
+    /* Cuando el DCE sí cambia el código, codigo_igual queda en 0. */
+    const char *con_muerto =
+        "create_funk #declare_infinite_void# main() {\n"
+        "    resultados * declare_int[1] : [0];\n"
+        "    muerto * declare_int : 7;\n"
+        "    resultados[0] : 4;\n"
+        "}\n";
+    VERIFICAR(ide_dce_analizar(con_muerto, strlen(con_muerto), "examples/dce/editor.bal", &d) == 0);
+    VERIFICAR(d.codigo_nuevo != NULL && d.codigo_igual == 0);
+    VERIFICAR(d.codigo_nuevo != NULL && strstr(d.codigo_nuevo, "muerto") == NULL);
+    ide_dce_liberar(&d);
+}
+
 int main(int argc, char **argv)
 {
     prueba_llamadas();
@@ -306,6 +352,7 @@ int main(int argc, char **argv)
     prueba_con_errores();
     prueba_sin_ir();
     prueba_sin_codigo_muerto();
+    prueba_codigo_igual();
 
     if (fallos > 0) {
         fprintf(stderr, "test_ide_dce: %d fallos\n", fallos);

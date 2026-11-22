@@ -294,6 +294,8 @@ static int es_valido(const char *texto, const char *ruta)
 
 /*
  * Arma el código nuevo; si no fuera válido (no debería pasar), lo descarta.
+ * Si el DCE quitó algo que no está escrito en el código, el código nuevo es
+ * una copia del original (codigo_igual = 1).
  * Después genera el ensamblador del código original y del nuevo, con el
  * mismo backend que balc, para mostrar cuántos bundles se ahorran.
  * Devuelve 0 bien o -1 sin memoria.
@@ -307,6 +309,20 @@ static int codigo_y_ensamblador(const Contexto *c, const char *texto, size_t lar
         free(s->codigo_nuevo);
         s->codigo_nuevo = NULL;
         s->sentencias_borradas = s->sentencias_cambiadas = 0;
+    }
+    /* El DCE quitó algo de la IR, pero ninguna sentencia del código cambia
+     * (un salto inalcanzable después de un give, o un valor inicial que la
+     * declaración necesita): el código a compilar es el mismo original. Se
+     * entrega igual, marcado con codigo_igual, para que -O1 lo compile en vez
+     * de rechazarlo. No hace falta el ensamblador "antes y después": es el
+     * mismo programa. */
+    if (s->codigo_nuevo == NULL && s->resultado.cantidad_eliminadas > 0) {
+        s->codigo_nuevo = malloc(largo + 1);
+        if (s->codigo_nuevo == NULL) return -1;
+        memcpy(s->codigo_nuevo, texto, largo);
+        s->codigo_nuevo[largo] = '\0';
+        s->codigo_igual = 1;
+        return 0;
     }
     if (s->codigo_nuevo == NULL) return 0;
 

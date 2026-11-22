@@ -35,8 +35,12 @@ static const Color FONDO = COLOR(0x1E1E1E);       /* Fondo de las gráficas (el 
 static const Color TEXTO = COLOR(0xF0EFEC);       /* Títulos y nombres de las filas. */
 static const Color TEXTO_SUAVE = COLOR(0xC3C2B7); /* Subtítulos, valores y notas. */
 static const Color EJE = COLOR(0x4A4A4A);         /* La línea base de las barras. */
-static const Color SERIES[2] = {COLOR(0x3987E5),  /* Azul: serie 1. */
-                                COLOR(0xD95926)}; /* Naranja: serie 2. */
+/* Colores de las series, en orden fijo (paleta categórica validada para el
+ * tema oscuro): la serie 1 siempre es azul, la 2 naranja y la 3 aqua. */
+#define MAX_SERIES 3
+static const Color SERIES[MAX_SERIES] = {COLOR(0x3987E5),  /* Azul: serie 1. */
+                                         COLOR(0xD95926),  /* Naranja: serie 2. */
+                                         COLOR(0x199E70)}; /* Aqua: serie 3. */
 
 /* ------------------------------------------------------------------ */
 /* Una gráfica de barras horizontales                                 */
@@ -46,27 +50,27 @@ static const Color SERIES[2] = {COLOR(0x3987E5),  /* Azul: serie 1. */
  * bundles NOP, IPC, tamaño en bundles, tamaño en bytes y tiempo de compilación. */
 #define MAX_FILAS 7
 
-/* Una fila: su nombre y una barra por serie (1 o 2). */
+/* Una fila: su nombre y una barra por serie (1 a MAX_SERIES). */
 typedef struct {
     char nombre[64];
     char nota[128];         /* Segunda línea debajo del nombre (por ejemplo "−64.9 %"). */
-    double valor[2];       /* Largo de cada barra (en las unidades de la gráfica). */
-    char texto[2][64];     /* Lo que se escribe al final de cada barra. */
-    char tip[2][200];      /* Tooltip de cada barra. */
+    double valor[MAX_SERIES];       /* Largo de cada barra (en las unidades de la gráfica). */
+    char texto[MAX_SERIES][64];     /* Lo que se escribe al final de cada barra. */
+    char tip[MAX_SERIES][200];      /* Tooltip de cada barra. */
 } Fila;
 
 typedef struct {
     char titulo[96];
     char subtitulo[200];
-    int series;                 /* 1 o 2. */
-    const char *leyenda[2];     /* Nombre de cada serie (solo con 2). */
+    int series;                 /* 1 a MAX_SERIES. */
+    const char *leyenda[MAX_SERIES]; /* Nombre de cada serie (con 2 o más). */
     int escala_por_fila;        /* 1: cada fila con su propio máximo. 0: "maximo" para todas. */
     double maximo;
     Fila filas[MAX_FILAS];
     int cantidad;
     /* Dónde quedó cada barra al dibujar, para el tooltip. */
-    GdkRectangle zonas[MAX_FILAS * 2];
-    const char *tips[MAX_FILAS * 2];
+    GdkRectangle zonas[MAX_FILAS * MAX_SERIES];
+    const char *tips[MAX_FILAS * MAX_SERIES];
     int cantidad_zonas;
 } Grafica;
 
@@ -95,7 +99,7 @@ static int alto_fila(const Grafica *g, const Fila *f)
 static int alto_grafica(const Grafica *g)
 {
     int alto = MARGEN + ALTO_TITULO + ALTO_SUBTITULO + 8 + MARGEN;
-    if (g->series == 2) alto += ALTO_LEYENDA;
+    if (g->series >= 2) alto += ALTO_LEYENDA;
     for (int i = 0; i < g->cantidad; ++i) alto += alto_fila(g, &g->filas[i]) + ESPACIO_FILAS;
     return alto;
 }
@@ -157,10 +161,10 @@ static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
     y += ALTO_SUBTITULO;
 
     /* Leyenda: un cuadrito del color de cada serie y su nombre. */
-    if (g->series == 2) {
+    if (g->series >= 2) {
         double x = MARGEN;
         double centro = y + ALTO_LEYENDA / 2.0 + 2;
-        for (int s = 0; s < 2; ++s) {
+        for (int s = 0; s < g->series; ++s) {
             barra(cr, x, centro - 5, 10, 10, SERIES[s]);
             x += 16;
             x += escribir(cr, x, centro, g->leyenda[s], TEXTO, 0, 9, 0) + 22;
@@ -190,7 +194,10 @@ static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
 
         /* Máximo de la escala: el de la gráfica, o el de esta fila. */
         double maximo = g->maximo;
-        if (g->escala_por_fila) maximo = fmax(f->valor[0], g->series == 2 ? f->valor[1] : 0);
+        if (g->escala_por_fila) {
+            maximo = 0;
+            for (int s = 0; s < g->series; ++s) maximo = fmax(maximo, f->valor[s]);
+        }
 
         int alto_barras = g->series * ALTO_BARRA + (g->series - 1) * HUECO_BARRAS;
         double yb = y + (alto_f - alto_barras) / 2.0;
@@ -464,25 +471,53 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
  * no dependan de quien la pidió. Se libera cuando se destruye el widget. */
 typedef struct {
     Grafica g;
-    char leyendas[2][96];
+    char leyendas[MAX_SERIES][96];
 } GraficaPropia;
 
 GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
-                                   const char *leyenda0, const char *leyenda1,
+                                   const char *const *leyendas, int series,
                                    const MetFilaComparacion *filas, int cantidad)
 {
     GraficaPropia *p = g_new0(GraficaPropia, 1);
     Grafica *g = &p->g;
+    if (series < 1) series = 1;
+    if (series > MAX_SERIES) series = MAX_SERIES;
     snprintf(g->titulo, sizeof g->titulo, "%s", titulo);
     snprintf(g->subtitulo, sizeof g->subtitulo, "%s", subtitulo);
-    snprintf(p->leyendas[0], sizeof p->leyendas[0], "%s", leyenda0);
-    snprintf(p->leyendas[1], sizeof p->leyendas[1], "%s", leyenda1);
-    g->series = 2;
-    g->leyenda[0] = p->leyendas[0];
-    g->leyenda[1] = p->leyendas[1];
+    g->series = series;
+    for (int s = 0; s < series; ++s) {
+        snprintf(p->leyendas[s], sizeof p->leyendas[s], "%s", leyendas[s]);
+        g->leyenda[s] = p->leyendas[s];
+    }
     g->escala_por_fila = 1;
-    for (int i = 0; i < cantidad && i < MAX_FILAS; ++i)
-        fila_dce(g, filas[i].nombre, filas[i].valor[0], filas[i].valor[1], filas[i].decimales);
+    for (int i = 0; i < cantidad && i < MAX_FILAS; ++i) {
+        const MetFilaComparacion *e = &filas[i];
+        Fila *f = &g->filas[g->cantidad++];
+        snprintf(f->nombre, sizeof f->nombre, "%s", e->nombre);
+        /* La nota: cuánto cambia cada serie respecto de la PRIMERA. Con dos
+         * series es "−64.9 %"; con tres, "serie 2 −20 % · serie 3 −35 %". */
+        size_t usado = 0;
+        for (int s = 1; s < series; ++s) {
+            char c[32];
+            if (isnan(e->valor[0]) || isnan(e->valor[s])) snprintf(c, sizeof c, "—");
+            else cambio(e->valor[0], e->valor[s], c, sizeof c);
+            int n = series == 2 ? snprintf(f->nota + usado, sizeof f->nota - usado, "%s", c)
+                                : snprintf(f->nota + usado, sizeof f->nota - usado, "%s%s %s",
+                                           s > 1 ? "  ·  " : "", e->etiqueta_corta[s] ? e->etiqueta_corta[s] : "", c);
+            if (n > 0 && (size_t)n < sizeof f->nota - usado) usado += (size_t)n;
+        }
+        for (int s = 0; s < series; ++s) {
+            char t[32];
+            /* NAN = ese nivel no tiene el dato (no compiló o no terminó):
+             * sin barra y con "no disponible", nunca un 0 que parezca medido. */
+            if (isnan(e->valor[s])) snprintf(t, sizeof t, "no disponible");
+            else if (e->decimales < 0) miles((uint64_t)e->valor[s], t, sizeof t);
+            else snprintf(t, sizeof t, "%.*f", e->decimales, e->valor[s]);
+            f->valor[s] = isnan(e->valor[s]) ? 0.0 : e->valor[s];
+            snprintf(f->texto[s], sizeof f->texto[s], "%s", t);
+            snprintf(f->tip[s], sizeof f->tip[s], "%s, %s: %s", e->nombre, g->leyenda[s], t);
+        }
+    }
     GtkWidget *area = widget_grafica(g);
     g_object_set_data_full(G_OBJECT(area), "grafica", p, g_free);
     return area;
@@ -511,7 +546,7 @@ static void calcular(Datos *d, const char *texto, const char *ruta)
         snprintf(d->nota_dce, sizeof d->nota_dce,
                  "El DCE no se pudo hacer: la IR todavía no soporta este programa (%s).",
                  dce.motivo ? dce.motivo : "");
-    } else if (dce.estado != IDE_DCE_LISTO || dce.codigo_nuevo == NULL) {
+    } else if (dce.estado != IDE_DCE_LISTO || dce.codigo_nuevo == NULL || dce.codigo_igual) {
         snprintf(d->nota_dce, sizeof d->nota_dce,
                  "Este código no tiene código muerto que se pueda quitar: no hay nada que comparar.");
     } else if (met_medir(dce.codigo_nuevo, strlen(dce.codigo_nuevo), ruta, 0, &d->sin_muerto) != 0 ||

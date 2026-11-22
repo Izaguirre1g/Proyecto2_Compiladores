@@ -69,11 +69,25 @@ typedef struct {
 
     /*
      * El CÓDIGO BAL NUEVO, sin el código muerto (ide_dce_codigo.c), o NULL
-     * si no cambia nada. El backend genera el ensamblador desde el código
-     * fuente, así que compilando este código el ensamblador y el binario
-     * salen SIN el código muerto.
+     * si el DCE no eliminó nada. El backend genera el ensamblador desde el
+     * código fuente, así que compilando este código el ensamblador y el
+     * binario salen SIN el código muerto.
+     *
+     * Caso especial (codigo_igual = 1): el DCE quitó algo de la IR que NO
+     * está escrito en el código BAL, así que no hay ninguna sentencia que
+     * borrar. Pasa con dos patrones:
+     *   - un give dentro de un whether: la IR pone después del give un salto
+     *     al final del if, que nunca se ejecuta;
+     *   - un valor inicial que se pisa antes de leerse ("t : 0;" y después
+     *     "t : a + b;"): la declaración necesita un valor, así que se queda.
+     * Entonces codigo_nuevo es una copia del ORIGINAL: compilarlo es correcto
+     * (es lo que hay que compilar), y así -O1 (balc -O1 y el botón
+     * -O0/-O1/-O2) no rechaza el programa. Las pantallas que muestran el
+     * código nuevo miran codigo_igual para no presentarlo como un cambio.
      */
     char *codigo_nuevo;
+    int codigo_igual;              /* 1: codigo_nuevo es el mismo texto del original
+                                    * (ver el caso especial de arriba). */
     size_t sentencias_borradas;    /* Sentencias quitadas del código. */
     size_t sentencias_cambiadas;   /* Sentencias reescritas o unidas. */
     size_t sentencias_conservadas; /* Con algo muerto, pero que BAL o el backend no
