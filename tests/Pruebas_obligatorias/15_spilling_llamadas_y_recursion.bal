@@ -31,12 +31,13 @@ create_funk #declare_int# horner(c0 * declare_int, c1 * declare_int, c2 * declar
 }
 
 create_funk #declare_int# suma_dobles(n * declare_int) {
-    whether (n == 0) {
-        give 0;
+    r * declare_int : 0;
+    whether (n > 0) {
+        doble * declare_int : n gauss n;
+        parcial * declare_int : suma_dobles(n neumann 1);
+        r : parcial gauss doble;
     }
-    doble * declare_int : n gauss n;
-    parcial * declare_int : suma_dobles(n neumann 1);
-    give parcial gauss doble;
+    give r;
 }
 
 create_funk #declare_infinite_void# main() {

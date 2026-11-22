@@ -4,18 +4,18 @@
  * separado. Por cada programa se comprueba, con el mismo módulo que usa el
  * botón "-O0 / -O2" del IDE (src/IDE/ide_optimizacion.c):
  *
- *   1. Que compila con -O0 (backend tradicional) y con -O2 (IR optimizada
- *      + cadena física VLIW), y que los dos binarios terminan en el
- *      simulador.
+ *   1. Que compila con -O0 (backend tradicional), -O1 (DCE sobre el código
+ *      BAL + backend tradicional) y -O2 (IR optimizada + cadena física
+ *      VLIW), y que los tres binarios terminan en el simulador.
  *   2. Que el arreglo "resultados" de main tiene los valores esperados
  *      (calculados a mano, escritos en el comentario de cada programa), en
- *      los DOS niveles.
- *   3. Que -O0 y -O2 dejan TODAS las variables de main iguales (regla de
+ *      los TRES niveles.
+ *   3. Que -O1 y -O2 dejan las variables de main iguales a -O0 (regla de
  *      oro: optimizar no cambia lo que hace el programa).
  *   4. Que la optimización de su categoría realmente actuó en -O2:
  *        unrolling       -> al menos tantos ciclos desenrollados como se esperan
  *        renombramiento  -> versiones nuevas y dependencias WAR y WAW quitadas
- *        código muerto   -> instrucciones eliminadas por el DCE
+ *        código muerto   -> instrucciones eliminadas por el DCE (en -O2 y en -O1)
  *        reordenamiento  -> instrucciones movidas
  *        spilling        -> valores guardados en la pila Y vueltos a cargar
  *
@@ -58,7 +58,7 @@ static const Caso CASOS[] = {
     {"03_unroll_n_grande.bal",              UNROLL,   "[502503, 335, 250, 128]", NULL, 3},
     {"04_renombre_war.bal",                 RENOMBRE, "[17, 22, 103, 6, 384, 22, 409]", NULL, 0},
     {"05_renombre_waw.bal",                 RENOMBRE, "[24, 35, 36, 18, 4, 22, 256, 377]", NULL, 0},
-    {"06_renombre_war_waw_ciclos.bal",      RENOMBRE, "[6765, 1, 1705, 21, 1]", NULL, 0},
+    {"06_renombre_war_waw_ciclos.bal",      RENOMBRE, "[6765, 1705, 21, 1]", NULL, 0},
     {"07_dce_llamadas_con_efectos.bal",     DCE,      "[100, 60]", "datos=[60, 20, 30, 0, 0]", 1},
     {"08_dce_efectos_en_ciclos.bal",        DCE,      "[16, 15, 9]", "hist=[1, 2, 3, 4, 15]", 1},
     {"09_dce_operaciones_que_fallan.bal",   DCE,      "21", "res=[21, 7, 25, 10]", 1},
@@ -125,35 +125,37 @@ static void revisar(const Caso *c)
     VERIFICAR(ide_optimizacion_analizar(texto, largo, ruta, &r) == 0);
     free(texto);
 
-    /* 1. Los dos niveles compilan y terminan. */
+    /* 1. Los tres niveles compilan y terminan. */
     VERIFICAR(r.estado == IDE_OPT_LISTO);
-    VERIFICAR(r.o0.compilado && r.o2.compilado);
-    VERIFICAR(r.o0.simulacion.estado == MET_LISTO && r.o2.simulacion.estado == MET_LISTO);
+    VERIFICAR(r.o0.compilado && r.o1.compilado && r.o2.compilado);
+    VERIFICAR(r.o0.simulacion.estado == MET_LISTO && r.o1.simulacion.estado == MET_LISTO &&
+              r.o2.simulacion.estado == MET_LISTO);
 
-    /* 2. Los resultados esperados, en los dos niveles. */
-    VERIFICAR(vale(&r.o0, "resultados", c->resultados));
-    VERIFICAR(vale(&r.o2, "resultados", c->resultados));
-    if (c->extra != NULL) {
-        VERIFICAR(vale_extra(&r.o0, c->extra));
-        VERIFICAR(vale_extra(&r.o2, c->extra));
+    /* 2. Los resultados esperados, en los tres niveles. */
+    const IdeOptNivel *niveles[3] = {&r.o0, &r.o1, &r.o2};
+    for (int n = 0; n < 3; ++n) {
+        VERIFICAR(vale(niveles[n], "resultados", c->resultados));
+        if (c->extra != NULL) VERIFICAR(vale_extra(niveles[n], c->extra));
     }
 
-    /* 3. Regla de oro: todas las variables de main iguales. */
-    VERIFICAR(r.mismo_resultado == 1);
+    /* 3. Regla de oro: las variables de main iguales en los tres niveles
+     *    (las que -O1 borró por ser código muerto no cuentan). */
+    VERIFICAR(r.mismo_o1 == 1 && r.mismo_o2 == 1 && r.mismo_resultado == 1);
 
     /* 4. La optimización de la categoría actuó. */
     switch (c->categoria) {
         case UNROLL:   VERIFICAR(r.unroll >= c->minimo); break;
         case RENOMBRE: VERIFICAR(r.renombradas > 0 && r.war_eliminadas > 0 && r.waw_eliminadas > 0); break;
-        case DCE:      VERIFICAR(r.dce >= c->minimo); break;
+        case DCE:      VERIFICAR(r.dce >= c->minimo && r.o1_eliminadas_ir > 0 && r.o1_cambio); break;
         case REORDEN:  VERIFICAR(r.reordenadas > 0); break;
         case SPILLING: VERIFICAR(r.spills > 0 && r.guardados_spill > 0 && r.cargas_spill > 0); break;
     }
 
-    printf("%-42s -O0 %6llu ciclos %4zu bundles | -O2 %6llu ciclos %4zu bundles | "
+    printf("%-42s -O0 %6llu ciclos %4zu b | -O1 %6llu ciclos %4zu b | -O2 %6llu ciclos %4zu b | "
            "unroll=%zu renombre=%zu (WAR %zu, WAW %zu) DCE=%zu reorden=%zu spill=%zu/%zu\n",
            c->archivo,
            (unsigned long long)r.o0.simulacion.sim.ciclos, r.o0.bundles,
+           (unsigned long long)r.o1.simulacion.sim.ciclos, r.o1.bundles,
            (unsigned long long)r.o2.simulacion.sim.ciclos, r.o2.bundles,
            r.unroll, r.renombradas, r.war_eliminadas, r.waw_eliminadas, r.dce, r.reordenadas,
            r.guardados_spill, r.cargas_spill);

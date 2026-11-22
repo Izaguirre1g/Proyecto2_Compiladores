@@ -1,10 +1,11 @@
 /*
- * Ventana "-O0 / -O2" (ver include/ide_optimizacion_ventana.h).
+ * Ventana "Niveles -O0 / -O1 / -O2" (ver include/ide_optimizacion_ventana.h).
  * Solo muestra lo que calcula ide_optimizacion.c; la gráfica es la de las
  * Métricas (met_grafica_comparacion).
  */
 #include "ide_optimizacion_ventana.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "ide_optimizacion.h"
@@ -64,13 +65,12 @@ static GtkWidget *con_titulo(const char *titulo, GtkWidget *contenido)
     return caja;
 }
 
-/* Dos widgets lado a lado con el mismo ancho. */
-static GtkWidget *lado_a_lado(GtkWidget *izquierda, GtkWidget *derecha)
+/* Varios widgets lado a lado con el mismo ancho. */
+static GtkWidget *lado_a_lado(GtkWidget *const *widgets, int cantidad)
 {
     GtkWidget *fila = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_set_homogeneous(GTK_BOX(fila), TRUE);
-    gtk_box_pack_start(GTK_BOX(fila), izquierda, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(fila), derecha, TRUE, TRUE, 0);
+    for (int i = 0; i < cantidad; ++i) gtk_box_pack_start(GTK_BOX(fila), widgets[i], TRUE, TRUE, 0);
     gtk_container_set_border_width(GTK_CONTAINER(fila), 6);
     return fila;
 }
@@ -93,7 +93,15 @@ static GtkWidget *tabla(GtkListStore *modelo, const char *const *titulos, int co
     return recuadro;
 }
 
-/* Cómo le fue a un nivel, en una línea (para cuando no hay gráfica). */
+/* Los tres niveles, en el orden de las series de la gráfica. */
+static const char *const NOMBRES[3] = {"-O0", "-O1", "-O2"};
+
+static const IdeOptNivel *nivel_i(const IdeOptimizacion *r, int i)
+{
+    return i == 0 ? &r->o0 : i == 1 ? &r->o1 : &r->o2;
+}
+
+/* Cómo le fue a un nivel, en una línea. */
 static gchar *estado_de(const char *nombre, const IdeOptNivel *n)
 {
     if (!n->compilado)
@@ -106,75 +114,76 @@ static gchar *estado_de(const char *nombre, const IdeOptNivel *n)
                                    (unsigned long long)n->simulacion.sim.ciclos, n->bundles);
 }
 
-/* El veredicto de arriba: ¿-O2 hace lo mismo que -O0? */
+/* Una línea del veredicto: cómo quedó un nivel optimizado frente a -O0. */
+static gchar *veredicto_de(const char *nombre, int mismo, const IdeOptNivel *n)
+{
+    if (mismo == 1)
+        return g_markup_printf_escaped("<span foreground='#2e7d32'>✔ <b>%s</b> deja el mismo resultado de main que -O0.</span>", nombre);
+    if (mismo == 0)
+        return g_markup_printf_escaped("<span foreground='#c62828'>✘ <b>%s</b> deja un resultado DISTINTO de -O0.</span>", nombre);
+    gchar *e = estado_de(nombre, n);
+    gchar *t = g_strdup_printf("— No se compara %s: %s", nombre, e);
+    g_free(e);
+    return t;
+}
+
+/* El veredicto de arriba: ¿-O1 y -O2 hacen lo mismo que -O0? */
 static GtkWidget *veredicto(const IdeOptimizacion *r)
 {
-    gchar *texto;
-    if (r->mismo_resultado == 1) {
-        texto = g_markup_printf_escaped(
-            "<span foreground='#2e7d32' weight='bold' size='large'>✔ -O2 deja el mismo resultado que -O0</span>\n"
-            "Las %zu variables de main terminan con los mismos valores en los dos niveles "
-            "(pestaña Resultado de main): la optimización respetó la regla de oro.",
-            r->o0.cantidad_variables);
-    } else if (r->mismo_resultado == 0) {
-        texto = g_markup_printf_escaped(
-            "<span foreground='#c62828' weight='bold' size='large'>✘ -O2 deja un resultado distinto de -O0</span>\n"
-            "Alguna variable de main termina con otro valor (pestaña Resultado de main).");
-    } else {
-        gchar *a = estado_de("-O0", &r->o0), *b = estado_de("-O2", &r->o2);
-        texto = g_strdup_printf("<b>No se puede comparar el resultado de main.</b>\n%s\n%s", a, b);
-        g_free(a);
-        g_free(b);
-    }
+    const char *titulo =
+        r->mismo_resultado == 1 ? "<span foreground='#2e7d32' weight='bold' size='large'>✔ Los tres niveles dejan el mismo resultado</span>" :
+        r->mismo_resultado == 0 ? "<span foreground='#c62828' weight='bold' size='large'>✘ Un nivel optimizado cambia el resultado</span>" :
+                                  "<span weight='bold' size='large'>Resultado de main</span>";
+    gchar *uno = veredicto_de("-O1", r->mismo_o1, &r->o1);
+    gchar *dos = veredicto_de("-O2", r->mismo_o2, &r->o2);
+    gchar *cero = r->o0.compilado ? NULL : estado_de("-O0", &r->o0);
+    gchar *texto = g_strdup_printf("%s\n%s%s%s\n%s", titulo, cero ? cero : "", cero ? "\n" : "", uno, dos);
     GtkWidget *w = parrafo(texto);
     g_free(texto);
+    g_free(uno);
+    g_free(dos);
+    g_free(cero);
     return w;
 }
 
-/* Pestaña "Comparación": la gráfica de los dos niveles. */
+/* El dato de un nivel para la gráfica, o NAN si no lo tiene. */
+static double dato(const IdeOptNivel *n, int simulado, double valor)
+{
+    if (!n->compilado || (simulado && n->simulacion.estado != MET_LISTO)) return NAN;
+    return valor;
+}
+
+/* Pestaña "Comparación": la gráfica de los tres niveles. */
 static GtkWidget *pestana_comparacion(const IdeOptimizacion *r)
 {
-    const IdeOptNivel *a = &r->o0, *b = &r->o2;
-    int simulados = a->simulacion.estado == MET_LISTO && b->simulacion.estado == MET_LISTO;
     MetFilaComparacion filas[7];
-    int n = 0;
-    if (simulados) {
-        const SimMetricasResumen *x = &a->simulacion.sim, *y = &b->simulacion.sim;
-        filas[n++] = (MetFilaComparacion){"Ciclos", {(double)x->ciclos, (double)y->ciclos}, -1};
-        filas[n++] = (MetFilaComparacion){"Instrucciones ejecutadas",
-                                          {(double)x->instrucciones_utiles, (double)y->instrucciones_utiles}, -1};
-        filas[n++] = (MetFilaComparacion){"IPC (instrucciones por ciclo)", {x->ipc, y->ipc}, 3};
-        filas[n++] = (MetFilaComparacion){"Bundles solo NOP ejecutados",
-                                          {(double)x->bundles_nop, (double)y->bundles_nop}, -1};
+    memset(filas, 0, sizeof filas);
+    const char *nombres[7] = {"Ciclos", "Instrucciones ejecutadas", "IPC (instrucciones por ciclo)",
+                              "Bundles solo NOP ejecutados", "Tamaño del programa (bundles)",
+                              "Tamaño del código (bytes)", "Tiempo de compilación (ms)"};
+    const int decimales[7] = {-1, -1, 3, -1, -1, -1, 3};
+    for (int f = 0; f < 7; ++f) {
+        filas[f].nombre = nombres[f];
+        filas[f].decimales = decimales[f];
+        filas[f].etiqueta_corta[1] = "-O1";
+        filas[f].etiqueta_corta[2] = "-O2";
+        for (int i = 0; i < 3; ++i) {
+            const IdeOptNivel *n = nivel_i(r, i);
+            const SimMetricasResumen *m = &n->simulacion.sim;
+            double v[7] = {(double)m->ciclos, (double)m->instrucciones_utiles, m->ipc, (double)m->bundles_nop,
+                           (double)n->bundles, (double)n->bundles * MET_BYTES_BUNDLE, n->tiempos.total};
+            filas[f].valor[i] = dato(n, f < 4, v[f]);
+        }
     }
-    if (a->compilado && b->compilado) {
-        filas[n++] = (MetFilaComparacion){"Tamaño del programa (bundles)", {(double)a->bundles, (double)b->bundles}, -1};
-        filas[n++] = (MetFilaComparacion){"Tamaño del código (bytes)",
-                                          {(double)a->bundles * MET_BYTES_BUNDLE, (double)b->bundles * MET_BYTES_BUNDLE}, -1};
-        filas[n++] = (MetFilaComparacion){"Tiempo de compilación (ms)", {a->tiempos.total, b->tiempos.total}, 3};
-    }
-    GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    if (n > 0) {
-        gchar *sub = g_strdup_printf("Cada fila tiene su propia escala. Debajo del nombre: cuánto cambia de -O0 a -O2. "
-                                     "Tiempo: mediana de %d compilaciones", MET_COMPILACIONES);
-        GtkWidget *g = met_grafica_comparacion("-O0 contra -O2", sub, "-O0 (backend tradicional)",
-                                               "-O2 (IR optimizada + cadena VLIW)", filas, n);
-        g_free(sub);
-        gtk_box_pack_start(GTK_BOX(caja), g, TRUE, TRUE, 0);
-    }
-    if (!simulados) {
-        gchar *x = estado_de("-O0", a), *y = estado_de("-O2", b);
-        gchar *texto = g_strdup_printf("%s\n%s", x, y);
-        GtkWidget *nota = parrafo(texto);
-        gtk_widget_set_margin_start(nota, 8);
-        gtk_box_pack_start(GTK_BOX(caja), nota, FALSE, FALSE, 6);
-        g_free(texto);
-        g_free(x);
-        g_free(y);
-    }
+    const char *leyendas[3] = {"-O0 (backend tradicional)", "-O1 (DCE + backend tradicional)",
+                               "-O2 (IR optimizada + cadena VLIW)"};
+    gchar *sub = g_strdup_printf("Cada fila tiene su propia escala. Debajo del nombre: cuánto cambia cada nivel "
+                                 "respecto de -O0. Tiempo: mediana de %d compilaciones", MET_COMPILACIONES);
+    GtkWidget *g = met_grafica_comparacion("-O0, -O1 y -O2", sub, leyendas, 3, filas, 7);
+    g_free(sub);
     GtkWidget *recuadro = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(recuadro), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(recuadro), caja);
+    gtk_container_add(GTK_CONTAINER(recuadro), g);
     return recuadro;
 }
 
@@ -184,88 +193,132 @@ static void fila_pasada(GtkListStore *m, const char *pasada, const char *cambios
     gtk_list_store_insert_with_values(m, NULL, -1, 0, pasada, 1, cambios, 2, que, -1);
 }
 
-/* Pestaña "Pasadas de -O2": qué hizo cada optimización, en su orden. */
+/* Pestaña "Qué hace cada nivel": el DCE de -O1 y cada pasada de -O2, en orden. */
 static GtkWidget *pestana_pasadas(const IdeOptimizacion *r)
 {
-    if (!r->o2.compilado) {
-        gchar *t = g_markup_printf_escaped("-O2 no pudo compilar este programa: %s",
-                                           r->o2.motivo ? r->o2.motivo : "motivo desconocido");
-        GtkWidget *w = parrafo(t);
-        g_free(t);
-        gtk_widget_set_valign(w, GTK_ALIGN_START);
-        gtk_widget_set_margin_start(w, 8);
-        gtk_widget_set_margin_top(w, 8);
-        return w;
-    }
     GtkListStore *m = gtk_list_store_new(3, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
-    char t[160];
-    snprintf(t, sizeof t, "%zu ciclo%s", r->unroll, r->unroll == 1 ? "" : "s");
-    fila_pasada(m, "<b>1. Loop unrolling</b>\n(Meibel)", t,
-                "Repite el cuerpo de los ciclos para hacer menos saltos y dar más instrucciones "
-                "independientes al VLIW.");
-    snprintf(t, sizeof t, "%zu versiones\n%zu WAR y %zu WAW quitadas", r->renombradas, r->war_eliminadas,
-             r->waw_eliminadas);
-    fila_pasada(m, "<b>2. Renombramiento</b>", t,
-                "Da un nombre nuevo a cada valor que se vuelve a asignar: así desaparecen las "
-                "dependencias falsas WAR y WAW, y el reordenamiento tiene más libertad.");
-    snprintf(t, sizeof t, "%zu instrucciones eliminadas", r->dce);
-    fila_pasada(m, "<b>3. Eliminación de código muerto</b>\n(José)", t,
-                "El DCE con variables vivas (src/DCE/dce.c). Quita asignaciones que nadie usa y "
-                "código inalcanzable; nunca llamadas, escrituras ni operaciones que pueden fallar.");
-    snprintf(t, sizeof t, "%zu instrucciones movidas", r->reordenadas);
-    fila_pasada(m, "<b>4. Reordenamiento</b>\n(Meibel)", t,
-                "Dentro de cada bloque básico separa una escritura de la lectura que la usa, "
-                "respetando las dependencias RAW, WAR, WAW, de memoria y de efectos.");
-    snprintf(t, sizeof t, "%zu ranuras\n%zu guardados, %zu cargas", r->spills, r->guardados_spill, r->cargas_spill);
-    fila_pasada(m, "<b>5. Spilling</b>\n(Dylan)", t,
-                "Solo hay 3 registros temporales: los valores que no caben se guardan en la "
-                "pila (store) y se vuelven a cargar (load) cuando se necesitan.");
-    snprintf(t, sizeof t, "%zu bundles\n%zu %s", r->o2.bundles, r->generaciones,
-             r->generaciones == 1 ? "generación" : "generaciones");
-    fila_pasada(m, "<b>6. Cadena física VLIW</b>\n(Javier)", t,
-                "Pasa la IR a instrucciones del procesador, arma el grafo de flujo y de "
-                "dependencias, y calendariza en bundles de 4 slots. Se repite (generaciones) "
-                "hasta que las direcciones de los saltos ya no cambian.");
-    const char *titulos[3] = {"Pasada (en orden)", "Cambios", "Qué hace"};
-    GtkWidget *t_w = tabla(m, titulos, 3);
+    char t[200];
+    fila_pasada(m, "<b>-O0</b>", "ninguna",
+                "El backend tradicional genera el ensamblador directo del AST, sin optimizar.");
+
+    if (r->o1.compilado || r->o1_codigo != NULL) {
+        snprintf(t, sizeof t, "%zu instrucciones IR\n%zu sentencias borradas\n%zu reescritas",
+                 r->o1_eliminadas_ir, r->o1_borradas, r->o1_cambiadas);
+        fila_pasada(m, "<b>-O1</b>  Eliminación de código muerto\n(José)", t,
+                    r->o1_cambio
+                        ? "El DCE con variables vivas quita de la IR las asignaciones que nadie usa y el código "
+                          "inalcanzable; ese resultado se lleva al código BAL (pestaña Código de -O1) y se "
+                          "compila con el backend tradicional."
+                        : "El DCE no encontró nada que quitar: -O1 compila el mismo código que -O0.");
+    } else {
+        gchar *e = g_markup_escape_text(r->o1.motivo ? r->o1.motivo : "motivo desconocido", -1);
+        fila_pasada(m, "<b>-O1</b>  Eliminación de código muerto\n(José)", "no se hizo", e);
+        g_free(e);
+    }
+
+    if (!r->o2.compilado) {
+        gchar *e = g_markup_escape_text(r->o2.motivo ? r->o2.motivo : "motivo desconocido", -1);
+        fila_pasada(m, "<b>-O2</b>", "no se hizo", e);
+        g_free(e);
+    } else {
+        snprintf(t, sizeof t, "%zu ciclo%s", r->unroll, r->unroll == 1 ? "" : "s");
+        fila_pasada(m, "<b>-O2</b>  1. Loop unrolling\n(Meibel)", t,
+                    "Repite el cuerpo de los ciclos para hacer menos saltos y dar más instrucciones "
+                    "independientes al VLIW.");
+        snprintf(t, sizeof t, "%zu versiones\n%zu WAR y %zu WAW quitadas", r->renombradas, r->war_eliminadas,
+                 r->waw_eliminadas);
+        fila_pasada(m, "<b>-O2</b>  2. Renombramiento", t,
+                    "Da un nombre nuevo a cada valor que se vuelve a asignar: así desaparecen las "
+                    "dependencias falsas WAR y WAW, y el reordenamiento tiene más libertad.");
+        snprintf(t, sizeof t, "%zu instrucciones eliminadas", r->dce);
+        fila_pasada(m, "<b>-O2</b>  3. Eliminación de código muerto\n(José)", t,
+                    "El mismo DCE con variables vivas, ahora sobre la IR ya desenrollada y renombrada. "
+                    "En -O2 las variables de main se tratan como resultado y no se tocan.");
+        snprintf(t, sizeof t, "%zu instrucciones movidas", r->reordenadas);
+        fila_pasada(m, "<b>-O2</b>  4. Reordenamiento\n(Meibel)", t,
+                    "Dentro de cada bloque básico separa una escritura de la lectura que la usa, "
+                    "respetando las dependencias RAW, WAR, WAW, de memoria y de efectos.");
+        snprintf(t, sizeof t, "%zu ranuras\n%zu guardados, %zu cargas", r->spills, r->guardados_spill, r->cargas_spill);
+        fila_pasada(m, "<b>-O2</b>  5. Spilling\n(Dylan)", t,
+                    "Solo hay 3 registros temporales: los valores que no caben se guardan en la "
+                    "pila (store) y se vuelven a cargar (load) cuando se necesitan.");
+        snprintf(t, sizeof t, "%zu bundles\n%zu %s", r->o2.bundles, r->generaciones,
+                 r->generaciones == 1 ? "generación" : "generaciones");
+        fila_pasada(m, "<b>-O2</b>  6. Cadena física VLIW\n(Javier)", t,
+                    "Pasa la IR a instrucciones del procesador, arma el grafo de flujo y de "
+                    "dependencias, y calendariza en bundles de 4 slots. Se repite (generaciones) "
+                    "hasta que las direcciones de los saltos ya no cambian.");
+    }
+    const char *titulos[3] = {"Nivel y pasada (en orden)", "Cambios", "Qué hace"};
     GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_box_pack_start(GTK_BOX(caja), parrafo(
-        "Las mismas pasadas que <tt>balc -O2</tt> (<tt>src/ir_vliw_programa.c</tt>), sobre la IR de "
-        "tres direcciones. <tt>-O0</tt> no aplica ninguna: genera el ensamblador directo del AST."),
+        "Lo mismo que <tt>balc -O0</tt>, <tt>balc -O1</tt> y <tt>balc -O2</tt>. -O1 optimiza el "
+        "<b>código BAL</b> y usa el backend tradicional; -O2 optimiza la <b>IR</b> "
+        "(<tt>src/ir_vliw_programa.c</tt>) y genera el código con la cadena física VLIW."),
         FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(caja), t_w, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(caja), tabla(m, titulos, 3), TRUE, TRUE, 0);
     gtk_container_set_border_width(GTK_CONTAINER(caja), 6);
     return caja;
 }
 
-/* Pestaña "Resultado de main": cada variable de main en los dos niveles. */
+/* El valor de una variable de main en un nivel, buscada por nombre y por
+ * cuántas veces apareció ese nombre antes (la misma regla de la comparación).
+ * NULL si el nivel no la tiene. */
+static const char *valor_en(const IdeOptNivel *n, const char *nombre, size_t repeticion)
+{
+    if (n->valores == NULL) return NULL;
+    for (size_t j = 0; j < n->cantidad_variables; ++j) {
+        if (strcmp(n->variables[j].nombre, nombre) != 0) continue;
+        if (repeticion-- > 0) continue;
+        return n->valores[j];
+    }
+    return NULL;
+}
+
+/* Pestaña "Resultado de main": cada variable de main en los tres niveles. */
 static GtkWidget *pestana_resultado(const IdeOptimizacion *r)
 {
-    GtkListStore *m = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
-    const IdeOptNivel *a = &r->o0, *b = &r->o2;
-    size_t n = a->cantidad_variables > b->cantidad_variables ? a->cantidad_variables : b->cantidad_variables;
-    for (size_t i = 0; i < n; ++i) {
-        const char *nombre = i < a->cantidad_variables ? a->variables[i].nombre : b->variables[i].nombre;
-        const char *va = a->valores && i < a->cantidad_variables ? a->valores[i] : "—";
-        const char *vb = b->valores && i < b->cantidad_variables ? b->valores[i] : "—";
-        const char *igual = a->valores && b->valores ? (strcmp(va, vb) == 0
-                                ? "<span foreground='#2e7d32'>✔ igual</span>"
-                                : "<span foreground='#c62828'><b>✘ distinto</b></span>") : "—";
+    GtkListStore *m = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                                         G_TYPE_STRING);
+    /* La lista de variables: la de -O0 (tiene todas); si -O0 no compiló, la de -O2. */
+    const IdeOptNivel *base = r->o0.cantidad_variables > 0 ? &r->o0 : &r->o2;
+    for (size_t i = 0; i < base->cantidad_variables; ++i) {
+        const char *nombre = base->variables[i].nombre;
+        size_t repeticion = 0;
+        for (size_t k = 0; k < i; ++k) repeticion += strcmp(base->variables[k].nombre, nombre) == 0;
+        const char *v[3];
+        int distinto = 0, comparadas = 0;
+        for (int l = 0; l < 3; ++l) {
+            v[l] = valor_en(nivel_i(r, l), nombre, repeticion);
+            if (v[l] != NULL && v[0] != NULL && l > 0) {
+                comparadas++;
+                distinto |= strcmp(v[0], v[l]) != 0;
+            }
+        }
+        gchar *celdas[3];
+        for (int l = 0; l < 3; ++l) {
+            const IdeOptNivel *n = nivel_i(r, l);
+            if (v[l] != NULL) celdas[l] = g_markup_escape_text(v[l], -1);
+            else if (l == 1 && n->simulacion.estado == MET_LISTO)
+                celdas[l] = g_strdup("<i>eliminada (código muerto)</i>");
+            else celdas[l] = g_strdup("—");
+        }
+        const char *igual = distinto ? "<span foreground='#c62828'><b>✘ distinto</b></span>"
+                          : comparadas > 0 ? "<span foreground='#2e7d32'>✔ igual</span>" : "—";
         gchar *e_nombre = g_markup_escape_text(nombre, -1);
-        gchar *e_a = g_markup_escape_text(va, -1), *e_b = g_markup_escape_text(vb, -1);
-        gtk_list_store_insert_with_values(m, NULL, -1, 0, e_nombre, 1, e_a, 2, e_b, 3, igual, -1);
+        gtk_list_store_insert_with_values(m, NULL, -1, 0, e_nombre, 1, celdas[0], 2, celdas[1],
+                                          3, celdas[2], 4, igual, -1);
         g_free(e_nombre);
-        g_free(e_a);
-        g_free(e_b);
+        for (int l = 0; l < 3; ++l) g_free(celdas[l]);
     }
-    const char *titulos[4] = {"Variable de main", "-O0", "-O2", "¿Igual?"};
+    const char *titulos[5] = {"Variable de main", "-O0", "-O1", "-O2", "¿Igual a -O0?"};
     GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_box_pack_start(GTK_BOX(caja), parrafo(
         "BAL no tiene <tt>print</tt>: el resultado de un programa es el valor final de las variables de "
-        "<tt>main</tt>. Se leen en la memoria del simulador en el ciclo en que main termina, en el marco "
-        "de main (tope de la pila − marco + desplazamiento). Si -O2 deja los mismos valores, hace lo "
-        "mismo que -O0."), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(caja), tabla(m, titulos, 4), TRUE, TRUE, 0);
+        "<tt>main</tt>. Se leen en la memoria del simulador en el ciclo en que main termina. Si -O1 y -O2 "
+        "dejan los mismos valores, hacen lo mismo que -O0. Una variable que -O1 ya no tiene no es una "
+        "diferencia: el DCE la borró porque nadie la lee (no es un resultado)."), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(caja), tabla(m, titulos, 5), TRUE, TRUE, 0);
     gtk_container_set_border_width(GTK_CONTAINER(caja), 6);
     return caja;
 }
@@ -287,7 +340,7 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
 {
     if (ventana_opt != NULL) gtk_widget_destroy(ventana_opt);
 
-    /* Tarda un poco (compila cada nivel varias veces y simula los dos): cursor de espera. */
+    /* Tarda un poco (compila cada nivel varias veces y simula los tres): cursor de espera. */
     GdkWindow *gdk_padre = gtk_widget_get_window(GTK_WIDGET(padre));
     GdkCursor *espera = gdk_padre ? gdk_cursor_new_for_display(gdk_window_get_display(gdk_padre), GDK_WATCH) : NULL;
     if (gdk_padre) {
@@ -300,11 +353,11 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
     if (espera) g_object_unref(espera);
 
     gchar *base = g_path_get_basename(nombre);
-    gchar *titulo = g_strdup_printf("-O0 / -O2 — %s", base);
+    gchar *titulo = g_strdup_printf("Niveles -O0 / -O1 / -O2 — %s", base);
     ventana_opt = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(ventana_opt), titulo);
     gtk_window_set_transient_for(GTK_WINDOW(ventana_opt), padre);
-    gtk_window_set_default_size(GTK_WINDOW(ventana_opt), 980, 720);
+    gtk_window_set_default_size(GTK_WINDOW(ventana_opt), 1040, 760);
     g_signal_connect(ventana_opt, "destroy", G_CALLBACK(al_destruir_optimizacion), NULL);
     g_free(titulo);
     g_free(base);
@@ -313,10 +366,11 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
     gtk_container_set_border_width(GTK_CONTAINER(columna), 10);
     gtk_container_add(GTK_CONTAINER(ventana_opt), columna);
     gtk_box_pack_start(GTK_BOX(columna), parrafo(
-        "Los dos niveles de optimización de <tt>balc</tt>. <b>-O0</b>: el backend tradicional, sin "
-        "optimizar (el mismo del botón Ensamblador). <b>-O2</b>: la IR pasa por unrolling, "
-        "renombramiento, DCE, reordenamiento y spilling, y la cadena física VLIW la calendariza. "
-        "Los dos binarios se ejecutan en el simulador hasta que main termina."), FALSE, FALSE, 0);
+        "Los tres niveles de optimización de <tt>balc</tt>. <b>-O0</b>: el backend tradicional, sin "
+        "optimizar. <b>-O1</b>: el DCE quita el código muerto del código BAL y se compila con el mismo "
+        "backend. <b>-O2</b>: la IR pasa por unrolling, renombramiento, DCE, reordenamiento y spilling, "
+        "y la cadena física VLIW la calendariza. Los tres binarios se ejecutan en el simulador hasta que "
+        "main termina."), FALSE, FALSE, 0);
 
     if (estado != 0 || datos_opt->estado == IDE_OPT_CON_ERRORES) {
         gtk_box_pack_start(GTK_BOX(columna), parrafo(estado != 0
@@ -331,12 +385,14 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
 
     GtkWidget *pestanas = gtk_notebook_new();
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_comparacion(r), gtk_label_new("Comparación"));
-    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_pasadas(r), gtk_label_new("Pasadas de -O2"));
+    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_pasadas(r), gtk_label_new("Qué hace cada nivel"));
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_resultado(r), gtk_label_new("Resultado de main"));
-    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas),
-                             lado_a_lado(con_titulo("-O0", vista_de_texto(r->o0.ensamblador)),
-                                         con_titulo("-O2", vista_de_texto(r->o2.ensamblador))),
-                             gtk_label_new("Ensamblador"));
+    GtkWidget *asm_niveles[3];
+    for (int i = 0; i < 3; ++i)
+        asm_niveles[i] = con_titulo(NOMBRES[i], vista_de_texto(nivel_i(r, i)->ensamblador));
+    gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), lado_a_lado(asm_niveles, 3), gtk_label_new("Ensamblador"));
+    if (r->o1_codigo != NULL)
+        gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), vista_de_texto(r->o1_codigo), gtk_label_new("Código de -O1"));
     if (r->o2.compilado)
         gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_ir(r), gtk_label_new("IR de -O2"));
     gtk_box_pack_start(GTK_BOX(columna), pestanas, TRUE, TRUE, 0);

@@ -4,6 +4,8 @@
  * Pasos de ide_optimizacion_analizar:
  *   1. -O0: el botón Ensamblador (ide_ensamblador_generar), que hace lo
  *      mismo que "balc -O0": ensamblador, .bin y las variables de main.
+ *   1b. -O1: el DCE (ide_dce_analizar) arma el código BAL sin el código
+ *      muerto y ese código se compila igual que -O0 (lo mismo que "balc -O1").
  *   2. -O2: lo mismo que visitante_o2 de src/Linea_Comandos/cli.c ("balc
  *      -O2"): asignar la memoria con referencias y llamar a ir_vliw_programa,
  *      que aplica las pasadas sobre la IR y arma la cadena física VLIW.
@@ -27,6 +29,7 @@
 #include "ast.h"
 #include "cli.h"
 #include "formato_binario.h"
+#include "ide_dce.h"
 #include "ide_analisis.h"
 #include "ir.h"
 #include "ir_vliw_programa.h"
@@ -284,6 +287,88 @@ static int compilar_o2(const char *texto, size_t largo, const char *ruta, Compil
 }
 
 /* ------------------------------------------------------------------ */
+/* -O1: el DCE sobre el código BAL                                     */
+/* ------------------------------------------------------------------ */
+
+/* Lo que deja el DCE de -O1. */
+typedef struct {
+    int listo;                 /* 1 si hay un código BAL para compilar. */
+    char *motivo;              /* Si listo es 0: por qué no. */
+    char *codigo;              /* El código que se compila (el nuevo o, sin cambios, el original). */
+    size_t eliminadas, borradas, cambiadas, conservadas;
+    int cambio;                /* 1 si "codigo" es distinto del original. */
+} PreparacionO1;
+
+static void liberar_o1(PreparacionO1 *p)
+{
+    free(p->motivo);
+    free(p->codigo);
+    memset(p, 0, sizeof *p);
+}
+
+/*
+ * Los mismos pasos que vliw_opt_fuente_preparar (tools/vliw/optimizacion_cli.c,
+ * "balc -O1"): el DCE sobre la IR y el código BAL sin el código muerto. Si
+ * el DCE quita algo de la IR pero no pudo reescribir el código, -O1 no se
+ * hace (no se compila el original como si estuviera optimizado).
+ * "dce_ms" recibe cuánto tardó el DCE. 0 si se pudo intentar, -1 interno.
+ */
+static int preparar_o1(const char *texto, size_t largo, const char *ruta, PreparacionO1 *p,
+                       double *dce_ms)
+{
+    memset(p, 0, sizeof *p);
+    const double inicio = ahora_ms();
+    IdeDce dce;
+    if (ide_dce_analizar(texto, largo, ruta, &dce) != 0) return -1;
+    *dce_ms = ahora_ms() - inicio;
+    int estado = 0;
+    if (dce.estado != IDE_DCE_LISTO) {
+        char t[600];
+        snprintf(t, sizeof t, "-O1 necesita la IR, y la IR todavía no soporta este programa%s%s",
+                 dce.motivo ? ": " : "", dce.motivo ? dce.motivo : "");
+        p->motivo = copiar(t);
+    } else if (dce.resultado.cantidad_eliminadas > 0 && dce.codigo_nuevo == NULL) {
+        p->motivo = copiar("el DCE quitó instrucciones de la IR, pero no pudo reescribir el "
+                           "código BAL sin ellas (igual que balc -O1, no se compila)");
+    } else {
+        p->listo = 1;
+        p->codigo = dce.codigo_nuevo != NULL ? copiar(dce.codigo_nuevo) : copiar(texto);
+        p->eliminadas = dce.resultado.cantidad_eliminadas;
+        p->borradas = dce.sentencias_borradas;
+        p->cambiadas = dce.sentencias_cambiadas;
+        p->conservadas = dce.sentencias_conservadas;
+        p->cambio = dce.codigo_nuevo != NULL && strcmp(dce.codigo_nuevo, texto) != 0;
+        if (p->codigo == NULL) estado = -1;
+    }
+    if (!p->listo && p->motivo == NULL) estado = -1;
+    ide_dce_liberar(&dce);
+    if (estado != 0) liberar_o1(p);
+    return estado;
+}
+
+/* Compila con -O1 solo para medir el tiempo: el DCE más el backend. El
+ * tiempo del DCE se suma a la "generación" (es la pasada de optimización). */
+static int tiempo_o1(const char *texto, size_t largo, const char *ruta, IdeAsmTiempos *t)
+{
+    PreparacionO1 p;
+    double dce_ms = 0.0;
+    if (preparar_o1(texto, largo, ruta, &p, &dce_ms) != 0 || !p.listo) {
+        liberar_o1(&p);
+        return -1;
+    }
+    IdeEnsamblador a;
+    int estado = ide_ensamblador_generar(p.codigo, strlen(p.codigo), ruta, &a);
+    if (estado == 0) {
+        *t = a.tiempos;
+        t->generacion += dce_ms;
+        t->total += dce_ms;
+        ide_ensamblador_liberar(&a);
+    }
+    liberar_o1(&p);
+    return estado;
+}
+
+/* ------------------------------------------------------------------ */
 /* Tiempo de compilación: la mediana                                   */
 /* ------------------------------------------------------------------ */
 
@@ -293,8 +378,9 @@ static int comparar_tiempos(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
-/* Compila MET_COMPILACIONES - 1 veces más con el nivel pedido y deja la
- * corrida mediana (por el total). "primera" es la que ya se hizo. */
+/* Compila MET_COMPILACIONES - 1 veces más con el nivel pedido (0, 1 o 2)
+ * y deja la corrida mediana (por el total). "primera" es la que ya se hizo.
+ * "texto" es siempre el código del editor (en -O1 se repite también el DCE). */
 static int mediana(const char *texto, size_t largo, const char *ruta, int nivel,
                    const IdeAsmTiempos *primera, IdeAsmTiempos *salida)
 {
@@ -306,6 +392,8 @@ static int mediana(const char *texto, size_t largo, const char *ruta, int nivel,
             if (ide_ensamblador_generar(texto, largo, ruta, &a) != 0) return -1;
             corridas[i] = a.tiempos;
             ide_ensamblador_liberar(&a);
+        } else if (nivel == 1) {
+            if (tiempo_o1(texto, largo, ruta, &corridas[i]) != 0) return -1;
         } else {
             CompilacionO2 c;
             if (compilar_o2(texto, largo, ruta, &c, &corridas[i]) != 0) return -1;
@@ -397,16 +485,76 @@ static int simular(IdeOptNivel *n, const unsigned char *balb, size_t largo, uint
     return estado;
 }
 
-/* 1 si los dos niveles dejan las mismas variables con los mismos valores. */
+/*
+ * Compara el resultado de main de un nivel con el de -O0, variable por
+ * variable y POR NOMBRE (si un nombre se repite en bloques distintos, cuenta
+ * el orden en que aparece). Una variable que el otro nivel no tiene no es
+ * una diferencia: -O1 borra del código las variables muertas de main (nadie
+ * las lee, no son resultado). 1 igual, 0 alguna distinta, -1 no se pudo
+ * (alguno de los dos niveles no compiló o main no terminó).
+ */
 static int comparar_resultados(const IdeOptNivel *a, const IdeOptNivel *b)
 {
-    if (a->valores == NULL || b->valores == NULL ||
-        a->cantidad_variables != b->cantidad_variables) return -1;
+    /* Solo se puede comparar si los dos niveles compilaron y main terminó. */
+    if (!a->compilado || !b->compilado || a->simulacion.estado != MET_LISTO ||
+        b->simulacion.estado != MET_LISTO) return -1;
+    if (a->valores == NULL || b->valores == NULL) return 1;   /* Sin variables que comparar. */
     for (size_t i = 0; i < a->cantidad_variables; ++i) {
-        if (strcmp(a->variables[i].nombre, b->variables[i].nombre) != 0) return -1;
-        if (strcmp(a->valores[i], b->valores[i]) != 0) return 0;
+        /* Cuántas veces apareció este nombre antes en "a". */
+        size_t repeticion = 0;
+        for (size_t k = 0; k < i; ++k)
+            repeticion += strcmp(a->variables[k].nombre, a->variables[i].nombre) == 0;
+        for (size_t j = 0; j < b->cantidad_variables; ++j) {
+            if (strcmp(b->variables[j].nombre, a->variables[i].nombre) != 0) continue;
+            if (repeticion-- > 0) continue;
+            if (strcmp(a->valores[i], b->valores[j]) != 0) return 0;
+            break;
+        }
     }
+    /* Ninguna variable que tienen los dos niveles cambió. Puede que no haya
+     * quedado ninguna: si nadie lee las variables de main, el DCE de -O1 las
+     * borra todas (no son resultado; ver include/dce.h). */
     return 1;
+}
+
+/*
+ * Un nivel que usa el backend tradicional (-O0 y -O1): compila "codigo",
+ * toma la mediana del tiempo (repitiendo el nivel "nivel" sobre el código
+ * del editor) y lo ejecuta en el simulador. "primera_extra_ms" se suma al
+ * tiempo de la primera compilación (el DCE en -O1). 0 bien, -1 interno.
+ */
+static int nivel_tradicional(IdeOptNivel *n, const char *codigo, const char *texto, size_t largo,
+                             const char *ruta, int nivel, double primera_extra_ms, int *con_errores)
+{
+    IdeEnsamblador a;
+    if (ide_ensamblador_generar(codigo, strlen(codigo), ruta, &a) != 0) return -1;
+    int estado = 0;
+    if (a.estado == IDE_ASM_CON_ERRORES) {
+        if (con_errores != NULL) *con_errores = 1;
+        n->motivo = copiar("el código tiene errores");
+        if (n->motivo == NULL) estado = -1;
+    } else if (a.estado == IDE_ASM_SIN_BACKEND) {
+        n->motivo = copiar(a.motivo != NULL ? a.motivo : "el backend no pudo generar el programa");
+        if (n->motivo == NULL) estado = -1;
+    } else {
+        uint32_t fin = 0;
+        n->compilado = 1;
+        n->ensamblador = a.ensamblador;      /* Se adueña de los textos de "a". */
+        a.ensamblador = NULL;
+        n->bundles = a.bundles;
+        n->marco_main = a.marco_main;
+        n->variables = a.variables;
+        n->cantidad_variables = a.cantidad_variables;
+        a.variables = NULL;
+        IdeAsmTiempos primera = a.tiempos;
+        primera.generacion += primera_extra_ms;
+        primera.total += primera_extra_ms;
+        if (mediana(texto, largo, ruta, nivel, &primera, &n->tiempos) != 0 ||
+            met_buscar_fin(n->ensamblador, &fin) != 0 ||
+            simular(n, a.balb, a.largo_balb, fin, MET_ANCHO_FIN_O0, ruta) != 0) estado = -1;
+    }
+    ide_ensamblador_liberar(&a);
+    return estado;
 }
 
 /* ------------------------------------------------------------------ */
@@ -417,36 +565,38 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
                               IdeOptimizacion *r)
 {
     memset(r, 0, sizeof *r);
-    r->mismo_resultado = -1;
+    r->mismo_o1 = r->mismo_o2 = r->mismo_resultado = -1;
 
-    /* Paso 1: -O0. */
-    IdeEnsamblador a;
-    if (ide_ensamblador_generar(texto, largo, ruta, &a) != 0) return -1;
-    if (a.estado == IDE_ASM_CON_ERRORES) {
+    /* Paso 1: -O0. Si el código tiene errores, no se sigue con ningún nivel. */
+    int con_errores = 0;
+    int estado = nivel_tradicional(&r->o0, texto, texto, largo, ruta, 0, 0.0, &con_errores);
+    if (estado == 0 && con_errores) {
+        ide_optimizacion_liberar(r);
         r->estado = IDE_OPT_CON_ERRORES;
-        ide_ensamblador_liberar(&a);
         return 0;
     }
-    int estado = 0;
-    IdeOptNivel *o0 = &r->o0;
-    if (a.estado == IDE_ASM_SIN_BACKEND) {
-        o0->motivo = copiar(a.motivo != NULL ? a.motivo : "el backend no pudo generar el programa");
-        if (o0->motivo == NULL) estado = -1;
-    } else {
-        uint32_t fin = 0;
-        o0->compilado = 1;
-        o0->ensamblador = a.ensamblador;      /* Se adueña de los textos de "a". */
-        a.ensamblador = NULL;
-        o0->bundles = a.bundles;
-        o0->marco_main = a.marco_main;
-        o0->variables = a.variables;
-        o0->cantidad_variables = a.cantidad_variables;
-        a.variables = NULL;
-        if (mediana(texto, largo, ruta, 0, &a.tiempos, &o0->tiempos) != 0 ||
-            met_buscar_fin(o0->ensamblador, &fin) != 0 ||
-            simular(o0, a.balb, a.largo_balb, fin, MET_ANCHO_FIN_O0, ruta) != 0) estado = -1;
+
+    /* Paso 1b: -O1 = DCE + el código BAL nuevo con el backend tradicional. */
+    if (estado == 0) {
+        PreparacionO1 p;
+        double dce_ms = 0.0;
+        if (preparar_o1(texto, largo, ruta, &p, &dce_ms) != 0) {
+            estado = -1;
+        } else if (!p.listo) {
+            r->o1.motivo = p.motivo;
+            p.motivo = NULL;
+        } else {
+            r->o1_eliminadas_ir = p.eliminadas;
+            r->o1_borradas = p.borradas;
+            r->o1_cambiadas = p.cambiadas;
+            r->o1_conservadas = p.conservadas;
+            r->o1_cambio = p.cambio;
+            r->o1_codigo = p.codigo;
+            p.codigo = NULL;
+            estado = nivel_tradicional(&r->o1, r->o1_codigo, texto, largo, ruta, 1, dce_ms, NULL);
+        }
+        liberar_o1(&p);
     }
-    ide_ensamblador_liberar(&a);
 
     /* Paso 2: -O2. */
     CompilacionO2 c;
@@ -486,8 +636,13 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
         liberar_o2(&c);
     }
 
-    /* Paso 5. */
-    if (estado == 0) r->mismo_resultado = comparar_resultados(&r->o0, &r->o2);
+    /* Paso 5: cada nivel contra -O0, y los tres juntos. */
+    if (estado == 0) {
+        r->mismo_o1 = comparar_resultados(&r->o0, &r->o1);
+        r->mismo_o2 = comparar_resultados(&r->o0, &r->o2);
+        r->mismo_resultado = (r->mismo_o1 == 0 || r->mismo_o2 == 0) ? 0
+                           : (r->mismo_o1 == 1 && r->mismo_o2 == 1) ? 1 : -1;
+    }
     if (estado != 0) ide_optimizacion_liberar(r);
     return estado;
 }
@@ -508,10 +663,12 @@ void ide_optimizacion_liberar(IdeOptimizacion *r)
 {
     if (r == NULL) return;
     liberar_nivel(&r->o0);
+    liberar_nivel(&r->o1);
     liberar_nivel(&r->o2);
+    free(r->o1_codigo);
     free(r->ir_antes);
     free(r->ir_despues);
     free(r->ir_spilling);
     memset(r, 0, sizeof *r);
-    r->mismo_resultado = -1;
+    r->mismo_o1 = r->mismo_o2 = r->mismo_resultado = -1;
 }

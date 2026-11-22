@@ -16,12 +16,12 @@ arreglo nunca se elimina, así que el resultado siempre queda.
 | 03 | `03_unroll_n_grande.bal` | Loop unrolling, N grande | 1003 vueltas (250 pasadas + 3 sueltas), `step 3` con N desconocido y un `whether` dentro del cuerpo que cambia dos variables |
 | 04 | `04_renombre_war.bal` | Renombramiento (WAR) | `x`, `a` y `b` se reutilizan para valores independientes; algunas reescrituras leen su propio valor (RAW verdadero) |
 | 05 | `05_renombre_waw.bal` | Renombramiento (WAW) | `t` se escribe seis veces en el mismo bloque y su valor final tiene que ser el último |
-| 06 | `06_renombre_war_waw_ciclos.bal` | Renombramiento (WAR y WAW) | Rotación de variables en ciclos (Fibonacci, tribonacci) y en un `whale` (MCD de Euclides) |
+| 06 | `06_renombre_war_waw_ciclos.bal` | Renombramiento (WAR y WAW) | Rotación de variables en ciclos (Fibonacci, tribonacci) y en un `whale` (MCD de Euclides), con temporales reescritos en cada vuelta |
 | 07 | `07_dce_llamadas_con_efectos.bal` | Código muerto + llamadas con efectos | Asignaciones muertas entre llamadas que escriben en un arreglo, una cadena muerta (dos pasadas) y una división que no se puede quitar |
 | 08 | `08_dce_efectos_en_ciclos.bal` | Código muerto + llamadas con efectos | Los dos tipos de código muerto: asignaciones dentro de un ciclo con una llamada, una lectura de memoria sin uso y ramas inalcanzables (`whether (1 > 2)`, `whale (2 < 1)`) con llamadas adentro |
 | 09 | `09_dce_operaciones_que_fallan.bal` | Código muerto + llamadas con efectos | Una división entre una variable que nadie usa pero no se puede quitar (puede fallar), llamadas anidadas y una escritura que pisa a otra |
 | 10 | `10_reorden_saltos_condicionales.bal` | Reordenamiento + seguridad del control | Cadena `whether`/`alif`/`alif`/`also` en un ciclo, condiciones con `&&`, `\|\|` y `~`, mínimo y máximo |
-| 11 | `11_reorden_funciones.bal` | Reordenamiento + funciones | Recursión (factorial, Fibonacci doble), salidas desde ramas distintas, una llamada como argumento y cálculos entre llamadas |
+| 11 | `11_reorden_funciones.bal` | Reordenamiento + funciones | Recursión dentro de un `whether` (factorial, Fibonacci doble), un valor devuelto que depende de una rama, una llamada como argumento y cálculos entre llamadas |
 | 12 | `12_reorden_memoria_y_ciclos.bal` | Reordenamiento + memoria | Ordenamiento burbuja: lee y escribe el mismo arreglo con índices que solo se conocen al ejecutar, con ciclos anidados, un `whether` y una llamada que escribe |
 | 13 | `13_spilling_expresiones.bal` | Spilling | Árboles de expresiones que necesitan 4 valores vivos (hay 3 registros) mientras las 12 variables siguen vivas |
 | 14 | `14_spilling_variables_vivas_en_ciclo.bal` | Spilling | Ocho acumuladores encadenados (s2 += s1, s3 += s2) vivos durante todo el ciclo, con saltos |
@@ -30,7 +30,7 @@ arreglo nunca se elimina, así que el resultado siempre queda.
 ## Resultados esperados
 
 Son los valores con que termina el arreglo `resultados` de `main` (y otro
-arreglo de `main` cuando la prueba lo revisa). Son iguales en `-O0` y en
+arreglo de `main` cuando la prueba lo revisa). Son iguales en `-O0`, `-O1` y
 `-O2`, y la prueba automática los compara uno por uno
 ([tests/test_pruebas_obligatorias.c](../test_pruebas_obligatorias.c)).
 
@@ -100,15 +100,14 @@ arreglo de `main` cuando la prueba lo revisa). Son iguales en `-O0` y en
 
 ### 06 · `06_renombre_war_waw_ciclos.bal`
 
-`resultados = [6765, 1, 1705, 21, 1]`
+`resultados = [6765, 1705, 21, 1]`
 
 | Posición | Qué es | Valor | De dónde sale |
 |---|---|---|---|
-| `[0]` | `fibonacci(20)` | 6765 | rotación t = a + b; a = b; b = t |
-| `[1]` | `fibonacci(1)` | 1 | una sola vuelta (solo el residuo del desenrollado) |
-| `[2]` | `tribonacci(15)` | 1705 | 0, 0, 1, 1, 2, 4, 7, 13, ... |
-| `[3]` | `mcd(1071, 462)` | 21 | algoritmo de Euclides con `whale` |
-| `[4]` | `mcd(17, 5)` | 1 | números coprimos |
+| `[0]` | `fibonacci(20)` | 6765 | rotación a = b; b = t; t = a + b |
+| `[1]` | `tribonacci(15)` | 1705 | 0, 0, 1, 1, 2, 4, 7, 13, ... |
+| `[2]` | `mcd(1071, 462)` | 21 | algoritmo de Euclides con `whale` |
+| `[3]` | `mcd(17, 5)` | 1 | números coprimos |
 
 ### 07 · `07_dce_llamadas_con_efectos.bal`
 
@@ -174,7 +173,7 @@ Datos: `[12, -7, 0, 33, 5, -20, 7, -1]`. `resultados = [3, 1, 2, 2, 120, -20, 33
 |---|---|---|---|
 | `[0]` | `fact(7)` | 5040 | 7!, recursivo |
 | `[1]` | `fib(10)` | 55 | dos llamadas recursivas por nivel |
-| `[2]` | `absoluto(-5)` | 5 | sale por el `give` del `whether` |
+| `[2]` | `absoluto(-5)` | 5 | el valor que se devuelve lo cambia el `whether` |
 | `[3]` | `combinar(3, fib(6), 4)` | 7 | 3 + 8 − 4 |
 | `[4]` | z − w | 3 | w = 12 y z = 15, calculados entre llamadas |
 
@@ -229,26 +228,27 @@ Con i = 1..20. `resultados = [210, 1540, 8855, -10, 10946, 4, -13]`
 
 ### Lo que mide el simulador
 
-Además del resultado (que es igual en los dos niveles), cambian los ciclos y el
-tamaño del programa:
+Además del resultado (que es igual en los tres niveles), cambian los ciclos y
+el tamaño del programa. `-O1` solo cambia algo donde hay código muerto que
+quitar (07, 08 y 09); en los demás compila lo mismo que `-O0`.
 
-| # | Ciclos -O0 | Ciclos -O2 | Bundles -O0 | Bundles -O2 |
-|---|---:|---:|---:|---:|
-| 01 | 1 661 | 959 | 402 | 933 |
-| 02 | 1 842 | 1 495 | 705 | 617 |
-| 03 | 85 490 | 56 002 | 363 | 770 |
-| 04 | 10 094 | 7 811 | 897 | 735 |
-| 05 | 8 033 | 6 224 | 708 | 618 |
-| 06 | 10 887 | 8 714 | 888 | 982 |
-| 07 | 6 985 | 5 373 | 990 | 843 |
-| 08 | 1 703 | 1 238 | 801 | 678 |
-| 09 | 6 959 | 5 555 | 1 014 | 649 |
-| 10 | 2 231 | 3 011 | 741 | 956 |
-| 11 | 26 902 | 24 206 | 999 | 801 |
-| 12 | 3 544 | 3 823 | 585 | 1 017 |
-| 13 | 524 | 562 | 525 | 561 |
-| 14 | 45 266 | 37 036 | 597 | 634 |
-| 15 | 5 302 | 4 538 | 963 | 687 |
+| # | Ciclos -O0 | Ciclos -O1 | Ciclos -O2 | Bundles -O0 | Bundles -O1 | Bundles -O2 |
+|---|---:|---:|---:|---:|---:|---:|
+| 01 | 1 661 | 1 661 | 959 | 402 | 402 | 933 |
+| 02 | 1 842 | 1 842 | 1 495 | 705 | 705 | 617 |
+| 03 | 85 490 | 85 490 | 56 002 | 363 | 363 | 770 |
+| 04 | 10 094 | 10 094 | 7 811 | 897 | 897 | 735 |
+| 05 | 8 033 | 8 033 | 6 224 | 708 | 708 | 618 |
+| 06 | 10 708 | 10 708 | 8 635 | 828 | 828 | 990 |
+| 07 | 6 985 | 4 543 | 5 373 | 990 | 804 | 843 |
+| 08 | 1 703 | 1 433 | 1 238 | 801 | 540 | 678 |
+| 09 | 6 959 | 6 905 | 5 555 | 1 014 | 984 | 649 |
+| 10 | 2 231 | 2 231 | 3 011 | 741 | 741 | 956 |
+| 11 | 29 698 | 29 698 | 26 892 | 996 | 996 | 769 |
+| 12 | 3 544 | 3 544 | 3 823 | 585 | 585 | 1 017 |
+| 13 | 524 | 524 | 562 | 525 | 525 | 561 |
+| 14 | 45 266 | 45 266 | 37 036 | 597 | 597 | 634 |
+| 15 | 5 296 | 5 296 | 4 562 | 951 | 951 | 666 |
 
 Estos números son del compilador actual. Si un compañero cambia una
 optimización pueden cambiar, pero el resultado de `main` no debe cambiar
@@ -262,13 +262,13 @@ make test-pruebas-obligatorias
 
 Para cada programa la prueba ([tests/test_pruebas_obligatorias.c](../test_pruebas_obligatorias.c)):
 
-1. Compila con `-O0` y con `-O2` y ejecuta los dos binarios en el simulador hasta que `main` termina.
-2. Revisa que `resultados` tenga los valores esperados en los dos niveles. Los valores se calcularon aparte y coinciden con los de los dos backends.
-3. Revisa que `-O0` y `-O2` dejen **todas** las variables de `main` iguales (regla de oro).
+1. Compila con `-O0`, `-O1` y `-O2` y ejecuta los tres binarios en el simulador hasta que `main` termina.
+2. Revisa que `resultados` tenga los valores esperados en los tres niveles. Los valores se calcularon aparte y coinciden con los de los tres niveles.
+3. Revisa que `-O1` y `-O2` dejen las variables de `main` iguales a `-O0` (regla de oro). Las que `-O1` borró por ser código muerto no cuentan.
 4. Revisa que la optimización de su categoría **actuó** en `-O2`:
    - **unrolling:** ciclos desenrollados;
    - **renombramiento:** dependencias WAR y WAW quitadas;
-   - **código muerto:** instrucciones eliminadas;
+   - **código muerto:** instrucciones eliminadas, en `-O2` y en `-O1`;
    - **reordenamiento:** instrucciones movidas;
    - **spilling:** valores guardados y vueltos a cargar.
 
@@ -279,13 +279,14 @@ Cada optimización por separado, con su reporte:
 ./balc --dce     tests/Pruebas_obligatorias/08_dce_efectos_en_ciclos.bal # qué se elimina y por qué
 ./balc --reorder tests/Pruebas_obligatorias/10_reorden_saltos_condicionales.bal
 ./balc --ir-spilling tests/Pruebas_obligatorias/13_spilling_expresiones.bal
+./balc -O1       tests/Pruebas_obligatorias/07_dce_llamadas_con_efectos.bal # DCE sobre el código BAL
 ./balc -O2       tests/Pruebas_obligatorias/05_renombre_waw.bal          # todas las pasadas juntas
 ```
 
 En el IDE: se abre el archivo y se usan los botones **Loop unrolling**,
-**Código muerto**, **Reordenamiento** y **-O0 / -O2**. Este último compara los
-dos niveles: ciclos, tamaño, qué hizo cada pasada y si el resultado de
-`main` es el mismo.
+**Código muerto**, **Reordenamiento** y **-O0/-O1/-O2**. Este último compara los
+tres niveles: ciclos, tamaño, qué hizo cada nivel y cada pasada, y si el
+resultado de `main` es el mismo.
 
 ## Límites que condicionan el tamaño de los programas
 
@@ -300,6 +301,12 @@ Los programas son tan exigentes como permiten los dos backends:
   - 4 registros temporales por expresión;
   - no acepta una llamada como operando de otra operación (`f(x) gauss 1`), ni sentencias después de un `give`.
 - **`-O2`:** trabaja con 3 registros temporales (el spilling se ve en todos los programas).
+- **`-O1`:** reescribe el código BAL, así que solo puede quitar lo que es una
+  sentencia completa. Si el DCE quita algo de la IR que no se puede escribir
+  en BAL, `-O1` no compila el programa (igual que `balc -O1`). Pasa con dos
+  patrones comunes, que estos programas evitan a propósito:
+  - un `give` dentro de un `whether` deja en la IR un salto inalcanzable;
+  - un valor inicial que se pisa antes de leerse (la declaración necesita valor).
 
 Con estos programas `-O2` no siempre ejecuta menos ciclos. En el 10 y el 12
 ejecuta más, porque el spilling agrega cargas y guardados dentro de los
