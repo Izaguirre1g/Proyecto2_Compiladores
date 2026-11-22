@@ -59,7 +59,7 @@ SRC := $(CLI)/main.c $(CLI)/cli.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token
        reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c reordenamiento/ro_json.c
 
 # Estos nombres son comandos de Make, no archivos.
-.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-enlace test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 tabla-ll1 ide clean
+.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 tabla-ll1 ide clean
 
 # Al ejecutar make, se construye balc.
 all: balc
@@ -88,7 +88,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -732,6 +732,35 @@ test-enlace: balc tests/test_enlace_simulador
 	rm -f tests/enlace_tmp* tests/enlace_principal* tests/enlace_dce* tests/arreglo_llamada.* \
 	      tests/modulos/principal_*.asm tests/modulos/principal_*.o2* tests/modulos/*.simbolos.md
 	@echo "OK: enlace entre archivos (bring), -O1 con modulos y a[i] : f(x)"
+
+# Constantes (plegado en src/Analisis_Semantico/semantic_modules.c):
+# globales y locales, con expresiones, booleanas, arreglos constantes y
+# constantes como tamano de arreglo; tambien importadas con bring.
+# 1. Compilan con el backend normal, --ir y -O2 (constantes_principal tambien
+#    con -O1; constantes.bal usa whether (DEBUG), que el reescritor de -O1 aun
+#    no sabe reescribir cuando la variable se usa despues).
+# 2. En el simulador dan los valores esperados. `resultados` no es la primera
+#    variable de main (antes va el arreglo constante), de ahi el +desplazamiento.
+test-constantes: balc tests/test_enlace_simulador
+	./balc -o tests/constantes.bin tests/fixtures/constantes.bal > /dev/null
+	./balc --ir tests/fixtures/constantes.bal > /dev/null
+	./balc -O2 -o tests/constantes_o2.bin tests/fixtures/constantes.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes.bin 92+28 20 -3 17 1 6 101 4 9
+	./balc -o tests/constantes_mod.bin tests/modulos/constantes_principal.bal > /dev/null
+	./balc --ir tests/modulos/constantes_principal.bal > /dev/null
+	./balc -O2 -o tests/constantes_mod_o2.bin tests/modulos/constantes_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_mod.bin 44+20 14 18 3
+	./balc -O1 -o tests/constantes_mod_o1.bin tests/modulos/constantes_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_mod_o1.bin 44+20 14 18 3
+	./balc --ir tests/fixtures/constantes_ambito.bal > /dev/null
+	./balc -o tests/constantes_ambito.bin tests/fixtures/constantes_ambito.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_ambito.bin 28+4 105 8 6 50
+	./balc -O1 -o tests/constantes_ambito_o1.bin tests/fixtures/constantes_ambito.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_ambito_o1.bin 28+4 105 8 6 50
+	./balc -O2 -o tests/constantes_ambito_o2.bin tests/fixtures/constantes_ambito.bal > /dev/null
+	rm -f tests/constantes*.bin tests/constantes*.mem tests/fixtures/constantes*.asm tests/fixtures/constantes*.o2* \
+	      tests/modulos/constantes_principal.asm tests/modulos/constantes_principal.o2*
+	@echo "OK: constantes globales, locales e importadas"
 
 tests/test_ide_ensamblador: tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_ensamblador.h include/cli.h include/ide_analisis.h $(SINTACTICO)/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@

@@ -6,9 +6,11 @@
  *
  * El arreglo es la primera variable de main, así que queda en sp+4,
  * sp+8, ... del marco de main, que está en el tope de la pila (0x10000).
- * El tamaño del marco lo dice `balc -m` (marco_maximo_bytes).
+ * El tamaño del marco lo dice `balc -m` (marco_maximo_bytes). Si `resultados`
+ * no es la primera variable, se indica su desplazamiento: marco+desplazamiento
+ * (por ejemplo 92+28; `balc -m` muestra el desplazamiento de cada variable).
  *
- * Uso: test_enlace_simulador programa.bin marco esperado0 [esperado1 ...]
+ * Uso: test_enlace_simulador programa.bin marco[+desplazamiento] esperado0 [esperado1 ...]
  *      (lo corre make test-enlace)
  */
 #include "sim_ejecucion.h"
@@ -21,7 +23,7 @@
 #define MAX_RESULTADOS 16
 
 /* Ejecuta el binario y copia `n` enteros desde resultados[0]. 0 bien, 1 mal. */
-static int ejecutar(const char *ruta, unsigned marco, int *valores, int n)
+static int ejecutar(const char *ruta, unsigned marco, unsigned desplazamiento, int *valores, int n)
 {
     SimEjecucion *e = NULL;
     if (sim_ejecucion_crear(ruta, SIM_EJECUCION_BALB, SIM_BUSQUEDA_FINITA, &e, stderr) !=
@@ -36,7 +38,7 @@ static int ejecutar(const char *ruta, unsigned marco, int *valores, int n)
     int estado = sim_ejecucion_memoria(e, memoria, sizeof memoria) == SIM_EJECUCION_OK ? 0 : 1;
     unsigned sp = TOPE_PILA - marco;
     for (int i = 0; i < n; ++i)
-        memcpy(&valores[i], memoria + sp + 4 + 4u * (unsigned)i, sizeof valores[i]);
+        memcpy(&valores[i], memoria + sp + desplazamiento + 4u * (unsigned)i, sizeof valores[i]);
     sim_ejecucion_liberar(&e);
     return estado;
 }
@@ -44,12 +46,18 @@ static int ejecutar(const char *ruta, unsigned marco, int *valores, int n)
 int main(int argc, char **argv)
 {
     if (argc < 4 || argc - 3 > MAX_RESULTADOS) {
-        fprintf(stderr, "uso: %s programa.bin marco esperado0 [esperado1 ...]\n", argv[0]);
+        fprintf(stderr, "uso: %s programa.bin marco[+desplazamiento] esperado0 [esperado1 ...]\n", argv[0]);
         return 2;
     }
     int n = argc - 3, valores[MAX_RESULTADOS] = {0}, fallos = 0;
-    unsigned marco = (unsigned)strtoul(argv[2], NULL, 10);
-    if (ejecutar(argv[1], marco, valores, n) != 0) return 1;
+    char *resto = NULL;
+    unsigned marco = (unsigned)strtoul(argv[2], &resto, 10);
+    unsigned desplazamiento = (resto && *resto == '+') ? (unsigned)strtoul(resto + 1, NULL, 10) : 4u;
+    if (marco > TOPE_PILA || desplazamiento + 4u * (unsigned)n > marco) {
+        fprintf(stderr, "marco o desplazamiento fuera del marco: %s\n", argv[2]);
+        return 2;
+    }
+    if (ejecutar(argv[1], marco, desplazamiento, valores, n) != 0) return 1;
     for (int i = 0; i < n; ++i) {
         int esperado = atoi(argv[3 + i]);
         int bien = valores[i] == esperado;
