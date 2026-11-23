@@ -119,7 +119,8 @@ static int validar_referencias(void *ctx,const Ast *ast,SimTabla *tabla,FILE *di
     if(fclose(f))rc=2;
     return rc;
 }
-int vliw_opt_fuente_preparar(const char *entrada,VliwOptFuente *salida,FILE *diag)
+int vliw_opt_fuente_preparar_con_observables(const char *entrada,VliwOptFuente *salida,FILE *diag,
+    const IdeObservable *observables,size_t cantidad)
 {
     if (!entrada || !salida || salida->ruta || salida->directorio || salida->eliminadas_ir || salida->borradas_bal ||
         salida->cambiadas_bal || salida->conservadas_bal || salida->cambio_bal)
@@ -165,7 +166,7 @@ int vliw_opt_fuente_preparar(const char *entrada,VliwOptFuente *salida,FILE *dia
     }
     /* El IDE trabaja sobre el snapshot privado y reconstruye AST/IR/CFG. Su
      * reescritor y sus validaciones se reutilizan sin tocar algoritmos de José. */
-    if (ide_dce_analizar(texto,largo,nuevo.ruta,&dce)) goto fin;
+    if (ide_dce_analizar_con_observables(texto,largo,nuevo.ruta,observables,cantidad,&dce)) goto fin;
     if (dce.estado!=IDE_DCE_LISTO) {
         estado=rechazo(diag,entrada,dce.motivo?dce.motivo:"análisis semántico/IR rechazado; no se genera código",1);goto fin;
     }
@@ -193,3 +194,7 @@ fin:
     if (estado==2) rechazo(diag,entrada,"fallo de recursos o E/S durante DCE",2);
     return estado;
 }
+
+/* La ruta histórica no añade resultados ni altera sus métricas. */
+int vliw_opt_fuente_preparar(const char *entrada,VliwOptFuente *salida,FILE *diag)
+{ return vliw_opt_fuente_preparar_con_observables(entrada,salida,diag,NULL,0); }

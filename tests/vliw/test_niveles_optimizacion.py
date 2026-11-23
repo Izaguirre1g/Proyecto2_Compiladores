@@ -297,4 +297,28 @@ class NivelesTests(unittest.TestCase):
         direccion=65536-fn['marco']+obj['offset'];mem=(d/'sim-memoria.bin').read_bytes()
         self.assertEqual(int.from_bytes(mem[direccion:direccion+4],'little'),4)
 
+    # La CLI comparte el contrato semántico con la API: raíces duplicadas
+    # son idempotentes; un nombre inexistente o coordenadas no representables
+    # se rechazan sin publicar imágenes. También se comprueba la eliminación
+    # de una interna muerta para detectar una desactivación accidental de DCE.
+    def test_24_observables_cli(self):
+        fuente=FUENTE
+        for opts in (['-O1','--observable=main:ausente'],
+                     ['-O0','--observable=main:valor'],
+                     ['-O2','--observable=main:valor'],
+                     ['-O1','--observable=main:valor@0:1'],
+                     ['-O1','--observable=main:valor@-1:1'],
+                     ['-O1','--observable=main:valor@'+'9'*100+':1'],
+                     ['-O1',*['--observable=main:valor']*65]):
+            with self.subTest(opts=opts):
+                p,d=self.ejecutar(opts,fuente)
+                self.assertNotEqual(p.returncode,0,p.stderr)
+                self.assertFalse((d/'caso.bin').exists())
+        p,d=self.ejecutar(['-O1','--observable=main:valor',
+                          '--observable=main:valor','-m','-s'],fuente)
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertIn('valor | variable',p.stdout)
+        self.assertNotIn('muerto | variable',p.stdout)
+        self.assertTrue((d/'caso.mem').stat().st_size)
+
 if __name__=='__main__':unittest.main()

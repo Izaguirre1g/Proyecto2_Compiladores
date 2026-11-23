@@ -27,6 +27,7 @@
 #include "ir_vliw_programa.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -191,6 +192,8 @@ typedef struct {
     int desde_ensamblador;  /* -x */
     int paquetes;           /* -p */
     const char *fuente_optimizada; /* Préstamo de la copia privada de -O1. */
+    IdeObservable observables[64]; char nombres_observables[64][64];
+    size_t cantidad_observables;
     int nivel, nivel_explicito; /* Sin opción: ruta histórica; O2 utiliza IR. */
     int ir;                 /* --ir: IR de tres direcciones */
     int ir_spilling;        /* --ir-spilling: IR con registros limitados */
@@ -233,6 +236,7 @@ static void usage(FILE *out) {
           "              -s guarda .vliw.asm y .vliw.mem; -p muestra bundles\n"
           "--dce         como --ir, y ademas calcula las variables vivas y elimina\n"
           "              el codigo muerto (muestra la IR antes y despues)\n"
+          "--observable=main:nombre[@linea:columna]  conserva un resultado en -O1 (repetible)\n"
           "--unroll[=k]  muestra la IR antes y despues del loop unrolling (factor k,\n"
           "              por defecto 4); no genera ningun archivo\n"
           "--reorder[=L] reordena cada bloque basico respetando RAW/WAR/WAW y muestra\n"
@@ -247,11 +251,41 @@ static void usage(FILE *out) {
           "              no genera ningun archivo\n", out);
 }
 
+/* Convierte una coordenada decimal positiva sin conversiones scanf fuera de
+ * rango. Rechaza signos, espacios, overflow y separadores incompletos antes
+ * de crear el selector. No reserva memoria ni modifica la cadena prestada. */
+static int coordenada_observable(const char **texto, char fin, size_t *valor)
+{
+    const char *inicio = *texto;
+    if (*inicio < '0' || *inicio > '9') return -1;
+    char *siguiente;
+    errno = 0;
+    uintmax_t n = strtoumax(inicio, &siguiente, 10);
+    if (errno == ERANGE || !n || n > SIZE_MAX || *siguiente != fin) return -1;
+    *valor = (size_t)n;
+    *texto = siguiente + (fin != '\0');
+    return 0;
+}
+
 static int parse_compilacion(int argc, char **argv, Compilacion *c)
 {
     int posicional = 0;
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        /* Selector main:nombre o main:nombre@línea:columna. Las coordenadas
+         * se refieren al declarador original y desambiguan bloques distintos. */
+        if (!posicional && !strncmp(arg,"--observable=",13)) {
+            if(c->cantidad_observables==64 || strncmp(arg+13,"main:",5))return -1;
+            const char *valor=arg+18,*marca=strchr(valor,'@');
+            size_t n=marca?(size_t)(marca-valor):strlen(valor),linea=0,columna=0;
+            const char *coordenadas=marca?marca+1:NULL;
+            if(!n || n>=64 || (marca && (coordenada_observable(&coordenadas,':',&linea) ||
+                coordenada_observable(&coordenadas,'\0',&columna))))return -1;
+            size_t k=c->cantidad_observables++;
+            memcpy(c->nombres_observables[k],valor,n);c->nombres_observables[k][n]=0;
+            c->observables[k]=(IdeObservable){c->nombres_observables[k],linea,columna};
+            continue;
+        }
         /* Los niveles no se mezclan ni seleccionan una degradación implícita. */
         if (!posicional && !strncmp(arg,"-O",2)) {
             if (c->nivel_explicito || strlen(arg)!=3 || arg[2]<'0' || arg[2]>'2') {
@@ -343,6 +377,9 @@ static int parse_compilacion(int argc, char **argv, Compilacion *c)
         c->entrada = arg;
     }
     if (!c->entrada) { usage(stderr); return -1; }
+    if(c->cantidad_observables && (!c->nivel_explicito || c->nivel!=1)) {
+        fputs("--observable requiere -O1; O0/O2 conservan su comportamiento\n",stderr);return -1;
+    }
     /* O0 conserva la compilación normal; O1 nunca convierte vistas IR/JSON
      * ni ensamblador existente en una supuesta optimización productiva. */
     if (c->nivel_explicito && (c->ir || c->ir_spilling || c->vliw_ir || c->ast_json ||
@@ -1194,7 +1231,7 @@ int cli_run(int argc, char **argv) {
             fputs("-O1 requiere un fuente .bal\n",stderr);return 2;
         }
         VliwOptFuente fuente={0};
-        int estado=vliw_opt_fuente_preparar(op.entrada,&fuente,stderr);
+        int estado=vliw_opt_fuente_preparar_con_observables(op.entrada,&fuente,stderr,op.observables,op.cantidad_observables);
         if (!estado) {
             fprintf(stderr,"[O1] DCE: IR eliminadas=%zu; BAL borradas=%zu cambiadas=%zu conservadas=%zu; cambio=%d\n",
                 fuente.eliminadas_ir,fuente.borradas_bal,fuente.cambiadas_bal,fuente.conservadas_bal,fuente.cambio_bal);

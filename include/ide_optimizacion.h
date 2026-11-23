@@ -24,9 +24,10 @@
  * dejan los mismos valores que -O0, las optimizaciones respetaron la regla
  * de oro (el programa hace lo mismo).
  *
- * Una variable de main que -O1 ya no tiene NO es una diferencia: el DCE la
- * quitó porque nadie la lee (es código muerto, no un resultado). Se compara
- * por nombre solo lo que existe en los dos niveles.
+ * La API con observables compara exclusivamente el contrato solicitado. Sin
+ * contrato adicional, usa todas las variables de O0 y una ausencia produce
+ * NO VERIFICABLE: no demuestra ni igualdad ni una optimización incorrecta.
+ * Se comparan bytes completos; el texto de arreglos sigue siendo un resumen.
  *
  * No modifica ningún módulo de los compañeros: solo llama a sus funciones
  * públicas, igual que visitante_o2 en src/Linea_Comandos/cli.c.
@@ -39,6 +40,7 @@
 
 #include "ide_ensamblador.h"
 #include "metricas.h"
+#include "ide_dce.h"
 
 /* Cómo terminó el análisis. */
 typedef enum {
@@ -59,6 +61,8 @@ typedef struct {
     size_t marco_main;        /* Bytes del marco de main (para leer sus variables). */
     IdeVarMain *variables;    /* Variables locales de main... */
     size_t cantidad_variables;
+    unsigned char **datos;   /* Bytes completos por objeto; propios, sin truncado visual. */
+    size_t *largos_datos;
     char **valores;           /* ...y su valor final, como texto ("120", "[16, 15]"). */
 } IdeOptNivel;
 
@@ -80,7 +84,8 @@ typedef struct {
     size_t spills, cargas_spill, guardados_spill, generaciones;
     char *ir_antes, *ir_despues, *ir_spilling;   /* La IR en cada etapa de -O2. */
     /* Comparación del resultado de main con el de -O0 (1 igual, 0 alguna
-     * variable con otro valor, -1 no se pudo: el nivel no compiló o no terminó). */
+     * variable con otro valor, -1 falta una salida, identidad inequívoca,
+     * datos completos, compilación o ejecución terminada). */
     int mismo_o1, mismo_o2;
     /* Los tres juntos: 1 si -O1 y -O2 dan lo mismo que -O0; 0 si alguno da
      * otra cosa; -1 si alguno no se pudo comparar. */
@@ -97,6 +102,17 @@ typedef struct {
 int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
                               IdeOptimizacion *r);
 
+/* Contrato de comparación de resultados explícitos. 1 equivalente, 0 diferente,
+ * -1 no verificable. Una diferencia comprobada prevalece sobre otra ausencia.
+ * Sin resultados requeridos no hay evidencia suficiente para afirmar igualdad.
+ * No reserva ni modifica entradas; compara bytes completos, forma y tipo. */
+int ide_optimizacion_comparar(const IdeOptNivel *a, const IdeOptNivel *b,
+    const IdeObservable *requeridos, size_t cantidad);
+/* Misma cadena con resultados explícitos de main. Los selectores se prestan
+ * durante la llamada; O1 conserva esos objetos adicionales y la ruta histórica
+ * sigue accesible mediante ide_optimizacion_analizar sin raíces adicionales. */
+int ide_optimizacion_analizar_con_observables(const char *texto, size_t largo,
+    const char *ruta, const IdeObservable *observables, size_t cantidad, IdeOptimizacion *r);
 void ide_optimizacion_liberar(IdeOptimizacion *r);
 
 #endif

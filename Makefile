@@ -88,7 +88,7 @@ tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/to
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-optimizacion test-pruebas-obligatorias test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-historial test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-observabilidad test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-optimizacion test-pruebas-obligatorias test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-historial test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -991,3 +991,20 @@ tests/test_pruebas_obligatorias: tests/test_pruebas_obligatorias.c $(IDE_OPT_PRU
 .PHONY: test-pruebas-obligatorias
 test-pruebas-obligatorias: tests/test_pruebas_obligatorias
 	./tests/test_pruebas_obligatorias
+
+# Contratos explícitos y comparación completa: productores reales y casos negativos.
+tests/test_observabilidad: tests/test_observabilidad.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h include/ide_dce.h include/ide_ensamblador.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_observabilidad.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+
+tests/test_observabilidad_comparador: tests/test_observabilidad_comparador.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h include/ide_dce.h include/ide_ensamblador.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_observabilidad_comparador.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+
+tests/test_observabilidad_negativos: tests/test_observabilidad_negativos.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h include/ide_dce.h include/ide_ensamblador.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_observabilidad_negativos.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+
+.PHONY: test-observabilidad
+test-observabilidad: tests/test_observabilidad tests/test_observabilidad_comparador tests/test_observabilidad_negativos
+	mkdir -p evidencias/observabilidad
+	./tests/test_observabilidad
+	./tests/test_observabilidad_comparador
+	./tests/test_observabilidad_negativos

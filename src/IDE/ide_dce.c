@@ -17,6 +17,7 @@
  */
 #include "ide_dce.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,7 @@
 #include "ide_ensamblador.h"
 #include "ir.h"
 #include "semantic_modules.h"
+#include "generacion_adaptador.h"
 
 /* ------------------------------------------------------------------ */
 /* Ayudas                                                              */
@@ -65,6 +67,9 @@ typedef struct {
     size_t lineas;           /* Tamaño de por_linea (la línea más alta + 1). */
     IdeDceSentencia *sentencias;  /* Declaraciones y asignaciones (del AST). */
     size_t cantidad_sentencias, capacidad_sentencias;
+    const IdeObservable *observables;
+    size_t cantidad_observables;
+    char **raices;
 } Contexto;
 
 /* El hijo número "i" de un nodo del AST (o NULL). */
@@ -153,6 +158,91 @@ static char *capturar_vivas(const DceVivas *v)
     return texto;
 }
 
+
+/* Busca el símbolo del identificador con el resolvedor lexical del backend.
+ * Las identidades se asignan solo a la copia AST; el AST/tabla prestados quedan
+ * intactos. Publica también los vínculos para reescribir declaraciones seguras. */
+static AstNodo *vincular_observables(Contexto *c, const SimTabla *tabla, Ast *copia,
+    const AstNodo *n, const char *funcion, unsigned profundidad)
+{
+    if (!n || profundidad > 256) return NULL;
+    if (n->tipo == AST_FUNCION) funcion = hijo(n,0)->texto;
+    const char *texto = n->texto; char alias[48];
+    int es_funcion = n->tipo == AST_IDENTIFICADOR && n->padre &&
+        (n->padre->tipo == AST_FUNCION || n->padre->tipo == AST_LLAMADA) &&
+        n->padre->primer_hijo == n;
+    if (n->tipo == AST_IDENTIFICADOR && !es_funcion) {
+        const SimSimbolo *s = NULL; size_t indice = 0;
+        for (s=tabla->primero;s;s=s->siguiente_orden) if(s->declaracion==n) break;
+        if (!s) s=gd_resolver_simbolo(tabla,funcion,n);
+        if (!s || !s->declaracion) return NULL;
+        const SimSimbolo *it=tabla->primero;
+        for (;it && it!=s;it=it->siguiente_orden) ++indice;
+        if (!it) return NULL;
+        snprintf(alias,sizeof alias,"__obs_v%zu",indice); texto=alias;
+        IdeDce *r=c->salida;
+        /* El siguiente elemento debe caber antes de multiplicar la reserva. */
+        if(r->cantidad_vinculos >= SIZE_MAX/sizeof(IdeDceVinculo)-1) return NULL;
+        IdeDceVinculo *v=realloc(r->vinculos,(r->cantidad_vinculos+1)*sizeof *v);
+        if (!v) return NULL;
+        r->vinculos=v;
+        v[r->cantidad_vinculos++]=(IdeDceVinculo){n->ubicacion.first_line,n->ubicacion.first_column,
+            s->declaracion->ubicacion.first_line,s->declaracion->ubicacion.first_column};
+    }
+    AstNodo *r=ast_crear(copia,n->tipo,texto,n->ubicacion);
+    if (!r) return NULL;
+    for (const AstNodo *h=n->primer_hijo;h;h=h->siguiente) {
+        AstNodo *nuevo=vincular_observables(c,tabla,copia,h,funcion,profundidad+1);
+        if (!nuevo) return NULL;
+        ast_agregar_hijo(r,nuevo);
+    }
+    return r;
+}
+/* Resuelve raíces originales de main y genera IR privada con nombres únicos.
+ * Un selector sin coordenadas necesita exactamente una coincidencia. Recursos
+ * parciales pertenecen al contexto/salida y se liberan al finalizar el análisis. */
+static int ir_observable(Contexto *c, const Ast *arbol, SimTabla *tabla, IrPrograma *ir, FILE *diag)
+{
+    c->raices=calloc(c->cantidad_observables,sizeof *c->raices);
+    if (!c->raices) return 2;
+    for(size_t k=0;k<c->cantidad_observables;++k) {
+        const IdeObservable *o=&c->observables[k]; size_t indice=0,id=0,coincidencias=0;
+        for(const SimSimbolo *s=tabla->primero;s;s=s->siguiente_orden,++indice) {
+            const SimAmbito *a=s->ambito;
+            while(a && a->padre && a->padre!=tabla->global)a=a->padre;
+            if(!a || a->padre!=tabla->global || !a->nombre || strcmp(a->nombre,"main") ||
+               !s->declaracion || strcmp(s->nombre,o->nombre) ||
+               (s->clase!=SIM_VARIABLE && s->clase!=SIM_CONSTANTE))continue;
+            if(o->linea && (s->declaracion->ubicacion.first_line!=o->linea ||
+                           s->declaracion->ubicacion.first_column!=o->columna))continue;
+            id=indice;++coincidencias;
+        }
+        if(coincidencias!=1) {
+            fprintf(diag,"IR:1:1: observable inexistente o ambiguo: %s\n",o->nombre);return 1;
+        }
+        char alias[48];snprintf(alias,sizeof alias,"__obs_v%zu",id);
+        c->raices[k]=copiar(alias);if(!c->raices[k])return 2;
+    }
+    Ast copia={0};copia.raiz=vincular_observables(c,tabla,&copia,arbol->raiz,NULL,0);
+    int estado=copia.raiz?ir_desde_ast(&copia,ir,diag):2;
+    ast_liberar(&copia);return estado;
+}
+/* El informe de eliminaciones conserva nombres BAL para el reescritor. La
+ * decisión de eliminar ya se tomó usando identidades únicas; solo se traduce
+ * el destino inicial del texto, que reconoce la copia de una sentencia. */
+static void nombres_originales(const SimTabla *tabla,DceResultado *r)
+{
+    for(size_t i=0;i<r->cantidad_eliminadas;++i) {
+        size_t id;int usados=0;char texto[128]={0};
+        if(sscanf(r->eliminadas[i].texto,"__obs_v%zu%n",&id,&usados)!=1)continue;
+        const SimSimbolo *s=tabla->primero;
+        while(s && id--)s=s->siguiente_orden;
+        if(!s)continue;
+        snprintf(texto,sizeof texto,"%s%s",s->nombre,r->eliminadas[i].texto+usados);
+        memcpy(r->eliminadas[i].texto,texto,sizeof texto);
+    }
+}
+
 /*
  * Lo llama el análisis semántico cuando el programa es válido.
  * Devuelve 0 si todo salió bien; 1 si la IR no soporta algo (el mensaje
@@ -160,13 +250,12 @@ static char *capturar_vivas(const DceVivas *v)
  */
 static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
 {
-    (void)tabla;
     Contexto *c = datos;
     IdeDce *s = c->salida;
     c->llego = 1;
 
     IrPrograma ir = {0};
-    int estado = ir_desde_ast(arbol, &ir, diag);
+    int estado = c->cantidad_observables ? ir_observable(c, arbol, tabla, &ir, diag) : ir_desde_ast(arbol, &ir, diag);
     if (estado != 0) return estado;
 
     /* Las sentencias del AST, para armar después el código nuevo. */
@@ -203,7 +292,9 @@ static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
             dce_liberar_vivas(&vivas);
         }
     }
-    if (estado == 0 && dce_eliminar(&ir, &s->resultado) != 0) estado = 2;
+    if (estado == 0 && dce_eliminar_con_observables(&ir, &s->resultado,
+        (const char *const *)c->raices, c->cantidad_observables) != 0) estado = 2;
+    if (estado == 0 && c->cantidad_observables) nombres_originales(tabla,&s->resultado);
     if (estado == 0 && (s->ir_despues = capturar_ir(&ir)) == NULL) estado = 2;
 
     ir_liberar(&ir);
@@ -379,9 +470,15 @@ static char *motivo_de_la_ir(const char *diagnosticos)
 /* Entrada                                                             */
 /* ------------------------------------------------------------------ */
 
-int ide_dce_analizar(const char *texto, size_t largo, const char *ruta, IdeDce *s)
+int ide_dce_analizar_con_observables(const char *texto, size_t largo, const char *ruta,
+    const IdeObservable *observables, size_t cantidad, IdeDce *s)
 {
+    if (!s || !texto || cantidad>64 || (cantidad && !observables)) return -1;
+    for(size_t i=0;i<cantidad;++i)
+        if(!observables[i].nombre || !observables[i].nombre[0] ||
+           (!!observables[i].linea != !!observables[i].columna))return -1;
     memset(s, 0, sizeof *s);
+    s->preservar_lineas = cantidad != 0;
 
     /* Paso 1: el texto del editor, en el archivo temporal. */
     char *temporal = ide_ruta_temporal(ruta);
@@ -393,7 +490,7 @@ int ide_dce_analizar(const char *texto, size_t largo, const char *ruta, IdeDce *
 
     /* Paso 2 y 3: semántico y, si el programa es válido, el visitante. */
     FILE *diag = tmpfile();
-    Contexto c = {s, 0, 0, NULL, 0, NULL, 0, 0};
+    Contexto c = {.salida=s, .observables=observables, .cantidad_observables=cantidad};
     int estado = -1;
     if (diag != NULL) {
         int resultado = sem_visitar_proyecto(temporal, diag, visitante, &c);
@@ -427,15 +524,22 @@ int ide_dce_analizar(const char *texto, size_t largo, const char *ruta, IdeDce *
     remove(temporal);
     free(temporal);
     free(c.por_linea);
+    for(size_t i=0;i<c.cantidad_observables;++i) free(c.raices ? c.raices[i] : NULL);
+    free(c.raices);
     for (size_t i = 0; i < c.cantidad_sentencias; ++i) free(c.sentencias[i].nombre);
     free(c.sentencias);
     if (estado != 0) ide_dce_liberar(s);
     return estado;
 }
 
+/* API histórica: conserva la selección de resultados y la reescritura previas. */
+int ide_dce_analizar(const char *texto,size_t largo,const char *ruta,IdeDce *s)
+{ return ide_dce_analizar_con_observables(texto,largo,ruta,NULL,0,s); }
+
 void ide_dce_liberar(IdeDce *s)
 {
     if (s == NULL) return;
+    free(s->vinculos);
     free(s->motivo);
     dce_liberar_resultado(&s->resultado);
     for (size_t i = 0; i < s->cantidad_lineas; ++i) free(s->lineas[i].detalle);

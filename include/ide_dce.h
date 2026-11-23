@@ -21,6 +21,14 @@
 
 #include "dce.h"
 
+/* Resultado explícito de main. Nombre prestado; línea/columna (ambas cero
+ * para búsqueda única) identifican el declarador original en ámbitos anidados.
+ * Un nombre ambiguo o inexistente se rechaza; nunca conserva todos los homónimos. */
+typedef struct { const char *nombre; size_t linea, columna; } IdeObservable;
+/* Vínculo semántico de un token a su declaración; propiedad de IdeDce.
+ * Permite al reescritor distinguir nombres iguales sin reconstruir ámbitos. */
+typedef struct { size_t linea, columna, decl_linea, decl_columna; } IdeDceVinculo;
+
 /* Cómo terminó el análisis. */
 typedef enum {
     IDE_DCE_LISTO = 0,        /* Se hizo el DCE (aunque no haya eliminado nada). */
@@ -59,6 +67,9 @@ typedef struct {
 /* El resultado completo. Se crea vacío así: IdeDce r = {0}; */
 typedef struct {
     IdeDceEstado estado;
+    int preservar_lineas; /* Modo explícito: conserva coordenadas del fuente. */
+    IdeDceVinculo *vinculos;
+    size_t cantidad_vinculos;
     char *motivo;              /* Con IDE_DCE_SIN_IR: qué no soporta la IR y en qué línea. */
     DceResultado resultado;    /* Lo que hizo el DCE (cantidades, pasadas, eliminadas). */
     IdeDceLinea *lineas;       /* Ordenadas por número de línea. */
@@ -139,6 +150,11 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
  */
 int ide_dce_analizar(const char *texto, size_t largo, const char *ruta, IdeDce *salida);
 
+/* Variante con observables: raíces por identidad semántica. Sin raíces conserva
+ * exactamente la ruta histórica. No modifica la entrada; salida y liberación
+ * iguales a ide_dce_analizar. Máximo 64 selectores, solo objetos de main. */
+int ide_dce_analizar_con_observables(const char *texto, size_t largo, const char *ruta,
+    const IdeObservable *observables, size_t cantidad, IdeDce *salida);
 void ide_dce_liberar(IdeDce *dce);
 
 #endif

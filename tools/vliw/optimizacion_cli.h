@@ -6,6 +6,7 @@
 #define VLIW_OPTIMIZACION_CLI_H
 #include <stddef.h>
 #include <stdio.h>
+#include "ide_dce.h"
 typedef struct {
     char *directorio, *ruta;
     size_t eliminadas_ir, borradas_bal, cambiadas_bal, conservadas_bal;
@@ -15,6 +16,10 @@ typedef struct {
  * 1 por entrada/capacidad no admitida, 2 por E/S o recursos. No publica parcial.
  * El llamador debe liberar con vliw_opt_fuente_liberar, incluso tras rechazos. */
 int vliw_opt_fuente_preparar(const char *entrada, VliwOptFuente *salida, FILE *diag);
+/* Misma preparación con resultados explícitos; selectores prestados durante
+ * la llamada. Diagnósticos y propiedad de memoria iguales a la API histórica. */
+int vliw_opt_fuente_preparar_con_observables(const char *entrada,VliwOptFuente *salida,
+    FILE *diag,const IdeObservable *observables,size_t cantidad);
 /* Libera solo archivos propios del directorio privado; no toca el fuente BAL. */
 void vliw_opt_fuente_liberar(VliwOptFuente *fuente);
 #endif

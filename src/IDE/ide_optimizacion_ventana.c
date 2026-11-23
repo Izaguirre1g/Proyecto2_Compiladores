@@ -122,7 +122,7 @@ static gchar *veredicto_de(const char *nombre, int mismo, const IdeOptNivel *n)
     if (mismo == 0)
         return g_markup_printf_escaped("<span foreground='#c62828'>✘ <b>%s</b> deja un resultado DISTINTO de -O0.</span>", nombre);
     gchar *e = estado_de(nombre, n);
-    gchar *t = g_strdup_printf("— No se compara %s: %s", nombre, e);
+    gchar *t = g_strdup_printf("— NO VERIFICABLE %s (faltan resultados o información suficiente): %s", nombre, e);
     g_free(e);
     return t;
 }
@@ -133,7 +133,7 @@ static GtkWidget *veredicto(const IdeOptimizacion *r)
     const char *titulo =
         r->mismo_resultado == 1 ? "<span foreground='#2e7d32' weight='bold' size='large'>✔ Los tres niveles dejan el mismo resultado</span>" :
         r->mismo_resultado == 0 ? "<span foreground='#c62828' weight='bold' size='large'>✘ Un nivel optimizado cambia el resultado</span>" :
-                                  "<span weight='bold' size='large'>Resultado de main</span>";
+                                  "<span weight='bold' size='large'>Resultado NO VERIFICABLE</span>";
     gchar *uno = veredicto_de("-O1", r->mismo_o1, &r->o1);
     gchar *dos = veredicto_de("-O2", r->mismo_o2, &r->o2);
     gchar *cero = r->o0.compilado ? NULL : estado_de("-O0", &r->o0);
@@ -355,24 +355,28 @@ static GtkWidget *pestana_resultado(const IdeOptimizacion *r)
         size_t repeticion = 0;
         for (size_t k = 0; k < i; ++k) repeticion += strcmp(base->variables[k].nombre, nombre) == 0;
         const char *v[3];
-        int distinto = 0, comparadas = 0;
+        int distinto = 0, verificable = 1;
+        /* El texto visual puede truncar arreglos: el veredicto utiliza los
+         * objetos completos y rechaza ausencias o nombres ambiguos. */
+        IdeObservable requerido = {nombre, 0, 0};
+        for (int l = 1; l < 3; ++l) {
+            int estado = ide_optimizacion_comparar(&r->o0, nivel_i(r, l), &requerido, 1);
+            distinto |= estado == 0;
+            verificable &= estado == 1;
+        }
         for (int l = 0; l < 3; ++l) {
             v[l] = valor_en(nivel_i(r, l), nombre, repeticion);
-            if (v[l] != NULL && v[0] != NULL && l > 0) {
-                comparadas++;
-                distinto |= strcmp(v[0], v[l]) != 0;
-            }
         }
         gchar *celdas[3];
         for (int l = 0; l < 3; ++l) {
             const IdeOptNivel *n = nivel_i(r, l);
             if (v[l] != NULL) celdas[l] = g_markup_escape_text(v[l], -1);
             else if (l == 1 && n->simulacion.estado == MET_LISTO)
-                celdas[l] = g_strdup("<i>eliminada (código muerto)</i>");
+                celdas[l] = g_strdup("<i>ausente en -O1</i>");
             else celdas[l] = g_strdup("—");
         }
         const char *igual = distinto ? "<span foreground='#c62828'><b>✘ distinto</b></span>"
-                          : comparadas > 0 ? "<span foreground='#2e7d32'>✔ igual</span>" : "—";
+                          : verificable ? "<span foreground='#2e7d32'>✔ igual</span>" : "NO VERIFICABLE";
         gchar *e_nombre = g_markup_escape_text(nombre, -1);
         gtk_list_store_insert_with_values(m, NULL, -1, 0, e_nombre, 1, celdas[0], 2, celdas[1],
                                           3, celdas[2], 4, igual, -1);
@@ -384,8 +388,9 @@ static GtkWidget *pestana_resultado(const IdeOptimizacion *r)
     gtk_box_pack_start(GTK_BOX(caja), parrafo(
         "BAL no tiene <tt>print</tt>: el resultado de un programa es el valor final de las variables de "
         "<tt>main</tt>. Se leen en la memoria del simulador en el ciclo en que main termina. Si -O1 y -O2 "
-        "dejan los mismos valores, hacen lo mismo que -O0. Una variable que -O1 ya no tiene no es una "
-        "diferencia: el DCE la borró porque nadie la lee (no es un resultado)."), FALSE, FALSE, 0);
+        "dejan los mismos valores requeridos, coinciden en esas salidas. Una ausencia no prueba una "
+        "diferencia ni igualdad: el resultado es NO VERIFICABLE. Los arreglos se comparan completos, "
+        "aunque aquí se muestre un resumen. Esta ventana usa todas las variables de -O0 como referencia."), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(caja), tabla(m, titulos, 5), TRUE, TRUE, 0);
     gtk_container_set_border_width(GTK_CONTAINER(caja), 6);
     return caja;

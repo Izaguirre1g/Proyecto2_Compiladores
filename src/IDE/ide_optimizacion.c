@@ -354,12 +354,12 @@ static void liberar_o1(PreparacionO1 *p)
  * "dce_ms" recibe cuánto tardó el DCE. 0 si se pudo intentar, -1 interno.
  */
 static int preparar_o1(const char *texto, size_t largo, const char *ruta, PreparacionO1 *p,
-                       double *dce_ms)
+                       double *dce_ms, const IdeObservable *obs, size_t nobs)
 {
     memset(p, 0, sizeof *p);
     const double inicio = ahora_ms();
     IdeDce dce;
-    if (ide_dce_analizar(texto, largo, ruta, &dce) != 0) return -1;
+    if (ide_dce_analizar_con_observables(texto, largo, ruta, obs, nobs, &dce) != 0) return -1;
     *dce_ms = ahora_ms() - inicio;
     int estado = 0;
     if (dce.estado != IDE_DCE_LISTO) {
@@ -390,11 +390,11 @@ static int preparar_o1(const char *texto, size_t largo, const char *ruta, Prepar
 
 /* Compila con -O1 solo para medir el tiempo: el DCE más el backend. El
  * tiempo del DCE se suma a la "generación" (es la pasada de optimización). */
-static int tiempo_o1(const char *texto, size_t largo, const char *ruta, IdeAsmTiempos *t)
+static int tiempo_o1(const char *texto, size_t largo, const char *ruta, IdeAsmTiempos *t, const IdeObservable *obs, size_t nobs)
 {
     PreparacionO1 p;
     double dce_ms = 0.0;
-    if (preparar_o1(texto, largo, ruta, &p, &dce_ms) != 0 || !p.listo) {
+    if (preparar_o1(texto, largo, ruta, &p, &dce_ms, obs, nobs) != 0 || !p.listo) {
         liberar_o1(&p);
         return -1;
     }
@@ -424,7 +424,7 @@ static int comparar_tiempos(const void *a, const void *b)
  * y deja la corrida mediana (por el total). "primera" es la que ya se hizo.
  * "texto" es siempre el código del editor (en -O1 se repite también el DCE). */
 static int mediana(const char *texto, size_t largo, const char *ruta, int nivel,
-                   const IdeAsmTiempos *primera, IdeAsmTiempos *salida)
+                   const IdeAsmTiempos *primera, IdeAsmTiempos *salida, const IdeObservable *obs, size_t nobs)
 {
     IdeAsmTiempos corridas[MET_COMPILACIONES];
     corridas[0] = *primera;
@@ -435,7 +435,7 @@ static int mediana(const char *texto, size_t largo, const char *ruta, int nivel,
             corridas[i] = a.tiempos;
             ide_ensamblador_liberar(&a);
         } else if (nivel == 1) {
-            if (tiempo_o1(texto, largo, ruta, &corridas[i]) != 0) return -1;
+            if (tiempo_o1(texto, largo, ruta, &corridas[i], obs, nobs) != 0) return -1;
         } else {
             CompilacionO2 c;
             if (compilar_o2(texto, largo, ruta, &c, &corridas[i]) != 0) return -1;
@@ -500,9 +500,21 @@ static char *valor_de(const uint8_t *memoria, size_t marco, const IdeVarMain *v)
 static int leer_valores(IdeOptNivel *n, const uint8_t *memoria)
 {
     if (n->cantidad_variables == 0) return 0;
+    n->datos=calloc(n->cantidad_variables,sizeof *n->datos);
+    n->largos_datos=calloc(n->cantidad_variables,sizeof *n->largos_datos);
     n->valores = calloc(n->cantidad_variables, sizeof *n->valores);
-    if (n->valores == NULL) return -1;
+    if (!n->valores || !n->datos || !n->largos_datos) return -1;
     for (size_t i = 0; i < n->cantidad_variables; ++i) {
+        const IdeVarMain *v=&n->variables[i];
+        if(!v->bytes_elemento || v->elementos>SIZE_MAX/v->bytes_elemento ||
+           n->marco_main>CLI_TOPE_PILA || v->desplazamiento<0) return -1;
+        size_t largo=v->elementos*v->bytes_elemento;
+        size_t base=CLI_TOPE_PILA-n->marco_main;
+        if((size_t)v->desplazamiento>MET_BYTES_MEMORIA-base)return -1;
+        base+=(size_t)v->desplazamiento;
+        if(largo>MET_BYTES_MEMORIA-base)return -1;
+        n->datos[i]=malloc(largo?largo:1);if(!n->datos[i])return -1;
+        memcpy(n->datos[i],memoria+base,largo);n->largos_datos[i]=largo;
         n->valores[i] = valor_de(memoria, n->marco_main, &n->variables[i]);
         if (n->valores[i] == NULL) return -1;
     }
@@ -527,36 +539,60 @@ static int simular(IdeOptNivel *n, const unsigned char *balb, size_t largo, uint
     return estado;
 }
 
-/*
- * Compara el resultado de main de un nivel con el de -O0, variable por
- * variable y POR NOMBRE (si un nombre se repite en bloques distintos, cuenta
- * el orden en que aparece). Una variable que el otro nivel no tiene no es
- * una diferencia: -O1 borra del código las variables muertas de main (nadie
- * las lee, no son resultado). 1 igual, 0 alguna distinta, -1 no se pudo
- * (alguno de los dos niveles no compiló o main no terminó).
- */
-static int comparar_resultados(const IdeOptNivel *a, const IdeOptNivel *b)
+/* Busca una declaración requerida; la ambigüedad impide verificarla. Las
+ * coordenadas se conservan en el modo explícito del reescritor, incluso al
+ * eliminar declaraciones anteriores con el mismo nombre. No se usan offsets
+ * como identidad: cada variante tiene su propio marco y ubicación. */
+static size_t buscar_resultado(const IdeOptNivel *n,const IdeObservable *o)
 {
-    /* Solo se puede comparar si los dos niveles compilaron y main terminó. */
-    if (!a->compilado || !b->compilado || a->simulacion.estado != MET_LISTO ||
-        b->simulacion.estado != MET_LISTO) return -1;
-    if (a->valores == NULL || b->valores == NULL) return 1;   /* Sin variables que comparar. */
-    for (size_t i = 0; i < a->cantidad_variables; ++i) {
-        /* Cuántas veces apareció este nombre antes en "a". */
-        size_t repeticion = 0;
-        for (size_t k = 0; k < i; ++k)
-            repeticion += strcmp(a->variables[k].nombre, a->variables[i].nombre) == 0;
-        for (size_t j = 0; j < b->cantidad_variables; ++j) {
-            if (strcmp(b->variables[j].nombre, a->variables[i].nombre) != 0) continue;
-            if (repeticion-- > 0) continue;
-            if (strcmp(a->valores[i], b->valores[j]) != 0) return 0;
-            break;
-        }
+    size_t encontrado=SIZE_MAX;
+    for(size_t i=0;i<n->cantidad_variables;++i) {
+        const IdeVarMain *v=&n->variables[i];
+        if(strcmp(v->nombre,o->nombre) || (o->linea &&
+           (v->linea_declaracion!=o->linea || v->columna_declaracion!=o->columna)))continue;
+        if(encontrado!=SIZE_MAX)return SIZE_MAX;
+        encontrado=i;
     }
-    /* Ninguna variable que tienen los dos niveles cambió. Puede que no haya
-     * quedado ninguna: si nadie lee las variables de main, el DCE de -O1 las
-     * borra todas (no son resultado; ver include/dce.h). */
-    return 1;
+    return encontrado;
+}
+/* Compara los objetos completos requeridos, nunca el resumen textual de 16
+ * elementos. Ausencias, ambigüedad y metadatos insuficientes producen -1;
+ * las diferencias comprobadas producen 0 aunque otro objeto esté ausente. */
+int ide_optimizacion_comparar(const IdeOptNivel *a,const IdeOptNivel *b,
+    const IdeObservable *obs,size_t cantidad)
+{
+    if(!a || !b || !cantidad || !obs || !a->compilado || !b->compilado ||
+       a->simulacion.estado!=MET_LISTO || b->simulacion.estado!=MET_LISTO)return -1;
+    if((a->cantidad_variables && !a->variables) || (b->cantidad_variables && !b->variables))return -1;
+    int incompleta=0;
+    for(size_t k=0;k<cantidad;++k) {
+        if(!obs[k].nombre || !obs[k].nombre[0] || (!!obs[k].linea != !!obs[k].columna))return -1;
+        size_t i=buscar_resultado(a,&obs[k]),j=buscar_resultado(b,&obs[k]);
+        if(i==SIZE_MAX || j==SIZE_MAX || !a->datos || !b->datos ||
+           !a->largos_datos || !b->largos_datos || !a->datos[i] || !b->datos[j]) {incompleta=1;continue;}
+        const IdeVarMain *x=&a->variables[i],*y=&b->variables[j];
+        if(!x->elementos || !x->bytes_elemento || x->elementos>SIZE_MAX/x->bytes_elemento ||
+           !y->elementos || !y->bytes_elemento || y->elementos>SIZE_MAX/y->bytes_elemento ||
+           a->largos_datos[i]!=x->elementos*x->bytes_elemento ||
+           b->largos_datos[j]!=y->elementos*y->bytes_elemento) {incompleta=1;continue;}
+        if(x->elementos!=y->elementos || x->bytes_elemento!=y->bytes_elemento ||
+           x->es_boolean!=y->es_boolean || x->es_char!=y->es_char ||
+           memcmp(a->datos[i],b->datos[j],a->largos_datos[i]))return 0;
+    }
+    return incompleta?-1:1;
+}
+/* Sin configuración explícita la referencia es el conjunto completo de O0.
+ * Una eliminación legítima puede resultar NO VERIFICABLE, nunca DIFERENTE
+ * por sí sola. El consumidor puede proporcionar su conjunto real de salidas. */
+static int comparar_resultados(const IdeOptNivel *a,const IdeOptNivel *b,
+    const IdeObservable *obs,size_t cantidad)
+{
+    if(cantidad)return ide_optimizacion_comparar(a,b,obs,cantidad);
+    if(!a->cantidad_variables)return -1;
+    IdeObservable *todos=calloc(a->cantidad_variables,sizeof *todos);
+    if(!todos)return -1;
+    for(size_t i=0;i<a->cantidad_variables;++i)todos[i].nombre=a->variables[i].nombre;
+    int r=ide_optimizacion_comparar(a,b,todos,a->cantidad_variables);free(todos);return r;
 }
 
 /*
@@ -566,7 +602,7 @@ static int comparar_resultados(const IdeOptNivel *a, const IdeOptNivel *b)
  * tiempo de la primera compilación (el DCE en -O1). 0 bien, -1 interno.
  */
 static int nivel_tradicional(IdeOptNivel *n, const char *codigo, const char *texto, size_t largo,
-                             const char *ruta, int nivel, double primera_extra_ms, int *con_errores)
+                             const char *ruta, int nivel, double primera_extra_ms, int *con_errores, const IdeObservable *obs, size_t nobs)
 {
     IdeEnsamblador a;
     if (ide_ensamblador_generar(codigo, strlen(codigo), ruta, &a) != 0) return -1;
@@ -592,7 +628,7 @@ static int nivel_tradicional(IdeOptNivel *n, const char *codigo, const char *tex
         IdeAsmTiempos primera = a.tiempos;
         primera.generacion += primera_extra_ms;
         primera.total += primera_extra_ms;
-        if (mediana(texto, largo, ruta, nivel, &primera, &n->tiempos) != 0 ||
+        if (mediana(texto, largo, ruta, nivel, &primera, &n->tiempos, obs, nobs) != 0 ||
             met_buscar_fin(n->ensamblador, &fin) != 0 ||
             simular(n, a.balb, a.largo_balb, fin, MET_ANCHO_FIN_O0, ruta) != 0) estado = -1;
     }
@@ -604,15 +640,18 @@ static int nivel_tradicional(IdeOptNivel *n, const char *codigo, const char *tex
 /* Todo junto                                                          */
 /* ------------------------------------------------------------------ */
 
-int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
-                              IdeOptimizacion *r)
+int ide_optimizacion_analizar_con_observables(const char *texto, size_t largo, const char *ruta,
+    const IdeObservable *obs, size_t nobs, IdeOptimizacion *r)
 {
+    if (!r || !texto || nobs>64 || (nobs && !obs)) return -1;
+    for(size_t i=0;i<nobs;++i)
+        if(!obs[i].nombre || !obs[i].nombre[0] || (!!obs[i].linea != !!obs[i].columna))return -1;
     memset(r, 0, sizeof *r);
     r->mismo_o1 = r->mismo_o2 = r->mismo_resultado = -1;
 
     /* Paso 1: -O0. Si el código tiene errores, no se sigue con ningún nivel. */
     int con_errores = 0;
-    int estado = nivel_tradicional(&r->o0, texto, texto, largo, ruta, 0, 0.0, &con_errores);
+    int estado = nivel_tradicional(&r->o0, texto, texto, largo, ruta, 0, 0.0, &con_errores, obs, nobs);
     if (estado == 0 && con_errores) {
         ide_optimizacion_liberar(r);
         r->estado = IDE_OPT_CON_ERRORES;
@@ -623,7 +662,7 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
     if (estado == 0) {
         PreparacionO1 p;
         double dce_ms = 0.0;
-        if (preparar_o1(texto, largo, ruta, &p, &dce_ms) != 0) {
+        if (preparar_o1(texto, largo, ruta, &p, &dce_ms, obs, nobs) != 0) {
             estado = -1;
         } else if (!p.listo) {
             r->o1.motivo = p.motivo;
@@ -638,7 +677,7 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
             r->o1_cambio = p.cambio;
             r->o1_codigo = p.codigo;
             p.codigo = NULL;
-            estado = nivel_tradicional(&r->o1, r->o1_codigo, texto, largo, ruta, 1, dce_ms, NULL);
+            estado = nivel_tradicional(&r->o1, r->o1_codigo, texto, largo, ruta, 1, dce_ms, NULL, obs, nobs);
         }
         liberar_o1(&p);
     }
@@ -679,7 +718,7 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
             r->ir_despues = c.ir_despues;
             r->ir_spilling = c.ir_spilling;
             c.ir_antes = c.ir_despues = c.ir_spilling = NULL;
-            if (mediana(texto, largo, ruta, 2, &primera, &o2->tiempos) != 0 ||
+            if (mediana(texto, largo, ruta, 2, &primera, &o2->tiempos, obs, nobs) != 0 ||
                 simular(o2, c.balb, c.largo_balb, c.pc_fin, O2_ANCHO_FIN, ruta) != 0) estado = -1;
         }
         liberar_o2(&c);
@@ -687,8 +726,8 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
 
     /* Paso 5: cada nivel contra -O0, y los tres juntos. */
     if (estado == 0) {
-        r->mismo_o1 = comparar_resultados(&r->o0, &r->o1);
-        r->mismo_o2 = comparar_resultados(&r->o0, &r->o2);
+        r->mismo_o1 = comparar_resultados(&r->o0, &r->o1, obs, nobs);
+        r->mismo_o2 = comparar_resultados(&r->o0, &r->o2, obs, nobs);
         r->mismo_resultado = (r->mismo_o1 == 0 || r->mismo_o2 == 0) ? 0
                            : (r->mismo_o1 == 1 && r->mismo_o2 == 1) ? 1 : -1;
     }
@@ -704,9 +743,16 @@ static void liberar_nivel(IdeOptNivel *n)
     if (n->valores != NULL)
         for (size_t i = 0; i < n->cantidad_variables; ++i) free(n->valores[i]);
     free(n->valores);
+    if(n->datos)for(size_t i=0;i<n->cantidad_variables;++i)free(n->datos[i]);
+    free(n->datos);free(n->largos_datos);
     free(n->variables);
     memset(n, 0, sizeof *n);
 }
+
+/* Entrada histórica: ninguna raíz adicional; el comparador ya no presupone
+ * que una ausencia equivale a código muerto correctamente eliminado. */
+int ide_optimizacion_analizar(const char *texto,size_t largo,const char *ruta,IdeOptimizacion *r)
+{ return ide_optimizacion_analizar_con_observables(texto,largo,ruta,NULL,0,r); }
 
 void ide_optimizacion_liberar(IdeOptimizacion *r)
 {

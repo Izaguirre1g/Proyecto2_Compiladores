@@ -54,6 +54,7 @@ typedef struct {
  */
 typedef struct {
     char nombre[64];
+    size_t linea_declaracion, columna_declaracion; /* Identidad en el fuente. */
     long desplazamiento;     /* Desde sp dentro del marco de main. */
     size_t elementos;        /* 1 si es escalar; si es arreglo, cuántos elementos. */
     size_t bytes_elemento;   /* 4 (int, boolean) o 1 (char). */

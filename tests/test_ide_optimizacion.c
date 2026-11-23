@@ -43,13 +43,17 @@ static char *leer_archivo(const char *ruta, size_t *largo)
     return texto;
 }
 
-/* Compara -O0 y -O2 para un archivo. */
-static int analizar(const char *ruta, IdeOptimizacion *r)
+/* Declara la salida del fixture antes de optimizar. Los nombres pertenecen
+ * al oráculo de prueba, nunca a una excepción del productor. Con NULL se
+ * comprueba además la ruta histórica y su comparación estricta. */
+static int analizar(const char *ruta, const char *salida, IdeOptimizacion *r)
 {
     size_t largo = 0;
     char *texto = leer_archivo(ruta, &largo);
     if (texto == NULL) return -1;
-    int estado = ide_optimizacion_analizar(texto, largo, ruta, r);
+    IdeObservable o={salida,0,0};
+    int estado = ide_optimizacion_analizar_con_observables(texto, largo, ruta,
+        salida?&o:NULL,salida?1:0,r);
     free(texto);
     return estado;
 }
@@ -95,7 +99,7 @@ int main(void)
     IdeOptimizacion r;
 
     /* factorial de 5: resultado = 120 en los dos niveles. */
-    VERIFICAR(analizar("examples/factorial.bal", &r) == 0);
+    VERIFICAR(analizar("examples/factorial.bal", "resultado", &r) == 0);
     verificar_los_dos("factorial", &r);
     VERIFICAR(valor(&r.o0, "resultado") && strcmp(valor(&r.o0, "resultado"), "120") == 0);
     VERIFICAR(valor(&r.o2, "resultado") && strcmp(valor(&r.o2, "resultado"), "120") == 0);
@@ -104,7 +108,7 @@ int main(void)
     ide_optimizacion_liberar(&r);
 
     /* El ejemplo del DCE: un arreglo de main y código muerto que -O2 quita. */
-    VERIFICAR(analizar("examples/dce/dce_ensamblador.bal", &r) == 0);
+    VERIFICAR(analizar("examples/dce/dce_ensamblador.bal", "resultados", &r) == 0);
     verificar_los_dos("dce_ensamblador", &r);
     VERIFICAR(valor(&r.o2, "resultados") && strcmp(valor(&r.o2, "resultados"), "[16, 15]") == 0);
     VERIFICAR(r.dce > 0);
@@ -121,13 +125,13 @@ int main(void)
     ide_optimizacion_liberar(&r);
 
     /* Números negativos: multiplicacion.bal deja r = -42. */
-    VERIFICAR(analizar("examples/multiplicacion.bal", &r) == 0);
+    VERIFICAR(analizar("examples/multiplicacion.bal", "r", &r) == 0);
     verificar_los_dos("multiplicacion", &r);
     VERIFICAR(valor(&r.o2, "r") && strcmp(valor(&r.o2, "r"), "-42") == 0);
     ide_optimizacion_liberar(&r);
 
     /* Llamadas entre funciones. */
-    VERIFICAR(analizar("examples/llamadas.bal", &r) == 0);
+    VERIFICAR(analizar("examples/llamadas.bal", "resultado", &r) == 0);
     verificar_los_dos("llamadas", &r);
     ide_optimizacion_liberar(&r);
 
@@ -139,7 +143,7 @@ int main(void)
     ide_optimizacion_liberar(&r);
 
     /* Con módulos (bring): los dos niveles los enlazan y dan lo mismo. */
-    VERIFICAR(analizar("tests/modulos/enlace_principal.bal", &r) == 0);
+    VERIFICAR(analizar("tests/modulos/enlace_principal.bal", NULL, &r) == 0);
     verificar_los_dos("enlace_principal", &r);
     VERIFICAR(valor(&r.o2, "resultados") &&
               strcmp(valor(&r.o2, "resultados"), "[109, 107, 100, 10]") == 0);
@@ -148,7 +152,7 @@ int main(void)
     /* Un programa que -O2 todavía no soporta (cycle con paso que no es una
      * constante positiva): -O0 sí lo compila y lo ejecuta; -O2 dice por qué
      * no, igual que balc -O2, y no hay nada que comparar. */
-    VERIFICAR(analizar("examples/cycle.bal", &r) == 0);
+    VERIFICAR(analizar("examples/cycle.bal", NULL, &r) == 0);
     VERIFICAR(r.estado == IDE_OPT_LISTO && r.o0.compilado && !r.o1.compilado && !r.o2.compilado);
     VERIFICAR(r.o0.simulacion.estado == MET_LISTO);
     /* -O1 también necesita la IR (el DCE trabaja sobre ella), igual que balc -O1. */

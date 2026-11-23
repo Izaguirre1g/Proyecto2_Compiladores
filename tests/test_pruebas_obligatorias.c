@@ -10,7 +10,7 @@
  *   2. Que el arreglo "resultados" de main tiene los valores esperados
  *      (calculados a mano, escritos en el comentario de cada programa), en
  *      los TRES niveles.
- *   3. Que -O1 y -O2 dejan las variables de main iguales a -O0 (regla de
+ *   3. Que -O1 y -O2 dejan las salidas requeridas iguales a -O0 (regla de
  *      oro: optimizar no cambia lo que hace el programa).
  *   4. Que la optimización de su categoría realmente actuó en -O2:
  *        unrolling       -> al menos tantos ciclos desenrollados como se esperan
@@ -122,7 +122,17 @@ static void revisar(const Caso *c)
     if (texto == NULL) return;
 
     IdeOptimizacion r;
-    VERIFICAR(ide_optimizacion_analizar(texto, largo, ruta, &r) == 0);
+    /* El oráculo ya declara resultados y una salida extra opcional. Pasamos
+     * ese contrato independiente a ambos productores y al comparador. */
+    char extra_nombre[64]={0}; IdeObservable obs[2]={{"resultados",0,0},{NULL,0,0}};
+    size_t cantidad=1;
+    if(c->extra) {
+        const char *fin=strchr(c->extra,'=');size_t n=(size_t)(fin-c->extra);
+        VERIFICAR(n<sizeof extra_nombre);
+        if(n>=sizeof extra_nombre)return;
+        memcpy(extra_nombre,c->extra,n);obs[1].nombre=extra_nombre;cantidad=2;
+    }
+    VERIFICAR(ide_optimizacion_analizar_con_observables(texto,largo,ruta,obs,cantidad,&r)==0);
     free(texto);
 
     /* 1. Los tres niveles compilan y terminan. */
@@ -138,8 +148,8 @@ static void revisar(const Caso *c)
         if (c->extra != NULL) VERIFICAR(vale_extra(niveles[n], c->extra));
     }
 
-    /* 3. Regla de oro: las variables de main iguales en los tres niveles
-     *    (las que -O1 borró por ser código muerto no cuentan). */
+    /* 3. El contrato explícito exige resultados[] y la salida extra.
+     * Una ausencia obligatoria es NO VERIFICABLE, nunca igualdad vacía. */
     VERIFICAR(r.mismo_o1 == 1 && r.mismo_o2 == 1 && r.mismo_resultado == 1);
 
     /* 4. La optimización de la categoría actuó. */

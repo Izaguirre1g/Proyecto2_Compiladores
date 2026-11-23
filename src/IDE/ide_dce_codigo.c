@@ -322,6 +322,14 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
             if (quitado[x] || (x >= a->i && x <= a->j)) continue;
             usada = t.elementos[x].tipo == TOKEN_IDENTIFIER && t.elementos[x].texto != NULL &&
                     strcmp(t.elementos[x].texto, a->sen->nombre) == 0;
+            if (usada && s->preservar_lineas) {
+                usada=0;
+                for(size_t v=0;v<s->cantidad_vinculos;++v) {
+                    const IdeDceVinculo *b=&s->vinculos[v];
+                    if(b->linea==t.elementos[x].linea && b->columna==t.elementos[x].columna &&
+                       b->decl_linea==a->sen->linea && b->decl_columna==a->sen->columna) {usada=1;break;}
+                }
+            }
         }
         if (!usada) continue;
 
@@ -403,6 +411,21 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
             case ACCION_CONSERVAR:
                 s->sentencias_conservadas++;
                 break;
+        }
+    }
+
+    /* Las coordenadas de declaraciones son identidades compartidas con O0.
+     * En modo explícito conservamos saltos de línea de cada cambio: eliminar
+     * código no desplaza las declaraciones posteriores ni mezcla homónimos.
+     * La unión conserva la cabecera original del declarador. */
+    for(size_t k=0;estado==0 && s->preservar_lineas && k<cambios.cantidad;++k) {
+        Cambio *c=&cambios.elementos[k];size_t viejas=0,nuevas=0;
+        for(size_t j=c->desde;j<c->hasta;++j)viejas+=texto[j]=='\n';
+        for(size_t j=0;c->nuevo[j];++j)nuevas+=c->nuevo[j]=='\n';
+        if(viejas>nuevas) {
+            size_t n=strlen(c->nuevo);char *p=realloc(c->nuevo,n+viejas-nuevas+1);
+            if(!p){estado=-1;break;}c->nuevo=p;
+            memset(p+n,'\n',viejas-nuevas);p[n+viejas-nuevas]=0;
         }
     }
 

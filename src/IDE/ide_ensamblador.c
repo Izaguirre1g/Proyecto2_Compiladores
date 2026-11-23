@@ -245,6 +245,10 @@ int ide_variables_de_main(const SimTabla *tabla, IdeVarMain **variables, size_t 
         IdeVarMain *v = &(*variables)[(*cantidad)++];
         memset(v, 0, sizeof *v);
         snprintf(v->nombre, sizeof v->nombre, "%s", s->nombre);
+        if(s->declaracion) {
+            v->linea_declaracion=s->declaracion->ubicacion.first_line;
+            v->columna_declaracion=s->declaracion->ubicacion.first_column;
+        }
         v->desplazamiento = s->desplazamiento;
         v->elementos = elementos;
         v->bytes_elemento = s->bytes / elementos;
