@@ -8,6 +8,9 @@
  *      llama a "visitante" con su AST (lo mismo que hace balc --dce).
  *   3. En el visitante: AST -> IR, variables vivas, DCE. Se guardan los
  *      textos y cuántas instrucciones de la IR tenía cada línea del código.
+ *      TODAS las variables de main se le pasan al DCE como observables
+ *      (dce_eliminar_con_observables): son el resultado del programa aunque
+ *      main no las vuelva a leer, igual que en -O2.
  *   4. Agrupar lo eliminado por línea, para resaltar el editor.
  *   5. Armar el CÓDIGO NUEVO sin el código muerto (ide_dce_codigo.c),
  *      revisar que siga siendo válido, y generar el ensamblador del código

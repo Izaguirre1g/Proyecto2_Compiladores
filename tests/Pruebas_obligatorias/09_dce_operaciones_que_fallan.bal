@@ -1,14 +1,21 @@
 %% ============================================================================
 %% CODIGO MUERTO 3: OPERACIONES QUE PUEDEN FALLAR Y LLAMADAS ANIDADAS
 %% ----------------------------------------------------------------------------
-%% Una instruccion cuyo resultado nadie usa NO siempre se puede quitar:
+%% Una instruccion cuyo resultado nadie usa NO siempre se puede quitar.
+%% El codigo muerto esta dentro de las funciones: las variables de main son
+%% el RESULTADO del programa (BAL no tiene print) y se conservan aunque no
+%% se lean.
 %%   SE ELIMINA:
-%%     - la cadena a -> b -> c: c nunca se lee (tres pasadas del DCE).
+%%     - en dividir(), la cadena t1 -> t2 -> t3: t3 nunca se lee (tres
+%%       pasadas del DCE: al quitar t3, t2 queda muerta, y luego t1).
 %%     - en dividir(), "doble = a + a": nadie lo usa.
+%%     - en guardar(), la COPIA del resultado de dividir(90, 3) en x1.
 %%   NO SE ELIMINA:
-%%     - q1 = 100 / d: divide entre una VARIABLE; si d fuera 0 el programa
-%%       daria error, y quitarla cambiaria el comportamiento (regla de oro).
-%%     - x1 = dividir(90, 3): x1 no se lee, pero es una llamada.
+%%     - en dividir(), q1 = 100 / b: nadie lo usa, pero divide entre una
+%%       VARIABLE; si b fuera 0 el programa daria error, y quitarla
+%%       cambiaria el comportamiento (regla de oro).
+%%     - en guardar(), la LLAMADA dividir(90, 3): x1 no se lee, pero la
+%%       llamada se conserva (se quita la asignacion, nunca la llamada).
 %%     - llamadas anidadas: guardar(res, 0, dividir(uno * 6, 2)), con
 %%       uno = guardar(res, 1, 7): DOS escrituras en res, en un orden fijo.
 %%     - res[3] : dividir(guardar(res, 3, 50), 5): guardar escribe 50 en
@@ -24,10 +31,15 @@
 %% ============================================================================
 create_funk #declare_int# dividir(a * declare_int, b * declare_int) {
     doble * declare_int : a gauss a;
+    q1 * declare_int : 100 euclides b;
+    t1 * declare_int : 5;
+    t2 * declare_int : t1 gauss 1;
+    t3 * declare_int : t2 gauss t2;
     give a euclides b;
 }
 
 create_funk #declare_int# guardar(v * declare_int[], i * declare_int, x * declare_int) {
+    x1 * declare_int : dividir(90, 3);
     v[i] : x;
     give x;
 }
@@ -36,12 +48,6 @@ create_funk #declare_infinite_void# main() {
     resultados * declare_int[1] : [0];
     res * declare_int[4] : [0, 0, 0, 0];
     d * declare_int : 4;
-
-    q1 * declare_int : 100 euclides d;
-    x1 * declare_int : dividir(90, 3);
-    a * declare_int : 5;
-    b * declare_int : a gauss 1;
-    c * declare_int : b gauss b;
 
     uno * declare_int : guardar(res, 1, 7);
     y * declare_int : guardar(res, 0, dividir(uno pitagoras 6, 2));

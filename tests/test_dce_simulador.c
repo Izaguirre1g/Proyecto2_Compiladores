@@ -8,9 +8,10 @@
  *     resultados[0] = r = cuadrado(4)    = 16
  *     resultados[1] = s = suma_hasta(5)  = 15
  * El arreglo está en el marco de main, en el tope de la pila (que empieza en
- * 0x10000): resultados[0] en sp+4 y resultados[1] en sp+8. El marco mide
- * distinto en cada versión (el código nuevo ya no tiene la variable suma),
- * así que su tamaño se pasa al ejecutar (lo dice balc -m).
+ * 0x10000): resultados[0] en sp+4 y resultados[1] en sp+8. El tamaño del
+ * marco de cada versión se pasa al ejecutar (lo dice balc -m). Los dos miden
+ * 24 bytes: el código muerto que se quita está en las funciones, y las
+ * variables de main (como suma) se conservan porque son el resultado.
  *
  * Uso: test_dce_simulador original.bin marco nuevo.bin marco
  *      (lo corre make test-ide-dce)

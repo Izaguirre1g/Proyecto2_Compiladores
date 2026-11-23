@@ -3,8 +3,10 @@
 %% ----------------------------------------------------------------------------
 %% Los dos tipos de codigo muerto, mezclados con llamadas que tienen efecto:
 %%   TIPO 1 (asignaciones que nadie usa):
-%%     - "basura" y "sombra" se calculan en cada vuelta y nunca se leen;
-%%       sombra depende de basura (al quitar sombra, basura queda muerta).
+%%     - en llenar(), "basura" y "sombra" se calculan en cada vuelta y nunca
+%%       se leen; sombra depende de basura (al quitar sombra, basura queda
+%%       muerta). Estan en una funcion porque las variables de main son el
+%%       resultado del programa y se conservan aunque no se lean.
 %%     - en marcar(), "viejo" lee el arreglo y nadie lo usa: una lectura de
 %%       memoria sin efecto tambien se puede quitar.
 %%   TIPO 2 (codigo inalcanzable, con plegado de constantes):
@@ -12,7 +14,7 @@
 %%       adentro nunca se ejecuta y SI se puede quitar.
 %%     - whale (2 < 1): un ciclo que nunca da ni una vuelta.
 %%   NO SE ELIMINA:
-%%     - marcar() dentro del ciclo: escribe en hist en cada vuelta.
+%%     - marcar() dentro del ciclo de llenar(): escribe en hist en cada vuelta.
 %%     - "copia : marcar(hist, 4, 10)": su resultado se usa y ademas escribe.
 %%
 %% Resultados esperados:
@@ -28,17 +30,23 @@ create_funk #declare_int# marcar(v * declare_int[], i * declare_int, valor * dec
     give v[i];
 }
 
+%% El ciclo que llena el histograma: hist[i] += i + 1.
+create_funk #declare_int# llenar(v * declare_int[]) {
+    basura * declare_int : 0;
+    sombra * declare_int : 0;
+    cycle i let 0 until 5 {
+        basura : i gauss i;
+        marcar(v, i, i gauss 1);
+        sombra : basura gauss 1;
+    } endgame;
+    give 5;
+}
+
 create_funk #declare_infinite_void# main() {
     resultados * declare_int[3] : [0, 0, 0];
     hist * declare_int[5] : [0, 0, 0, 0, 0];
-    basura * declare_int : 0;
-    sombra * declare_int : 0;
 
-    cycle i let 0 until 5 {
-        basura : i gauss i;
-        marcar(hist, i, i gauss 1);
-        sombra : basura gauss 1;
-    } endgame;
+    llenar(hist);
 
     whether (1 > 2) {
         marcar(hist, 0, 1000);

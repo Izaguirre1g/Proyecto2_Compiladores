@@ -139,7 +139,7 @@ static void revisar(const Caso *c)
     }
 
     /* 3. Regla de oro: las variables de main iguales en los tres niveles
-     *    (las que -O1 borró por ser código muerto no cuentan). */
+     *    (todas: a ningún nivel le puede faltar una variable de main). */
     VERIFICAR(r.mismo_o1 == 1 && r.mismo_o2 == 1 && r.mismo_resultado == 1);
 
     /* 4. La optimización de la categoría actuó. */

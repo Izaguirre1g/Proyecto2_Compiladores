@@ -540,22 +540,26 @@ static int comparar_resultados(const IdeOptNivel *a, const IdeOptNivel *b)
     /* Solo se puede comparar si los dos niveles compilaron y main terminó. */
     if (!a->compilado || !b->compilado || a->simulacion.estado != MET_LISTO ||
         b->simulacion.estado != MET_LISTO) return -1;
-    if (a->valores == NULL || b->valores == NULL) return 1;   /* Sin variables que comparar. */
+    if (a->cantidad_variables == 0) return 1;   /* main no tiene variables: nada que comparar. */
+    if (a->valores == NULL || b->valores == NULL) return 0;  /* Al optimizado le faltan todas. */
     for (size_t i = 0; i < a->cantidad_variables; ++i) {
-        /* Cuántas veces apareció este nombre antes en "a". */
+        /* Cuántas veces apareció este nombre antes en "a" (variables de
+         * bloques distintos pueden llamarse igual). */
         size_t repeticion = 0;
         for (size_t k = 0; k < i; ++k)
             repeticion += strcmp(a->variables[k].nombre, a->variables[i].nombre) == 0;
-        for (size_t j = 0; j < b->cantidad_variables; ++j) {
+        int encontrada = 0;
+        for (size_t j = 0; j < b->cantidad_variables && !encontrada; ++j) {
             if (strcmp(b->variables[j].nombre, a->variables[i].nombre) != 0) continue;
             if (repeticion-- > 0) continue;
             if (strcmp(a->valores[i], b->valores[j]) != 0) return 0;
-            break;
+            encontrada = 1;
         }
+        /* Una variable de main que el optimizado ya no tiene ES una
+         * diferencia: las variables de main son el resultado del programa
+         * (BAL no tiene print), y ningún nivel puede perder una. */
+        if (!encontrada) return 0;
     }
-    /* Ninguna variable que tienen los dos niveles cambió. Puede que no haya
-     * quedado ninguna: si nadie lee las variables de main, el DCE de -O1 las
-     * borra todas (no son resultado; ver include/dce.h). */
     return 1;
 }
 

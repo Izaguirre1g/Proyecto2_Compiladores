@@ -24,9 +24,11 @@
  * dejan los mismos valores que -O0, las optimizaciones respetaron la regla
  * de oro (el programa hace lo mismo).
  *
- * Una variable de main que -O1 ya no tiene NO es una diferencia: el DCE la
- * quitó porque nadie la lee (es código muerto, no un resultado). Se compara
- * por nombre solo lo que existe en los dos niveles.
+ * TODAS las variables de main son el resultado, aunque main no las vuelva
+ * a leer (por ejemplo la columna de una búsqueda en una matriz). -O1 y -O2
+ * las conservan (el DCE las recibe como observables), así que una variable
+ * de main que a un nivel le falta ES una diferencia, igual que un valor
+ * distinto. Se comparan por nombre (y por orden si dos se llaman igual).
  *
  * No modifica ningún módulo de los compañeros: solo llama a sus funciones
  * públicas, igual que visitante_o2 en src/Linea_Comandos/cli.c.
@@ -79,8 +81,9 @@ typedef struct {
     size_t war_eliminadas, waw_eliminadas;   /* Dependencias que quitó el renombramiento. */
     size_t spills, cargas_spill, guardados_spill, generaciones;
     char *ir_antes, *ir_despues, *ir_spilling;   /* La IR en cada etapa de -O2. */
-    /* Comparación del resultado de main con el de -O0 (1 igual, 0 alguna
-     * variable con otro valor, -1 no se pudo: el nivel no compiló o no terminó). */
+    /* Comparación del resultado de main con el de -O0 (1 igual; 0 alguna
+     * variable con otro valor o que le falta al nivel; -1 no se pudo: el
+     * nivel no compiló o no terminó). */
     int mismo_o1, mismo_o2;
     /* Los tres juntos: 1 si -O1 y -O2 dan lo mismo que -O0; 0 si alguno da
      * otra cosa; -1 si alguno no se pudo comparar. */

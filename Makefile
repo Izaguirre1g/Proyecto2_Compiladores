@@ -703,7 +703,7 @@ test-ide-dce: tests/test_ide_dce tests/test_dce_simulador balc
 	cp examples/dce/dce_ensamblador.bal tests/dce_original.bal
 	./balc -o tests/dce_original.bin tests/dce_original.bal > /dev/null
 	./balc -o tests/dce_nuevo.bin tests/dce_nuevo.bal > /dev/null
-	./tests/test_dce_simulador tests/dce_original.bin 24 tests/dce_nuevo.bin 20
+	./tests/test_dce_simulador tests/dce_original.bin 24 tests/dce_nuevo.bin 24
 	rm -f tests/dce_original.* tests/dce_nuevo.*
 
 # Enlace entre archivos (bring), en src/Analisis_Semantico/semantic_modules.c:
@@ -712,8 +712,10 @@ test-ide-dce: tests/test_ide_dce tests/test_dce_simulador balc
 # 2. enlace_principal.bal (dos modulos, uno anidado, constantes y nombres
 #    locales que las tapan) se ejecuta en el simulador y da los valores
 #    esperados, compilado normal y con -O1. El marco de main mide 36 bytes.
-# 3. enlace_dce.bal con -O1: el DCE borra una variable del principal (marco
-#    de 20 a 16 bytes) y el resultado no cambia.
+# 3. enlace_dce.bal con -O1: "tirar" de main se conserva (las variables de
+#    main son el resultado del programa, igual que en -O2), así que el marco
+#    sigue en 20 bytes; el DCE solo actúa dentro del módulo. El resultado no
+#    cambia.
 # 4. arreglo_llamada.bal: a[i] : f(x); en el backend normal.
 tests/test_enlace_simulador: tests/test_enlace_simulador.c $(SIM_SRC) include/sim_ejecucion.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_enlace_simulador.c $(SIM_SRC) -o $@
@@ -733,7 +735,7 @@ test-enlace: balc tests/test_enlace_simulador
 	./balc -o tests/enlace_dce.bin tests/modulos/enlace_dce.bal > /dev/null
 	./tests/test_enlace_simulador tests/enlace_dce.bin 20 8 20
 	./balc -O1 -o tests/enlace_dce_o1.bin tests/modulos/enlace_dce.bal > /dev/null
-	./tests/test_enlace_simulador tests/enlace_dce_o1.bin 16 8 20
+	./tests/test_enlace_simulador tests/enlace_dce_o1.bin 20 8 20
 	./balc -o tests/arreglo_llamada.bin tests/fixtures/arreglo_llamada.bal > /dev/null
 	./tests/test_enlace_simulador tests/arreglo_llamada.bin 40 9 17 25 36
 	rm -f tests/enlace_tmp* tests/enlace_principal* tests/enlace_dce* tests/arreglo_llamada.* \

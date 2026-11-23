@@ -228,8 +228,19 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
     ListaCambios cambios = {0};
     Analisis *an = calloc(cantidad ? cantidad : 1, sizeof *an);
     unsigned char *quitado = NULL;
+    size_t *funcion = NULL;  /* funcion[x]: en qué función está el token x. */
     int estado = (an == NULL) ? -1 : leer_tokens(texto, largo, &t);
     if (estado == 0 && (quitado = calloc(t.cantidad ? t.cantidad : 1, 1)) == NULL) estado = -1;
+    if (estado == 0 && (funcion = calloc(t.cantidad ? t.cantidad : 1, sizeof *funcion)) == NULL)
+        estado = -1;
+    /* Las funciones de BAL van una después de otra: cada "create_funk"
+     * empieza la siguiente. Así una variable solo cuenta como usada si su
+     * nombre aparece en SU función, no en otra que tenga una variable con el
+     * mismo nombre (por ejemplo "total" en main y en acumular). */
+    for (size_t x = 0, actual = 0; estado == 0 && x < t.cantidad; ++x) {
+        if (t.elementos[x].tipo == TOKEN_CREATE_FUNK) ++actual;
+        funcion[x] = actual;
+    }
 
     /* Fase 1: los tokens de cada sentencia y cuánto se eliminó de ella. */
     for (size_t k = 0; k < cantidad && estado == 0; ++k) {
@@ -306,7 +317,7 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
     /*
      * Fase 3: una declaración que se borra (o que queda solo en la llamada)
      * hace desaparecer la variable. Si la variable se sigue usando en lo que
-     * queda, eso no se puede, y tampoco dejarla sin valor: el backend
+     * queda de SU función, eso no se puede, y tampoco dejarla sin valor: el backend
      * necesita declaraciones con valor ("declaración inicializada"). Entonces:
      *   - si la sentencia siguiente es una asignación viva a la misma
      *     variable, se unen: "r * declare_int : 0; r : f(4);" pasa a
@@ -319,7 +330,7 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
             (a->accion != ACCION_BORRAR && a->accion != ACCION_SOLO_LLAMADA)) continue;
         int usada = 0;
         for (size_t x = 0; x < t.cantidad && !usada; ++x) {
-            if (quitado[x] || (x >= a->i && x <= a->j)) continue;
+            if (quitado[x] || (x >= a->i && x <= a->j) || funcion[x] != funcion[a->i]) continue;
             usada = t.elementos[x].tipo == TOKEN_IDENTIFIER && t.elementos[x].texto != NULL &&
                     strcmp(t.elementos[x].texto, a->sen->nombre) == 0;
         }
@@ -442,6 +453,7 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
     free(cambios.elementos);
     free(an);
     free(quitado);
+    free(funcion);
     liberar_tokens(&t);
     return estado;
 }

@@ -145,6 +145,24 @@ Más consecuencias:
   (`resultados[0] : r;`): escribir en memoria es un efecto, así que `r` sí se usa.
 - Los temporales (`$t1`, `$t2`…) no son variables del programa: nunca cuentan como resultado.
 
+**Dos reglas para `main`, según quién usa el DCE.** Lo de arriba es la regla
+del análisis clásico, la que muestra `balc --dce` (`dce_eliminar`). Los niveles
+de optimización usan una regla más amplia, porque el resultado que se compara
+y se entrega es la memoria final de **todas** las variables de `main`, aunque
+`main` no las vuelva a leer. Por ejemplo, en la búsqueda en una matriz el
+resultado es `(fila_encontrada, columna_encontrada)`, y `columna_encontrada`
+solo se escribe:
+
+| Quién | Variables de `main` que cuentan como resultado |
+|---|---|
+| `balc --dce` | las que se leen en `main` |
+| `-O1` (`balc -O1`, el IDE, el botón Código muerto y Métricas) | **todas** (`ide_dce.c` se las pasa a `dce_eliminar_con_observables`) |
+| `-O2` (`ir_vliw_programa.c`) | **todas** (los objetos con nombre de `main`) |
+
+Con la regla de `-O1` y `-O2`, en `main` solo muere un valor que se
+**reemplaza antes de leerse**; el código muerto de verdad está dentro de las
+funciones, donde las variables locales desaparecen al terminar.
+
 Se resuelve con el **algoritmo iterativo** (diapositiva 27): todos los
 conjuntos empiezan vacíos y se recalculan hasta que una vuelta completa no
 cambie nada (**punto fijo**). Como el análisis va hacia atrás, los bloques se

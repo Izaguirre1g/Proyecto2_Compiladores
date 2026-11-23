@@ -120,7 +120,8 @@ static gchar *veredicto_de(const char *nombre, int mismo, const IdeOptNivel *n)
     if (mismo == 1)
         return g_markup_printf_escaped("<span foreground='#2e7d32'>✔ <b>%s</b> deja el mismo resultado de main que -O0.</span>", nombre);
     if (mismo == 0)
-        return g_markup_printf_escaped("<span foreground='#c62828'>✘ <b>%s</b> deja un resultado DISTINTO de -O0.</span>", nombre);
+        return g_markup_printf_escaped("<span foreground='#c62828'>✘ <b>%s</b> deja un resultado DISTINTO de -O0 "
+                                       "(otro valor o una variable de main que falta).</span>", nombre);
     gchar *e = estado_de(nombre, n);
     gchar *t = g_strdup_printf("— No se compara %s: %s", nombre, e);
     g_free(e);
@@ -358,17 +359,24 @@ static GtkWidget *pestana_resultado(const IdeOptimizacion *r)
         int distinto = 0, comparadas = 0;
         for (int l = 0; l < 3; ++l) {
             v[l] = valor_en(nivel_i(r, l), nombre, repeticion);
-            if (v[l] != NULL && v[0] != NULL && l > 0) {
+            if (l == 0 || v[0] == NULL) continue;
+            /* Un nivel que terminó pero ya no tiene la variable PERDIÓ parte
+             * del resultado: cuenta como diferencia, igual que otro valor. */
+            const IdeOptNivel *n = nivel_i(r, l);
+            if (v[l] != NULL) {
                 comparadas++;
                 distinto |= strcmp(v[0], v[l]) != 0;
+            } else if (n->compilado && n->simulacion.estado == MET_LISTO) {
+                comparadas++;
+                distinto = 1;
             }
         }
         gchar *celdas[3];
         for (int l = 0; l < 3; ++l) {
             const IdeOptNivel *n = nivel_i(r, l);
             if (v[l] != NULL) celdas[l] = g_markup_escape_text(v[l], -1);
-            else if (l == 1 && n->simulacion.estado == MET_LISTO)
-                celdas[l] = g_strdup("<i>eliminada (código muerto)</i>");
+            else if (l > 0 && v[0] != NULL && n->compilado && n->simulacion.estado == MET_LISTO)
+                celdas[l] = g_strdup("<span foreground='#c62828'><b>falta</b></span>");
             else celdas[l] = g_strdup("—");
         }
         const char *igual = distinto ? "<span foreground='#c62828'><b>✘ distinto</b></span>"
@@ -384,8 +392,8 @@ static GtkWidget *pestana_resultado(const IdeOptimizacion *r)
     gtk_box_pack_start(GTK_BOX(caja), parrafo(
         "BAL no tiene <tt>print</tt>: el resultado de un programa es el valor final de las variables de "
         "<tt>main</tt>. Se leen en la memoria del simulador en el ciclo en que main termina. Si -O1 y -O2 "
-        "dejan los mismos valores, hacen lo mismo que -O0. Una variable que -O1 ya no tiene no es una "
-        "diferencia: el DCE la borró porque nadie la lee (no es un resultado)."), FALSE, FALSE, 0);
+        "dejan los mismos valores, hacen lo mismo que -O0. Todas las variables de main cuentan, aunque "
+        "main no las vuelva a leer: si a un nivel le falta una, perdió parte del resultado."), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(caja), tabla(m, titulos, 5), TRUE, TRUE, 0);
     gtk_container_set_border_width(GTK_CONTAINER(caja), 6);
     return caja;

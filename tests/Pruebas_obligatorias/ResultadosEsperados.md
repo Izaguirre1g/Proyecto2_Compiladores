@@ -117,7 +117,7 @@ arreglo de `main` cuando la prueba lo revisa). Son iguales en `-O0`, `-O1` y
 |---|---|---|
 | `datos` | [60, 20, 30, 0, 0] | `registrar` escribe 10, 20 y 30; `acumular` suma 10 + 20 + 30 y deja 60 en `datos[0]` |
 | `resultados[0]` | 100 | r2 + total = 40 + 60 |
-| `resultados[1]` | 60 | total |
+| `resultados[1]` | 60 | total (queda en `datos[0]`) |
 
 Si el DCE quitara una llamada de `registrar` (aunque `r1` nunca se lee),
 `datos` y `total` cambiarían.
@@ -229,7 +229,15 @@ Con i = 1..20. `resultados = [210, 1540, 8855, -10, 10946, 4, -13]`
 ### Lo que mide el simulador
 
 Además del resultado (que es igual en los tres niveles), cambian los ciclos y
-el tamaño del programa. `-O1` solo cambia algo donde hay código muerto que
+el tamaño del programa.
+
+**Qué cuenta como resultado.** BAL no tiene `print`: el resultado de un programa
+es el valor final de **todas** las variables de `main`, aunque `main` no las
+vuelva a leer (por ejemplo, la columna de una búsqueda en una matriz). `-O1` y
+`-O2` las conservan: el DCE las recibe como observables. Por eso, en los
+programas de código muerto (07, 08 y 09), lo que se elimina está dentro de las
+funciones (`preparar`, `llenar`, `dividir` y `guardar`), donde las variables
+locales sí desaparecen al terminar. `-O1` solo cambia algo donde hay código muerto que
 quitar (07, 08 y 09); en los demás compila lo mismo que `-O0`.
 
 | # | Ciclos -O0 | Ciclos -O1 | Ciclos -O2 | Bundles -O0 | Bundles -O1 | Bundles -O2 |
@@ -240,9 +248,9 @@ quitar (07, 08 y 09); en los demás compila lo mismo que `-O0`.
 | 04 | 10 094 | 10 094 | 7 811 | 897 | 897 | 735 |
 | 05 | 8 033 | 8 033 | 6 224 | 708 | 708 | 618 |
 | 06 | 10 708 | 10 708 | 8 635 | 828 | 828 | 990 |
-| 07 | 6 985 | 4 543 | 5 373 | 990 | 804 | 843 |
-| 08 | 1 703 | 1 433 | 1 238 | 801 | 540 | 678 |
-| 09 | 6 959 | 6 905 | 5 555 | 1 014 | 984 | 649 |
+| 07 | 4 731 | 4 629 | 3 679 | 966 | 888 | 816 |
+| 08 | 1 780 | 1 510 | 1 288 | 876 | 615 | 724 |
+| 09 | 15 147 | 14 919 | 11 974 | 1 014 | 966 | 606 |
 | 10 | 2 231 | 2 231 | 3 011 | 741 | 741 | 956 |
 | 11 | 29 698 | 29 698 | 26 892 | 996 | 996 | 769 |
 | 12 | 3 544 | 3 544 | 3 823 | 585 | 585 | 1 017 |
@@ -264,7 +272,7 @@ Para cada programa la prueba ([tests/test_pruebas_obligatorias.c](../test_prueba
 
 1. Compila con `-O0`, `-O1` y `-O2` y ejecuta los tres binarios en el simulador hasta que `main` termina.
 2. Revisa que `resultados` tenga los valores esperados en los tres niveles. Los valores se calcularon aparte y coinciden con los de los tres niveles.
-3. Revisa que `-O1` y `-O2` dejen las variables de `main` iguales a `-O0` (regla de oro). Las que `-O1` borró por ser código muerto no cuentan.
+3. Revisa que `-O1` y `-O2` dejen las variables de `main` iguales a `-O0` (regla de oro). Son **todas**: a ningún nivel le puede faltar una.
 4. Revisa que la optimización de su categoría **actuó** en `-O2`:
    - **unrolling:** ciclos desenrollados;
    - **renombramiento:** dependencias WAR y WAW quitadas;
@@ -301,7 +309,8 @@ Los programas son tan exigentes como permiten los dos backends:
   - 4 registros temporales por expresión;
   - no acepta una llamada como operando de otra operación (`f(x) gauss 1`), ni sentencias después de un `give`.
 - **`-O2`:** trabaja con 3 registros temporales (el spilling se ve en todos los programas).
-- **`-O1`:** reescribe el código BAL, así que solo puede quitar lo que es una
+- **`-O1`:** nunca quita variables de `main` (son el resultado). Además,
+  reescribe el código BAL, así que solo puede quitar lo que es una
   sentencia completa. Hay dos patrones comunes en los que el DCE quita algo de
   la IR que no está escrito en el código BAL:
   - un `give` dentro de un `whether` deja en la IR un salto inalcanzable;

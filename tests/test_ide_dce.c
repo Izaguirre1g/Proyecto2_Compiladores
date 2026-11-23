@@ -330,16 +330,69 @@ static void prueba_codigo_igual(void)
     VERIFICAR(d.hay_ensamblador == 0);
     ide_dce_liberar(&d);
 
-    /* Cuando el DCE sí cambia el código, codigo_igual queda en 0. */
+    /* Cuando el DCE sí cambia el código, codigo_igual queda en 0. La
+     * variable muerta está en una función: las de main son el resultado del
+     * programa y no se borran aunque nadie las lea (ver la prueba siguiente). */
     const char *con_muerto =
+        "create_funk #declare_int# f(x * declare_int) {\n"
+        "    muerto * declare_int : x pitagoras 7;\n"
+        "    give x gauss 1;\n"
+        "}\n"
         "create_funk #declare_infinite_void# main() {\n"
         "    resultados * declare_int[1] : [0];\n"
-        "    muerto * declare_int : 7;\n"
-        "    resultados[0] : 4;\n"
+        "    resultados[0] : f(3);\n"
         "}\n";
     VERIFICAR(ide_dce_analizar(con_muerto, strlen(con_muerto), "examples/dce/editor.bal", &d) == 0);
     VERIFICAR(d.codigo_nuevo != NULL && d.codigo_igual == 0);
     VERIFICAR(d.codigo_nuevo != NULL && strstr(d.codigo_nuevo, "muerto") == NULL);
+    ide_dce_liberar(&d);
+
+    /* Una variable de main que se escribe y nunca se lee NO es código
+     * muerto: es parte del resultado (BAL no tiene print; se mira la memoria
+     * de main al terminar). Por ejemplo la columna de una búsqueda en una
+     * matriz. Solo se elimina un valor que se PISA antes de leerse. */
+    const char *resultado_sin_leer =
+        "create_funk #declare_infinite_void# main() {\n"
+        "    resultados * declare_int[1] : [0];\n"
+        "    columna * declare_int : 7;\n"
+        "    resultados[0] : 4;\n"
+        "}\n";
+    VERIFICAR(ide_dce_analizar(resultado_sin_leer, strlen(resultado_sin_leer), "examples/dce/editor.bal",
+                               &d) == 0);
+    VERIFICAR(d.estado == IDE_DCE_LISTO);
+    VERIFICAR(d.resultado.cantidad_eliminadas == 0);
+    VERIFICAR(d.codigo_nuevo == NULL || strstr(d.codigo_nuevo, "columna") != NULL);
+    ide_dce_liberar(&d);
+}
+
+/*
+ * Dos funciones con una variable del mismo nombre: "total" está muerta en
+ * f() pero se usa en g(). El código nuevo tiene que borrar la de f(): que el
+ * nombre aparezca en OTRA función no la hace usada (antes se conservaba por
+ * esa coincidencia de nombres).
+ */
+static void prueba_mismo_nombre(void)
+{
+    const char *texto =
+        "create_funk #declare_int# f(x * declare_int) {\n"
+        "    total * declare_int : x gauss 1;\n"
+        "    give x;\n"
+        "}\n"
+        "create_funk #declare_int# g(y * declare_int) {\n"
+        "    total * declare_int : y gauss 2;\n"
+        "    give total;\n"
+        "}\n"
+        "create_funk #declare_infinite_void# main() {\n"
+        "    resultados * declare_int[2] : [0, 0];\n"
+        "    resultados[0] : f(1);\n"
+        "    resultados[1] : g(3);\n"
+        "}\n";
+    IdeDce d;
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
+    VERIFICAR(d.estado == IDE_DCE_LISTO);
+    VERIFICAR(d.codigo_nuevo != NULL && d.codigo_igual == 0);
+    VERIFICAR(d.codigo_nuevo != NULL && strstr(d.codigo_nuevo, "total * declare_int : x gauss 1;") == NULL);
+    VERIFICAR(d.codigo_nuevo != NULL && strstr(d.codigo_nuevo, "total * declare_int : y gauss 2;") != NULL);
     ide_dce_liberar(&d);
 }
 
@@ -353,6 +406,7 @@ int main(int argc, char **argv)
     prueba_sin_ir();
     prueba_sin_codigo_muerto();
     prueba_codigo_igual();
+    prueba_mismo_nombre();
 
     if (fallos > 0) {
         fprintf(stderr, "test_ide_dce: %d fallos\n", fallos);

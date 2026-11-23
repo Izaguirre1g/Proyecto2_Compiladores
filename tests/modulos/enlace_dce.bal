@@ -1,5 +1,6 @@
-%% -O1 (DCE) con modulos: se borra "tirar" del principal; el modulo se
-%% compila tal como esta. Tambien asigna una llamada a un elemento de arreglo.
+%% -O1 (DCE) con modulos: "tirar" del principal se conserva (es parte del
+%% resultado de main, aunque no se lea); el modulo se compila tal como esta.
+%% Tambien asigna una llamada a un elemento de arreglo.
 %% Resultados esperados: resultados[0] = 8, resultados[1] = 20.
 bring enlace_muerto aka m;
 

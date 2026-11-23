@@ -108,10 +108,13 @@ int main(void)
     verificar_los_dos("dce_ensamblador", &r);
     VERIFICAR(valor(&r.o2, "resultados") && strcmp(valor(&r.o2, "resultados"), "[16, 15]") == 0);
     VERIFICAR(r.dce > 0);
-    /* -O1: el DCE quita "doble" de cuadrado() y la variable muerta "suma"
-     * de main: -O1 ya no la tiene (no es una diferencia) y el código es más chico. */
+    /* -O1: el DCE quita "doble" de cuadrado() y "extra" de suma_hasta(); la
+     * variable "suma" de main se conserva (es resultado aunque no se lea).
+     * El código es más chico y -O1 tiene las mismas variables que -O0. */
     VERIFICAR(r.o1_cambio && r.o1_eliminadas_ir > 0 && r.o1_borradas > 0);
     VERIFICAR(valor(&r.o1, "resultados") && strcmp(valor(&r.o1, "resultados"), "[16, 15]") == 0);
+    VERIFICAR(valor(&r.o1, "suma") && strcmp(valor(&r.o1, "suma"), "31") == 0);
+    VERIFICAR(r.o1.cantidad_variables == r.o0.cantidad_variables);
     VERIFICAR(r.o1.bundles < r.o0.bundles);
     /* El DCE de -O1 quita instrucciones de la IR y del código. */
     VERIFICAR(r.o1_ir_despues < r.o1_ir_antes);
@@ -120,10 +123,28 @@ int main(void)
     VERIFICAR(r.o1.simulacion.sim.ciclos < r.o0.simulacion.sim.ciclos);
     ide_optimizacion_liberar(&r);
 
+    /* Búsqueda en una matriz (ejercicio 2 del Proyecto I): el resultado es la
+     * posición (fila_encontrada, columna_encontrada). columna_encontrada se
+     * escribe pero main nunca la lee; aun así es parte del resultado y
+     * ningún nivel la puede perder. Antes -O1 la borraba como código muerto
+     * y el IDE decía "igual" sin haberla comparado. */
+    VERIFICAR(analizar("examples/ejercicio2_busqueda_matriz.bal", &r) == 0);
+    verificar_los_dos("ejercicio2_busqueda_matriz", &r);
+    for (int n = 0; n < 3; ++n) {
+        const IdeOptNivel *nivel = n == 0 ? &r.o0 : n == 1 ? &r.o1 : &r.o2;
+        VERIFICAR(valor(nivel, "fila_encontrada") && strcmp(valor(nivel, "fila_encontrada"), "0") == 0);
+        VERIFICAR(valor(nivel, "columna_encontrada") &&
+                  strcmp(valor(nivel, "columna_encontrada"), "1") == 0);
+    }
+    VERIFICAR(r.o1.cantidad_variables == r.o0.cantidad_variables);
+    ide_optimizacion_liberar(&r);
+
     /* Números negativos: multiplicacion.bal deja r = -42. */
     VERIFICAR(analizar("examples/multiplicacion.bal", &r) == 0);
     verificar_los_dos("multiplicacion", &r);
     VERIFICAR(valor(&r.o2, "r") && strcmp(valor(&r.o2, "r"), "-42") == 0);
+    /* main nunca lee r: antes -O1 borraba todo el cálculo (y el resultado). */
+    VERIFICAR(valor(&r.o1, "r") && strcmp(valor(&r.o1, "r"), "-42") == 0);
     ide_optimizacion_liberar(&r);
 
     /* Llamadas entre funciones. */
