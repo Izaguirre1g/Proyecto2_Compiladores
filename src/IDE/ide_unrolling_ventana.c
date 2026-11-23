@@ -10,7 +10,7 @@
 
 /* La ventana abierta (solo hay una) y lo que necesita para recalcular. */
 static GtkWidget *ventana_lu = NULL;
-static GtkWidget *contenido_lu = NULL;   /* Lo de abajo del factor: ciclos e IR. */
+static GtkWidget *contenido_lu = NULL;   /* Lo de abajo del factor: se rehace al cambiarlo. */
 static gchar *texto_lu = NULL;           /* Copia del código del editor. */
 static gchar *ruta_lu = NULL;
 
@@ -131,7 +131,7 @@ static GtkWidget *pestana_ir(const IdeUnrolling *u)
 }
 
 /* ------------------------------------------------------------------ */
-/* Contenido: los ciclos y la IR antes y después                       */
+/* Contenido (se rehace al cambiar el factor)                          */
 /* ------------------------------------------------------------------ */
 
 /* Una fila de métricas: "Instrucciones IR  13 → 24 (+11)". */
@@ -196,6 +196,16 @@ static GtkWidget *armar_contenido(unsigned factor)
     return caja;
 }
 
+/* Al cambiar el factor k: recalcular y rehacer el contenido. */
+static void al_cambiar_factor(GtkSpinButton *spin, gpointer datos)
+{
+    GtkBox *columna = datos;
+    if (contenido_lu != NULL) gtk_widget_destroy(contenido_lu);
+    contenido_lu = armar_contenido((unsigned)gtk_spin_button_get_value_as_int(spin));
+    gtk_box_pack_start(columna, contenido_lu, TRUE, TRUE, 0);
+    gtk_widget_show_all(contenido_lu);
+}
+
 void ide_mostrar_unrolling(GtkWindow *padre, const char *texto, const char *ruta,
                            const char *nombre)
 {
@@ -223,24 +233,21 @@ void ide_mostrar_unrolling(GtkWindow *padre, const char *texto, const char *ruta
     gtk_label_set_xalign(GTK_LABEL(ayuda), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(ayuda), TRUE);
 
-    /* El factor k es fijo: el valor por defecto del módulo de Meibel, el
-     * mismo que usa balc (--unroll y -O2). Solo se muestra, no se cambia,
-     * para que el IDE dé siempre el mismo resultado que el compilador. */
     LuOpciones defecto;
     lu_opciones_defecto(&defecto);
-    GtkWidget *factor = gtk_label_new(NULL);
-    gchar *texto_factor = g_strdup_printf("Factor k del desenrollado parcial: <b>%u</b>",
-                                          (unsigned)defecto.factor);
-    gtk_label_set_markup(GTK_LABEL(factor), texto_factor);
-    g_free(texto_factor);
-    gtk_label_set_xalign(GTK_LABEL(factor), 0.0f);
+    GtkWidget *factor = gtk_spin_button_new_with_range(2, 16, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(factor), defecto.factor);
+    GtkWidget *fila = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(fila), gtk_label_new("Factor k del desenrollado parcial:"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(fila), factor, FALSE, FALSE, 0);
 
     GtkWidget *columna = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(columna), 8);
     gtk_box_pack_start(GTK_BOX(columna), ayuda, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(columna), factor, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(columna), fila, FALSE, FALSE, 0);
     contenido_lu = armar_contenido(defecto.factor);
     gtk_box_pack_start(GTK_BOX(columna), contenido_lu, TRUE, TRUE, 0);
+    g_signal_connect(factor, "value-changed", G_CALLBACK(al_cambiar_factor), columna);
 
     gtk_container_add(GTK_CONTAINER(ventana_lu), columna);
     gtk_widget_show_all(ventana_lu);
