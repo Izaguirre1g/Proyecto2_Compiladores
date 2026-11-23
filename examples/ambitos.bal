@@ -24,3 +24,7 @@ create_funk #declare_int# f() {
     }
     give r;
 }
+create_funk #declare_infinite_void# main() {
+    resultados * declare_int[1];
+    resultados[0] : f();
+}

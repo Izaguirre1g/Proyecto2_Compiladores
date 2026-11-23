@@ -104,6 +104,15 @@ MemProyectoResultado mem_asignar_proyecto(
     SimTabla *tabla, size_t gp_base, size_t memoria_bytes,
     size_t capacidad_marco, MemProyectoMapa *mapa);
 
+/* Extensión optativa O2, pendiente de revisión de Dylan: argumentos de
+ * arreglo unidimensional se pasan por dirección de 32 bits en los mismos
+ * slots/registros que los escalares. El puntero se presta durante la llamada;
+ * no transporta longitud, no copia elementos ni comprueba límites dinámicos.
+ * Conserva el preflight transaccional y rechaza listas/texto/multidimensión. */
+MemProyectoResultado mem_asignar_proyecto_referencias(
+    SimTabla *tabla, size_t gp_base, size_t memoria_bytes,
+    size_t capacidad_marco, MemProyectoMapa *mapa);
+
 /* 3A-E2: ABI BAL escalar, propuesta local (no propiedad del ISA).
  * Argumentos 0..3 en x8..x11; restantes en slots del llamador.
  * Todos tienen home slot de 4 bytes, incluso boolean y char.

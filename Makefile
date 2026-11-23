@@ -9,51 +9,86 @@ FLEX ?= flex
 # Opciones de compilación: C11, advertencias y optimización.
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Werror -O2
 
+# Carpetas del código fuente, una por cada fase del compilador.
+# Si una carpeta cambia de nombre, solo se corrige aquí.
+LEXICO     := src/Analisis_Lexico
+SINTACTICO := src/Analisis_Sintactico
+SEMANTICO  := src/Analisis_Semantico
+IR         := src/Representacion_Intermedia
+GENERACION := src/Generacion_Codigo
+ENLACE     := src/Resolucion_y_Enlace
+BINARIO    := src/Codificacion_Binaria
+CLI        := src/Linea_Comandos
+CLONES     := src/Deteccion_Clones
+IDE        := src/IDE
+LL1        := src/LL1
+DCE        := src/DCE
+
+# Analisis predictivo LL(1): gramatica de BAL sin recursividad izquierda y
+# factorizada, PRIMERO, SIGUIENTE, tabla M[A, a] y analizador con pila.
+# Lo usa el IDE para predecir que tokens pueden venir (sugerencias y
+# correcciones). Bison sigue siendo el parser que construye el AST.
+LL1_SRC := $(LL1)/ll1_gramatica.c $(LL1)/ll1_tabla.c $(LL1)/ll1_analizador.c $(LL1)/ll1_recuperacion.c
+
 # Carpetas donde se buscan los archivos .h.
-CPPFLAGS ?= -Iinclude -Isrc 
+# include/ tiene las interfaces públicas; las otras tres tienen encabezados
+# que viven junto a su código: lexer_flex.h (Flex), parser.h (Bison) y
+# generacion_interna.h (contrato privado de los generadores).
+CPPFLAGS ?= -Iinclude -I$(LEXICO) -I$(SINTACTICO) -I$(GENERACION)
+
+# Proyecto II: optimizacion de loop unrolling (carpeta propia).
+CPPFLAGS += -Iloop_unrolling
+
+# Proyecto II: reordenamiento seguro dentro de bloques basicos.
+CPPFLAGS += -Ireordenamiento
 
 # Archivos del parser y del AST.
-PARSER_SRC := Analisis_Sintactico/parser.c Analisis_Sintactico/puente_lexer.c Analisis_Sintactico/ast.c
+PARSER_SRC := $(SINTACTICO)/parser.c $(SINTACTICO)/puente_lexer.c $(SINTACTICO)/ast.c
 
 # Archivo C que genera Flex a partir de lexer.l.
-LEXER_GEN := src/lexer_flex.c
+LEXER_GEN := $(LEXICO)/lexer_flex.c
 
 # Archivos que forman el compilador.
-SRC := src/main.c src/cli.c src/lexer.c $(LEXER_GEN) src/token.c src/generacion_basica.c $(PARSER_SRC) Analisis_Semantico/symbol_table.c Analisis_Semantico/semantic.c Analisis_Semantico/semantic_modules.c Analisis_Semantico/memory.c \
-       src/generacion_adaptador.c src/generacion_funciones.c src/generacion_control.c \
-       src/funciones_marco.c src/funciones_llamada.c src/referencias_integracion.c \
-       src/resolucion_referencias.c src/resolucion_saltos.c src/enlace_funciones.c \
-       src/codificacion_binaria.c src/formato_binario.c
+SRC := $(CLI)/main.c $(CLI)/cli.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c $(GENERACION)/generacion_basica.c $(PARSER_SRC) $(SEMANTICO)/symbol_table.c $(SEMANTICO)/semantic.c $(SEMANTICO)/semantic_modules.c $(SEMANTICO)/memory.c \
+       $(GENERACION)/generacion_adaptador.c $(GENERACION)/generacion_funciones.c $(GENERACION)/generacion_control.c \
+       $(GENERACION)/funciones_marco.c $(GENERACION)/funciones_llamada.c $(ENLACE)/referencias_integracion.c \
+       $(ENLACE)/resolucion_referencias.c $(ENLACE)/resolucion_saltos.c $(ENLACE)/enlace_funciones.c \
+       $(BINARIO)/codificacion_binaria.c $(BINARIO)/formato_binario.c $(CLI)/diagnosticos.c $(CLONES)/clones.c $(IR)/ir.c \
+       $(DCE)/dce.c $(LL1_SRC) \
+       loop_unrolling/loop_unrolling.c loop_unrolling/lu_reporte.c \
+       reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c reordenamiento/ro_json.c
 
 # Estos nombres son comandos de Make, no archivos.
-.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz clean
+.PHONY: all test test-parser test-ast test-cli test-generacion test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz test-diagnosticos test-ide-nucleo test-ide-historial test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-dce test-ide-dce test-ide-ensamblador test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 tabla-ll1 ide clean
 
 # Al ejecutar make, se construye balc.
 all: balc
 
 # Flex convierte las reglas de lexer.l en código C.
 # $@ es el archivo generado y $< es lexer.l.
-$(LEXER_GEN): src/lexer.l src/lexer_flex.h include/token.h
+$(LEXER_GEN): $(LEXICO)/lexer.l $(LEXICO)/lexer_flex.h include/token.h
 	$(FLEX) -o $@ $<
 
 # Bison genera parser.c y parser.h usando la gramática.
 # &: evita generar ambos archivos dos veces con make -j.
-Analisis_Sintactico/parser.c Analisis_Sintactico/parser.h &: Analisis_Sintactico/gramatica.y
-	$(BISON) -Wall -Werror -d -o Analisis_Sintactico/parser.c $<
+$(SINTACTICO)/parser.c $(SINTACTICO)/parser.h &: $(SINTACTICO)/gramatica.y
+	$(BISON) -Wall -Werror -d -o $(SINTACTICO)/parser.c $<
 
 # Compila todos los módulos y crea el ejecutable balc.
-balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h Analisis_Sintactico/parser.h \
+balc: $(SRC) include/cli.h include/lexer.h include/token.h include/sintactico.h include/ast.h include/generacion_basica.h include/semantic_modules.h include/semantic.h include/memory.h $(SINTACTICO)/parser.h \
       include/enlace_funciones.h include/resolucion_saltos.h include/resolucion_referencias.h include/codificacion_binaria.h \
       include/referencias_integracion.h include/generacion_adaptador.h include/generacion_funciones.h \
-      src/generacion_interna.h include/formato_binario.h
+      $(GENERACION)/generacion_interna.h include/formato_binario.h include/diagnosticos.h include/clones.h include/ir.h include/dce.h \
+      loop_unrolling/loop_unrolling.h loop_unrolling/lu_reporte.h \
+      reordenamiento/reordenamiento.h reordenamiento/ro_reporte.h reordenamiento/ro_json.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SRC) -o $@
 
 # Compila las pruebas del lexer, sin necesitar el parser.
-tests/test_lexer: tests/test_lexer.c src/lexer.c $(LEXER_GEN) src/token.c include/lexer.h include/token.h src/lexer_flex.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c src/lexer.c $(LEXER_GEN) src/token.c -o $@
+tests/test_lexer: tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c include/lexer.h include/token.h $(LEXICO)/lexer_flex.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_lexer.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Ejecuta las pruebas del proyecto y analiza el factorial.
-test: test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
+test: test-ir test-loop-unrolling test-reordenamiento test-dce test-ide-dce test-ide-ensamblador test-ide-optimizacion test-pruebas-obligatorias test-ide-colores test-ide-unrolling test-ide-reordenamiento test-metricas test-ll1 test-diagnosticos test-ide-nucleo test-ide-historial test-ide-mensajes test-ide-analisis test-ide-arreglos test-clones test-ast-json test-formato-binario test-ejercicio3 test-ambitos-generacion test-whale-pipeline test-cycle-pipeline test-resolucion-saltos test-codificacion-binaria test-condicional-pipeline tests/test_lexer balc test-parser test-ast test-cli test-generacion test-symbol-table test-semantic test-semantic-functions test-semantic-arrays test-semantic-matrix-cycle test-semantic-returns test-semantic-initializers test-semantic-dynamic-arrays test-semantic-lists test-semantic-list-indices test-semantic-composite-params test-semantic-pipeline test-semantic-modules test-enlace test-constantes test-semantic-entry test-funciones-backend test-referencias-integracion test-m-simbolos test-auditoria-semantica test-ejercicio2-matriz
 	./tests/test_lexer
 	./balc -v -o tests/factorial_make.bin examples/factorial.bal
 	rm -f tests/factorial_make.bin tests/factorial_make.mem
@@ -67,8 +102,8 @@ test-parser: balc tests/test_parser
 	./tests/test_parser
 
 # Compila las pruebas del AST.
-tests/test_ast: tests/test_ast.c $(PARSER_SRC) src/lexer.c $(LEXER_GEN) src/token.c include/ast.h include/sintactico.h include/lexer.h include/token.h src/lexer_flex.h Analisis_Sintactico/parser.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ast.c $(PARSER_SRC) src/lexer.c $(LEXER_GEN) src/token.c -o $@
+tests/test_ast: tests/test_ast.c $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c include/ast.h include/sintactico.h include/lexer.h include/token.h $(LEXICO)/lexer_flex.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ast.c $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Comprueba que el árbol se construya correctamente.
 test-ast: tests/test_ast
@@ -83,8 +118,8 @@ test-cli: balc tests/test_cli
 	./tests/test_cli
 
 # Compila las pruebas de generación básica de ensamblador.
-tests/test_generacion: tests/test_generacion.c src/generacion_basica.c include/generacion_basica.h $(PARSER_SRC) src/lexer.c $(LEXER_GEN) src/token.c include/ast.h include/sintactico.h include/lexer.h include/token.h src/lexer_flex.h Analisis_Sintactico/parser.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_generacion.c src/generacion_basica.c $(PARSER_SRC) src/lexer.c $(LEXER_GEN) src/token.c -o $@
+tests/test_generacion: tests/test_generacion.c $(GENERACION)/generacion_basica.c include/generacion_basica.h $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c include/ast.h include/sintactico.h include/lexer.h include/token.h $(LEXICO)/lexer_flex.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_generacion.c $(GENERACION)/generacion_basica.c $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
 
 # Comprueba la traducción de operaciones básicas.
 test-generacion: tests/test_generacion
@@ -94,17 +129,17 @@ test-generacion: tests/test_generacion
 # Sirve para volver a compilar todo desde cero.
 # Elimina los ejecutables y archivos generados.
 clean:
-	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules $(LEXER_GEN)
+	rm -f tests/test_ejercicio3 tests/test_resolucion_saltos tests/test_codificacion_binaria tests/test_ambitos_generacion tests/test_condicional_pipeline balc tests/test_lexer tests/test_parser tests/test_ast tests/test_cli tests/test_generacion tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones tests/test_semantic_visitante tests/test_generacion_adaptador tests/test_resolucion_referencias tests/test_referencias_integracion tests/test_symbol_table tests/test_semantic tests/test_semantic_functions tests/test_semantic_arrays tests/test_semantic_matrix_cycle tests/test_semantic_returns tests/test_semantic_dynamic_arrays test/test_semantic_lists test/test_semantic_list_indices test/test_semantic_composite_params test/test_semantic_pipeline tests/test_semantic_modules tests/test_diagnosticos tests/test_ide_nucleo tests/test_ide_historial tests/test_ide_mensajes tests/test_ide_analisis tests/test_ide_arreglos tests/test_clones tests/test_dce tests/test_ide_dce tests/test_dce_simulador tests/test_ide_ensamblador tests/test_ide_colores tests/test_ide_unrolling tests/test_ll1 balc-ll1 balc-ide $(LEXER_GEN)
 
 # Pruebas de la tabla de símbolos
 .PHONY: test-symbol-table
 
 tests/test_symbol_table: tests/test_symbol_table.c \
-                        Analisis_Semantico/symbol_table.c \
+                        $(SEMANTICO)/symbol_table.c \
                         include/symbol_table.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_symbol_table.c \
-	    Analisis_Semantico/symbol_table.c \
+	    $(SEMANTICO)/symbol_table.c \
 	    -o $@
 
 # Ejecutar pruebas de la tabla de símbolos
@@ -113,17 +148,17 @@ test-symbol-table: tests/test_symbol_table
 
 # Compilar pruebas del análisis semántico.
 tests/test_semantic: tests/test_semantic.c \
-                     Analisis_Semantico/semantic.c \
-                     Analisis_Semantico/symbol_table.c \
-                     Analisis_Sintactico/ast.c \
+                     $(SEMANTICO)/semantic.c \
+                     $(SEMANTICO)/symbol_table.c \
+                     $(SINTACTICO)/ast.c \
                      include/semantic.h \
                      include/symbol_table.h \
                      include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 # Ejecutar pruebas del análisis semántico.
@@ -134,17 +169,17 @@ test-semantic: tests/test_semantic
 
 # Compilar pruebas semánticas de funciones.
 tests/test_semantic_functions: tests/test_semantic_functions.c \
-                               Analisis_Semantico/semantic.c \
-                               Analisis_Semantico/symbol_table.c \
-                               Analisis_Sintactico/ast.c \
+                               $(SEMANTICO)/semantic.c \
+                               $(SEMANTICO)/symbol_table.c \
+                               $(SINTACTICO)/ast.c \
                                include/semantic.h \
                                include/symbol_table.h \
                                include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_functions.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 # Ejecutar pruebas de funciones.
@@ -155,17 +190,17 @@ test-semantic-functions: tests/test_semantic_functions
 
 # Compilar pruebas de arreglos.
 tests/test_semantic_arrays: tests/test_semantic_arrays.c \
-                            Analisis_Semantico/semantic.c \
-                            Analisis_Semantico/symbol_table.c \
-                            Analisis_Sintactico/ast.c \
+                            $(SEMANTICO)/semantic.c \
+                            $(SEMANTICO)/symbol_table.c \
+                            $(SINTACTICO)/ast.c \
                             include/semantic.h \
                             include/symbol_table.h \
                             include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_arrays.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-arrays
@@ -178,17 +213,17 @@ test-semantic-arrays: tests/test_semantic_arrays
 # =============================================
 
 tests/test_semantic_matrix_cycle: tests/test_semantic_matrix_cycle.c \
-                                  Analisis_Semantico/semantic.c \
-                                  Analisis_Semantico/symbol_table.c \
-                                  Analisis_Sintactico/ast.c \
+                                  $(SEMANTICO)/semantic.c \
+                                  $(SEMANTICO)/symbol_table.c \
+                                  $(SINTACTICO)/ast.c \
                                   include/semantic.h \
                                   include/symbol_table.h \
                                   include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_matrix_cycle.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-matrix-cycle
@@ -201,17 +236,17 @@ test-semantic-matrix-cycle: tests/test_semantic_matrix_cycle
 # ==========================================
 
 tests/test_semantic_returns: tests/test_semantic_returns.c \
-                             Analisis_Semantico/semantic.c \
-                             Analisis_Semantico/symbol_table.c \
-                             Analisis_Sintactico/ast.c \
+                             $(SEMANTICO)/semantic.c \
+                             $(SEMANTICO)/symbol_table.c \
+                             $(SINTACTICO)/ast.c \
                              include/semantic.h \
                              include/symbol_table.h \
                              include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_returns.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-returns
@@ -224,17 +259,17 @@ test-semantic-returns: tests/test_semantic_returns
 # ===========================================
 
 tests/test_semantic_initializers: tests/test_semantic_initializers.c \
-                                  Analisis_Semantico/semantic.c \
-                                  Analisis_Semantico/symbol_table.c \
-                                  Analisis_Sintactico/ast.c \
+                                  $(SEMANTICO)/semantic.c \
+                                  $(SEMANTICO)/symbol_table.c \
+                                  $(SINTACTICO)/ast.c \
                                   include/semantic.h \
                                   include/symbol_table.h \
                                   include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_initializers.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-initializers
@@ -247,17 +282,17 @@ test-semantic-initializers: tests/test_semantic_initializers
 # ===========================================
 
 tests/test_semantic_dynamic_arrays: tests/test_semantic_dynamic_arrays.c \
-                                    Analisis_Semantico/semantic.c \
-                                    Analisis_Semantico/symbol_table.c \
-                                    Analisis_Sintactico/ast.c \
+                                    $(SEMANTICO)/semantic.c \
+                                    $(SEMANTICO)/symbol_table.c \
+                                    $(SINTACTICO)/ast.c \
                                     include/semantic.h \
                                     include/symbol_table.h \
                                     include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_dynamic_arrays.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-dynamic-arrays
@@ -270,17 +305,17 @@ test-semantic-dynamic-arrays: tests/test_semantic_dynamic_arrays
 # ===========================================
 
 tests/test_semantic_lists: tests/test_semantic_lists.c \
-                           Analisis_Semantico/semantic.c \
-                           Analisis_Semantico/symbol_table.c \
-                           Analisis_Sintactico/ast.c \
+                           $(SEMANTICO)/semantic.c \
+                           $(SEMANTICO)/symbol_table.c \
+                           $(SINTACTICO)/ast.c \
                            include/semantic.h \
                            include/symbol_table.h \
                            include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_lists.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-lists
@@ -293,17 +328,17 @@ test-semantic-lists: tests/test_semantic_lists
 # ===========================================
 
 tests/test_semantic_list_indices: tests/test_semantic_list_indices.c \
-                                  Analisis_Semantico/semantic.c \
-                                  Analisis_Semantico/symbol_table.c \
-                                  Analisis_Sintactico/ast.c \
+                                  $(SEMANTICO)/semantic.c \
+                                  $(SEMANTICO)/symbol_table.c \
+                                  $(SINTACTICO)/ast.c \
                                   include/semantic.h \
                                   include/symbol_table.h \
                                   include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_list_indices.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-list-indices
@@ -316,17 +351,17 @@ test-semantic-list-indices: tests/test_semantic_list_indices
 # ===========================================
 
 tests/test_semantic_composite_params: tests/test_semantic_composite_params.c \
-                                      Analisis_Semantico/semantic.c \
-                                      Analisis_Semantico/symbol_table.c \
-                                      Analisis_Sintactico/ast.c \
+                                      $(SEMANTICO)/semantic.c \
+                                      $(SEMANTICO)/symbol_table.c \
+                                      $(SINTACTICO)/ast.c \
                                       include/semantic.h \
                                       include/symbol_table.h \
                                       include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_composite_params.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    Analisis_Sintactico/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(SINTACTICO)/ast.c \
 	    -o $@
 
 .PHONY: test-semantic-composite-params
@@ -341,27 +376,27 @@ test-semantic-composite-params: tests/test_semantic_composite_params
 
 tests/test_semantic_pipeline: \
     tests/test_semantic_pipeline.c \
-    Analisis_Sintactico/parser.c \
-    Analisis_Sintactico/puente_lexer.c \
-    Analisis_Sintactico/ast.c \
-    Analisis_Semantico/semantic.c \
-    Analisis_Semantico/symbol_table.c \
-    src/lexer.c \
-    src/lexer_flex.c \
-    src/token.c \
+    $(SINTACTICO)/parser.c \
+    $(SINTACTICO)/puente_lexer.c \
+    $(SINTACTICO)/ast.c \
+    $(SEMANTICO)/semantic.c \
+    $(SEMANTICO)/symbol_table.c \
+    $(LEXICO)/lexer.c \
+    $(LEXICO)/lexer_flex.c \
+    $(LEXICO)/token.c \
     include/semantic.h \
     include/symbol_table.h \
     include/ast.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 	    tests/test_semantic_pipeline.c \
-	    Analisis_Sintactico/parser.c \
-	    Analisis_Sintactico/puente_lexer.c \
-	    Analisis_Sintactico/ast.c \
-	    Analisis_Semantico/semantic.c \
-	    Analisis_Semantico/symbol_table.c \
-	    src/lexer.c \
-	    src/lexer_flex.c \
-	    src/token.c \
+	    $(SINTACTICO)/parser.c \
+	    $(SINTACTICO)/puente_lexer.c \
+	    $(SINTACTICO)/ast.c \
+	    $(SEMANTICO)/semantic.c \
+	    $(SEMANTICO)/symbol_table.c \
+	    $(LEXICO)/lexer.c \
+	    $(LEXICO)/lexer_flex.c \
+	    $(LEXICO)/token.c \
 	    -o $@
 
 .PHONY: test-semantic-pipeline
@@ -374,16 +409,16 @@ test-semantic-pipeline: tests/test_semantic_pipeline
 # ETAPA 2N-F: integracion de pruebas de modulos
 # ===========================================
 
-MODULOS_SRC := Analisis_Semantico/semantic_modules.c \
-               Analisis_Semantico/semantic.c \
-               Analisis_Semantico/symbol_table.c \
-               $(PARSER_SRC) src/lexer.c $(LEXER_GEN) src/token.c
+MODULOS_SRC := $(SEMANTICO)/semantic_modules.c \
+               $(SEMANTICO)/semantic.c \
+               $(SEMANTICO)/symbol_table.c \
+               $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
 
 # Compilacion independiente: el CLI y el backend no participan.
 tests/test_semantic_modules: tests/test_semantic_modules.c $(MODULOS_SRC) \
                              include/semantic_modules.h include/semantic.h \
                              include/symbol_table.h include/ast.h \
-                             include/sintactico.h Analisis_Sintactico/parser.h
+                             include/sintactico.h $(SINTACTICO)/parser.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_semantic_modules.c $(MODULOS_SRC) -o $@
 
 # Casos positivos, negativos, transitivos, compartidos y rutas equivalentes.
@@ -440,19 +475,19 @@ test-semantic-entry: balc
 
 # Etapa 3B: pruebas aisladas del ABI y generacion desde AST.
 # No forman parte del ejecutable balc hasta integrar el resolvedor semantico.
-FUNCIONES_SRC := src/funciones_marco.c src/funciones_llamada.c
+FUNCIONES_SRC := $(GENERACION)/funciones_marco.c $(GENERACION)/funciones_llamada.c
 
-tests/test_funciones_marco: tests/test_funciones_marco.c src/funciones_marco.c include/funciones_marco.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_funciones_marco.c src/funciones_marco.c -o $@
+tests/test_funciones_marco: tests/test_funciones_marco.c $(GENERACION)/funciones_marco.c include/funciones_marco.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_funciones_marco.c $(GENERACION)/funciones_marco.c -o $@
 
-tests/test_funciones_llamada: tests/test_funciones_llamada.c src/funciones_llamada.c include/funciones_llamada.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_funciones_llamada.c src/funciones_llamada.c -o $@
+tests/test_funciones_llamada: tests/test_funciones_llamada.c $(GENERACION)/funciones_llamada.c include/funciones_llamada.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_funciones_llamada.c $(GENERACION)/funciones_llamada.c -o $@
 
 tests/test_funciones_integracion: tests/test_funciones_integracion.c $(FUNCIONES_SRC) include/funciones_marco.h include/funciones_llamada.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_funciones_integracion.c $(FUNCIONES_SRC) -o $@
 
-tests/test_generacion_funciones: tests/test_generacion_funciones.c src/generacion_funciones.c src/generacion_control.c src/generacion_basica.c $(FUNCIONES_SRC) include/generacion_funciones.h include/generacion_basica.h include/ast.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_generacion_funciones.c src/generacion_funciones.c src/generacion_control.c src/generacion_basica.c $(FUNCIONES_SRC) -o $@
+tests/test_generacion_funciones: tests/test_generacion_funciones.c $(GENERACION)/generacion_funciones.c $(GENERACION)/generacion_control.c $(GENERACION)/generacion_basica.c $(FUNCIONES_SRC) include/generacion_funciones.h include/generacion_basica.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_generacion_funciones.c $(GENERACION)/generacion_funciones.c $(GENERACION)/generacion_control.c $(GENERACION)/generacion_basica.c $(FUNCIONES_SRC) -o $@
 
 .PHONY: test-funciones-backend
 test-funciones-backend: tests/test_funciones_marco tests/test_funciones_llamada tests/test_funciones_integracion tests/test_generacion_funciones
@@ -462,34 +497,34 @@ test-funciones-backend: tests/test_funciones_marco tests/test_funciones_llamada 
 	./tests/test_generacion_funciones
 
 # 3B-D3B/D3C/D3D/D3E: fuentes aisladas del modulo y pruebas automatizadas.
-BACKEND_ESCALAR_SRC := src/generacion_adaptador.c src/generacion_funciones.c src/generacion_control.c \
-                       src/generacion_basica.c $(FUNCIONES_SRC)
+BACKEND_ESCALAR_SRC := $(GENERACION)/generacion_adaptador.c $(GENERACION)/generacion_funciones.c $(GENERACION)/generacion_control.c \
+                       $(GENERACION)/generacion_basica.c $(FUNCIONES_SRC)
 
 # El visitante necesita el cargador, parser, lexer y asignador semantico.
 tests/test_semantic_visitante: tests/test_semantic_visitante.c $(MODULOS_SRC) \
-                              Analisis_Semantico/memory.c include/memory.h \
+                              $(SEMANTICO)/memory.c include/memory.h \
                               include/semantic_modules.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_semantic_visitante.c \
-	      $(MODULOS_SRC) Analisis_Semantico/memory.c -o $@
+	      $(MODULOS_SRC) $(SEMANTICO)/memory.c -o $@
 
 tests/test_generacion_adaptador: tests/test_generacion_adaptador.c \
-                                 $(BACKEND_ESCALAR_SRC) Analisis_Semantico/symbol_table.c \
+                                 $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/symbol_table.c \
                                  include/generacion_adaptador.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_generacion_adaptador.c \
-	      $(BACKEND_ESCALAR_SRC) Analisis_Semantico/symbol_table.c -o $@
+	      $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/symbol_table.c -o $@
 
 tests/test_resolucion_referencias: tests/test_resolucion_referencias.c \
-                                   src/resolucion_referencias.c include/resolucion_referencias.h
+                                   $(ENLACE)/resolucion_referencias.c include/resolucion_referencias.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_resolucion_referencias.c \
-	      src/resolucion_referencias.c -o $@
+	      $(ENLACE)/resolucion_referencias.c -o $@
 
 tests/test_referencias_integracion: tests/test_referencias_integracion.c \
-                                    src/referencias_integracion.c include/referencias_integracion.h \
-                                    src/resolucion_referencias.c $(BACKEND_ESCALAR_SRC) \
-                                    Analisis_Semantico/symbol_table.c
+                                    $(ENLACE)/referencias_integracion.c include/referencias_integracion.h \
+                                    $(ENLACE)/resolucion_referencias.c $(BACKEND_ESCALAR_SRC) \
+                                    $(SEMANTICO)/symbol_table.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_referencias_integracion.c \
-	      src/referencias_integracion.c src/resolucion_referencias.c \
-	      $(BACKEND_ESCALAR_SRC) Analisis_Semantico/symbol_table.c -o $@
+	      $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c \
+	      $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/symbol_table.c -o $@
 
 .PHONY: test-referencias-integracion
 test-referencias-integracion: tests/test_semantic_visitante \
@@ -503,23 +538,23 @@ test-referencias-integracion: tests/test_semantic_visitante \
 
 # Fase 5: layout de bundles y resolucion de saltos de control anidado.
 tests/test_resolucion_saltos: tests/test_resolucion_saltos.c tests/modelo_control.h \
-                              src/resolucion_saltos.c include/resolucion_saltos.h \
-                              src/enlace_funciones.c include/enlace_funciones.h \
-                              src/referencias_integracion.c src/resolucion_referencias.c \
-                              $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c \
-                              include/symbol_table.h src/generacion_interna.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_resolucion_saltos.c src/resolucion_saltos.c \
-	      src/enlace_funciones.c src/referencias_integracion.c src/resolucion_referencias.c \
-	      $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c -o $@
+                              $(ENLACE)/resolucion_saltos.c include/resolucion_saltos.h \
+                              $(ENLACE)/enlace_funciones.c include/enlace_funciones.h \
+                              $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c \
+                              $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c \
+                              include/symbol_table.h $(GENERACION)/generacion_interna.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_resolucion_saltos.c $(ENLACE)/resolucion_saltos.c \
+	      $(ENLACE)/enlace_funciones.c $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c \
+	      $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c -o $@
 
 .PHONY: test-resolucion-saltos
 test-resolucion-saltos: tests/test_resolucion_saltos
 	./tests/test_resolucion_saltos
 
 # Fase 6: codificacion binaria contra la referencia de tools/assembler.py.
-tests/test_codificacion_binaria: tests/test_codificacion_binaria.c src/codificacion_binaria.c \
+tests/test_codificacion_binaria: tests/test_codificacion_binaria.c $(BINARIO)/codificacion_binaria.c \
                                  include/codificacion_binaria.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_codificacion_binaria.c src/codificacion_binaria.c -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_codificacion_binaria.c $(BINARIO)/codificacion_binaria.c -o $@
 
 .PHONY: test-codificacion-binaria
 test-codificacion-binaria: tests/test_codificacion_binaria
@@ -540,15 +575,15 @@ test-ejercicio2-matriz: balc
 	sh tests/test_ejercicio2_matriz.sh
 
 # Meibel: integracion del control de flujo con parser, semantica y memoria.
-tests/test_condicional_pipeline: tests/test_condicional_pipeline.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c include/generacion_funciones.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_condicional_pipeline.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c -o $@
+tests/test_condicional_pipeline: tests/test_condicional_pipeline.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c include/generacion_funciones.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_condicional_pipeline.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c -o $@
 
 .PHONY: test-condicional-pipeline
 test-condicional-pipeline: tests/test_condicional_pipeline
 	./tests/test_condicional_pipeline
 
 # Contrato privado compartido por los dos generadores.
-tests/test_generacion_funciones tests/test_generacion_adaptador tests/test_referencias_integracion tests/test_condicional_pipeline: src/generacion_interna.h
+tests/test_generacion_funciones tests/test_generacion_adaptador tests/test_referencias_integracion tests/test_condicional_pipeline: $(GENERACION)/generacion_interna.h
 
 .PHONY: test-whale-pipeline
 test-whale-pipeline: tests/test_condicional_pipeline
@@ -562,16 +597,16 @@ test-cycle-pipeline: tests/test_condicional_pipeline
 tests/test_generacion_funciones: tests/modelo_control.h
 tests/test_generacion_adaptador tests/test_referencias_integracion tests/test_condicional_pipeline: include/symbol_table.h
 
-tests/test_ambitos_generacion: tests/test_ambitos_generacion.c tests/modelo_control.h $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c include/symbol_table.h src/generacion_interna.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ambitos_generacion.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c -o $@
+tests/test_ambitos_generacion: tests/test_ambitos_generacion.c tests/modelo_control.h $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c include/symbol_table.h $(GENERACION)/generacion_interna.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ambitos_generacion.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c -o $@
 
 .PHONY: test-ambitos-generacion
 test-ambitos-generacion: tests/test_ambitos_generacion
 	./tests/test_ambitos_generacion
 
 # Ejercicio 3: funciones completas, llamadas y control en modelo secuencial.
-tests/test_ejercicio3: tests/test_ejercicio3.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c src/referencias_integracion.c src/resolucion_referencias.c include/symbol_table.h src/generacion_interna.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ejercicio3.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) Analisis_Semantico/memory.c src/referencias_integracion.c src/resolucion_referencias.c -o $@
+tests/test_ejercicio3: tests/test_ejercicio3.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c include/symbol_table.h $(GENERACION)/generacion_interna.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ejercicio3.c $(MODULOS_SRC) $(BACKEND_ESCALAR_SRC) $(SEMANTICO)/memory.c $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c -o $@
 
 .PHONY: test-ejercicio3
 test-ejercicio3: tests/test_ejercicio3
@@ -585,3 +620,374 @@ test-formato-binario: balc
 .PHONY: test-ast-json
 test-ast-json: balc
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_ast_json.py -v
+
+# Pruebas de --diagnosticos (errores en JSON para el IDE).
+# 1. Prueba unitaria del modulo src/Linea_Comandos/diagnosticos.c.
+# 2. Prueba con balc: un archivo sin errores debe dar "errores": 0, y uno
+#    con un error semantico debe terminar con codigo 1 y dar la posicion exacta.
+tests/test_diagnosticos: tests/test_diagnosticos.c $(CLI)/diagnosticos.c include/diagnosticos.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_diagnosticos.c $(CLI)/diagnosticos.c -o $@
+
+test-diagnosticos: tests/test_diagnosticos balc
+	./tests/test_diagnosticos
+	./balc --diagnosticos tests/pipeline_valido.bal | grep -q '"errores": 0'
+	./balc --diagnosticos tests/pipeline_error.bal > tests/diagnosticos_salida.json; test $$? -eq 1
+	grep -q '"fase": "semantico", "archivo": "tests/pipeline_error.bal", "linea": 3, "columna": 5' tests/diagnosticos_salida.json
+	rm -f tests/diagnosticos_salida.json
+	@echo 'OK: --diagnosticos (unitarias y con balc)'
+
+# Pruebas del nucleo del IDE: sugerencias, autocierre y delimitadores.
+# Usa el lexer real del compilador, por eso compila tambien lexer.c y token.c.
+IDE_NUCLEO_SRC := $(IDE)/ide_nucleo.c $(CLI)/diagnosticos.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c $(LL1_SRC)
+
+tests/test_ide_nucleo: tests/test_ide_nucleo.c $(IDE_NUCLEO_SRC) include/ide_nucleo.h include/diagnosticos.h include/lexer.h include/token.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_nucleo.c $(IDE_NUCLEO_SRC) -o $@
+
+test-ide-nucleo: tests/test_ide_nucleo
+	./tests/test_ide_nucleo
+
+# Historial del editor (Ctrl+Z y Ctrl+Y). No depende de GTK ni de nada mas.
+tests/test_ide_historial: tests/test_ide_historial.c $(IDE)/ide_historial.c include/ide_historial.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_historial.c $(IDE)/ide_historial.c -o $@
+
+test-ide-historial: tests/test_ide_historial
+	./tests/test_ide_historial
+
+# Traduccion de los mensajes del parser a espanol. No depende de nada mas.
+tests/test_ide_mensajes: tests/test_ide_mensajes.c $(IDE)/ide_mensajes.c include/ide_mensajes.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_mensajes.c $(IDE)/ide_mensajes.c -o $@
+
+test-ide-mensajes: tests/test_ide_mensajes
+	./tests/test_ide_mensajes
+
+# Analisis del texto del editor: necesita el frontend completo del compilador
+# (lexer, parser, AST y semantico), pero no la generacion de codigo.
+IDE_FRONTEND_SRC := $(SINTACTICO)/parser.c $(SINTACTICO)/puente_lexer.c $(SINTACTICO)/ast.c \
+                    $(SEMANTICO)/symbol_table.c $(SEMANTICO)/semantic.c $(SEMANTICO)/semantic_modules.c
+IDE_ANALISIS_SRC := $(IDE)/ide_analisis.c $(IDE)/ide_mensajes.c $(IDE)/ide_arreglos.c $(IDE_NUCLEO_SRC) $(IDE_FRONTEND_SRC)
+
+# Boton "Codigo muerto" del IDE: semantico -> IR -> variables vivas -> DCE
+# sobre el texto del editor (sin GTK, para poder probarlo).
+# Boton "Ensamblador" del IDE: los mismos pasos que balc -s (memoria,
+# generacion, enlace y codificacion) sobre el texto del editor. La prueba
+# compara el resultado con los .asm de examples/, generados con balc -s.
+IDE_ASM_SRC := $(IDE)/ide_ensamblador.c $(SEMANTICO)/memory.c \
+               $(GENERACION)/generacion_basica.c $(GENERACION)/generacion_adaptador.c \
+               $(GENERACION)/generacion_funciones.c $(GENERACION)/generacion_control.c \
+               $(GENERACION)/funciones_marco.c $(GENERACION)/funciones_llamada.c \
+               $(ENLACE)/referencias_integracion.c $(ENLACE)/resolucion_referencias.c \
+               $(ENLACE)/resolucion_saltos.c $(ENLACE)/enlace_funciones.c \
+               $(BINARIO)/codificacion_binaria.c $(BINARIO)/formato_binario.c
+
+# Boton "Codigo muerto" del IDE: semantico -> IR -> variables vivas -> DCE
+# sobre el texto del editor (sin GTK, para poder probarlo), y el codigo BAL
+# nuevo sin el codigo muerto, con su ensamblador (usa IDE_ASM_SRC).
+IDE_DCE_SRC := $(IDE)/ide_dce.c $(IDE)/ide_dce_codigo.c $(DCE)/dce.c $(IR)/ir.c
+
+tests/test_ide_dce: tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_dce.h include/dce.h include/ir.h include/ide_analisis.h include/ide_ensamblador.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_dce.c $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@
+
+# Simulador VLIW: para comprobar que el codigo sin el codigo muerto da el
+# mismo resultado que el original (tests/test_dce_simulador.c).
+SIM_SRC := $(wildcard src/Simulador_VLIW/*.c)
+
+tests/test_dce_simulador: tests/test_dce_simulador.c $(SIM_SRC) include/sim_ejecucion.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_dce_simulador.c $(SIM_SRC) -o $@
+
+# 1. Pruebas del boton Codigo muerto; tambien escribe el codigo nuevo de
+#    examples/dce/dce_ensamblador.bal en tests/dce_nuevo.bal.
+# 2. balc compila el original y el nuevo (el nuevo tiene menos bundles).
+# 3. El simulador ejecuta los dos binarios: deben dar el mismo resultado.
+test-ide-dce: tests/test_ide_dce tests/test_dce_simulador balc
+	./tests/test_ide_dce tests/dce_nuevo.bal
+	cp examples/dce/dce_ensamblador.bal tests/dce_original.bal
+	./balc -o tests/dce_original.bin tests/dce_original.bal > /dev/null
+	./balc -o tests/dce_nuevo.bin tests/dce_nuevo.bal > /dev/null
+	./tests/test_dce_simulador tests/dce_original.bin 24 tests/dce_nuevo.bin 20
+	rm -f tests/dce_original.* tests/dce_nuevo.*
+
+# Enlace entre archivos (bring), en src/Analisis_Semantico/semantic_modules.c:
+# 1. Los programas validos de tests/modulos/ compilan con el backend normal,
+#    con --ir y con -O2 (antes ninguno generaba codigo si usaba el modulo).
+# 2. enlace_principal.bal (dos modulos, uno anidado, constantes y nombres
+#    locales que las tapan) se ejecuta en el simulador y da los valores
+#    esperados, compilado normal y con -O1. El marco de main mide 36 bytes.
+# 3. enlace_dce.bal con -O1: el DCE borra una variable del principal (marco
+#    de 20 a 16 bytes) y el resultado no cambia.
+# 4. arreglo_llamada.bal: a[i] : f(x); en el backend normal.
+tests/test_enlace_simulador: tests/test_enlace_simulador.c $(SIM_SRC) include/sim_ejecucion.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_enlace_simulador.c $(SIM_SRC) -o $@
+
+test-enlace: balc tests/test_enlace_simulador
+	@set -e; for f in llamada constante anidado compartido doble_importacion arreglo_importado valido; do \
+	    ./balc -o tests/enlace_tmp.bin tests/modulos/principal_$$f.bal > /dev/null; \
+	    ./balc --ir tests/modulos/principal_$$f.bal > /dev/null; \
+	    ./balc -O1 -o tests/enlace_tmp_o1.bin tests/modulos/principal_$$f.bal > /dev/null; \
+	    ./balc -O2 -o tests/enlace_tmp_o2.bin tests/modulos/principal_$$f.bal > /dev/null; \
+	    echo "  ok   principal_$$f.bal: normal, --ir, -O1 y -O2"; \
+	done
+	./balc -o tests/enlace_principal.bin tests/modulos/enlace_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_principal.bin 36 109 107 100 10
+	./balc -O1 -o tests/enlace_principal_o1.bin tests/modulos/enlace_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_principal_o1.bin 36 109 107 100 10
+	./balc -o tests/enlace_dce.bin tests/modulos/enlace_dce.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_dce.bin 20 8 20
+	./balc -O1 -o tests/enlace_dce_o1.bin tests/modulos/enlace_dce.bal > /dev/null
+	./tests/test_enlace_simulador tests/enlace_dce_o1.bin 16 8 20
+	./balc -o tests/arreglo_llamada.bin tests/fixtures/arreglo_llamada.bal > /dev/null
+	./tests/test_enlace_simulador tests/arreglo_llamada.bin 40 9 17 25 36
+	rm -f tests/enlace_tmp* tests/enlace_principal* tests/enlace_dce* tests/arreglo_llamada.* \
+	      tests/modulos/principal_*.asm tests/modulos/principal_*.o2* tests/modulos/*.simbolos.md
+	@echo "OK: enlace entre archivos (bring), -O1 con modulos y a[i] : f(x)"
+
+# Constantes (plegado en src/Analisis_Semantico/semantic_modules.c):
+# globales y locales, con expresiones, booleanas, arreglos constantes y
+# constantes como tamano de arreglo; tambien importadas con bring.
+# 1. Compilan con el backend normal, --ir y -O2 (constantes_principal tambien
+#    con -O1; constantes.bal usa whether (DEBUG), que el reescritor de -O1 aun
+#    no sabe reescribir cuando la variable se usa despues).
+# 2. En el simulador dan los valores esperados. `resultados` no es la primera
+#    variable de main (antes va el arreglo constante), de ahi el +desplazamiento.
+test-constantes: balc tests/test_enlace_simulador
+	./balc -o tests/constantes.bin tests/fixtures/constantes.bal > /dev/null
+	./balc --ir tests/fixtures/constantes.bal > /dev/null
+	./balc -O2 -o tests/constantes_o2.bin tests/fixtures/constantes.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes.bin 92+28 20 -3 17 1 6 101 4 9
+	./balc -o tests/constantes_mod.bin tests/modulos/constantes_principal.bal > /dev/null
+	./balc --ir tests/modulos/constantes_principal.bal > /dev/null
+	./balc -O2 -o tests/constantes_mod_o2.bin tests/modulos/constantes_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_mod.bin 44+20 14 18 3
+	./balc -O1 -o tests/constantes_mod_o1.bin tests/modulos/constantes_principal.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_mod_o1.bin 44+20 14 18 3
+	./balc --ir tests/fixtures/constantes_ambito.bal > /dev/null
+	./balc -o tests/constantes_ambito.bin tests/fixtures/constantes_ambito.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_ambito.bin 28+4 105 8 6 50
+	./balc -O1 -o tests/constantes_ambito_o1.bin tests/fixtures/constantes_ambito.bal > /dev/null
+	./tests/test_enlace_simulador tests/constantes_ambito_o1.bin 28+4 105 8 6 50
+	./balc -O2 -o tests/constantes_ambito_o2.bin tests/fixtures/constantes_ambito.bal > /dev/null
+	rm -f tests/constantes*.bin tests/constantes*.mem tests/fixtures/constantes*.asm tests/fixtures/constantes*.o2* \
+	      tests/modulos/constantes_principal.asm tests/modulos/constantes_principal.o2*
+	@echo "OK: constantes globales, locales e importadas"
+
+tests/test_ide_ensamblador: tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) include/ide_ensamblador.h include/cli.h include/ide_analisis.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_ensamblador.c $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-ensamblador: tests/test_ide_ensamblador
+	./tests/test_ide_ensamblador
+
+# Boton "Loop unrolling" del IDE: semantico -> IR -> lu_desenrollar (modulo
+# de Meibel, loop_unrolling/) sobre el texto del editor, sin GTK. La IR
+# (ir.c) ya va en IDE_DCE_SRC; la prueba la agrega aparte.
+IDE_LU_SRC := $(IDE)/ide_unrolling.c loop_unrolling/loop_unrolling.c loop_unrolling/lu_reporte.c
+
+tests/test_ide_unrolling: tests/test_ide_unrolling.c $(IDE_LU_SRC) $(IR)/ir.c $(IDE_ANALISIS_SRC) include/ide_unrolling.h loop_unrolling/loop_unrolling.h loop_unrolling/lu_reporte.h include/ir.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_unrolling.c $(IDE_LU_SRC) $(IR)/ir.c $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-unrolling: tests/test_ide_unrolling
+	./tests/test_ide_unrolling
+
+# Boton "Reordenamiento" del IDE: semantico -> IR -> [unrolling] ->
+# ro_reordenar (modulo de Meibel, reordenamiento/) sobre el texto del
+# editor, sin GTK. Usa ro_texto_instr de ro_reporte.c para el texto de la IR.
+IDE_RO_SRC := $(IDE)/ide_reordenamiento.c reordenamiento/reordenamiento.c reordenamiento/ro_reporte.c $(IR)/ir_defuse.c
+
+tests/test_ide_reordenamiento: tests/test_ide_reordenamiento.c $(IDE_RO_SRC) loop_unrolling/loop_unrolling.c $(IR)/ir.c $(IDE_ANALISIS_SRC) include/ide_reordenamiento.h reordenamiento/reordenamiento.h reordenamiento/ro_reporte.h include/ir.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_reordenamiento.c $(IDE_RO_SRC) loop_unrolling/loop_unrolling.c $(IR)/ir.c $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-reordenamiento: tests/test_ide_reordenamiento
+	./tests/test_ide_reordenamiento
+
+# Metricas del codigo del editor (src/Metricas/): compila el texto con el
+# boton Ensamblador (IDE_ASM_SRC), lo ejecuta en el simulador VLIW de Javier
+# (SIM_SRC) hasta que main termina y devuelve sus metricas. La prueba
+# compara contra el .bin de balc y mide antes/despues del DCE (IDE_DCE_SRC).
+METRICAS := src/Metricas
+MET_SRC := $(METRICAS)/metricas.c
+
+tests/test_metricas: tests/test_metricas.c $(MET_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) $(SIM_SRC) include/metricas.h include/ide_ensamblador.h include/ide_dce.h include/sim_ejecucion.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_metricas.c $(MET_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC) $(SIM_SRC) -o $@
+
+test-metricas: tests/test_metricas balc
+	cp examples/factorial.bal tests/met_factorial.bal
+	./balc -o tests/met_factorial.bin tests/met_factorial.bal > /dev/null
+	./tests/test_metricas tests/met_factorial.bin
+	rm -f tests/met_factorial.*
+
+# Colores del codigo en el editor (como VS Code): solo necesita el lexer.
+IDE_COLORES_SRC := $(IDE)/ide_colores.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+
+tests/test_ide_colores: tests/test_ide_colores.c $(IDE_COLORES_SRC) include/ide_colores.h include/lexer.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_colores.c $(IDE_COLORES_SRC) -o $@
+
+test-ide-colores: tests/test_ide_colores
+	./tests/test_ide_colores
+
+tests/test_ide_analisis: tests/test_ide_analisis.c $(IDE_ANALISIS_SRC) include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_analisis.c $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-analisis: tests/test_ide_analisis
+	./tests/test_ide_analisis
+
+# Correccion automatica: propone arreglos, los aplica y revisa que el
+# codigo corregido ya no tenga errores (por eso usa todo el analisis).
+tests/test_ide_arreglos: tests/test_ide_arreglos.c $(IDE_ANALISIS_SRC) include/ide_analisis.h include/ide_arreglos.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_arreglos.c $(IDE_ANALISIS_SRC) -o $@
+
+test-ide-arreglos: tests/test_ide_arreglos
+	./tests/test_ide_arreglos
+
+# Deteccion de clones Tipo I y II. Compara los arboles de derivacion LL(1)
+# (el camino de la gramatica), asi que necesita el lexer y src/LL1/.
+CLONES_SRC := $(CLONES)/clones.c $(LL1_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+
+tests/test_clones: tests/test_clones.c $(CLONES_SRC) include/clones.h include/ll1.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_clones.c $(CLONES_SRC) -o $@
+
+test-clones: tests/test_clones balc
+	./tests/test_clones
+	./balc --clones examples/llamadas.bal examples/ejercicio3_puntajes.bal | grep -q 'Clon 1: tipo I'
+	./balc --clones --json examples/llamadas.bal examples/matematicas.bal > tests/clones_salida.json
+	grep -q '"tipo": 2, "que": "funcion"' tests/clones_salida.json
+	grep -q '"archivo": "examples/matematicas.bal", "linea": 2, "columna": 1, "linea_fin": 4' tests/clones_salida.json
+	rm -f tests/clones_salida.json
+	./balc --clones examples/factorial.bal | grep -q '^0 clones en 1 archivo$$'
+	! ./balc --clones 2>/dev/null
+	@echo 'OK: deteccion de clones (unitarias y con balc)'
+
+# El IDE con ventana (GTK 3). Se compila con "make ide" y se abre con:
+#   ./balc-ide examples/factorial.bal
+# Requiere: sudo apt install libgtk-3-dev pkg-config
+GTK_CFLAGS = $(shell pkg-config --cflags gtk+-3.0)
+GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
+
+ide: balc-ide
+
+# Las listas de fuentes repiten archivos (por ejemplo ir_defuse.c está en
+# IDE_RO_SRC y en IDE_DCE_SRC, y el botón -O0 / -O2 usa casi todo balc):
+# $(sort ...) las ordena y deja cada archivo UNA vez; si no, el enlazador da
+# "multiple definition". IDE_OPT_SRC se define al final de este Makefile.
+balc-ide: $(IDE)/ide_gtk.c $(IDE)/ide_historial.c include/ide_historial.h $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c include/ide_reordenamiento.h include/ide_reordenamiento_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(sort $(IDE)/ide_gtk.c $(IDE)/ide_historial.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) $(IDE_OPT_SRC)) -o $@ $(GTK_LIBS) -lm
+
+# Eliminacion de codigo muerto (DCE) con analisis de variables vivas, sobre
+# la IR. La prueba arma la IR desde programas BAL (examples/dce/) con el parser,
+# y despues revisa la salida de balc --dce.
+DCE_SRC := $(DCE)/dce.c $(IR)/ir.c $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+
+tests/test_dce: tests/test_dce.c $(DCE_SRC) include/dce.h include/ir.h include/ast.h include/sintactico.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_dce.c $(DCE_SRC) -o $@
+
+test-dce: tests/test_dce balc
+	./tests/test_dce
+	./balc --dce examples/dce/dce_llamadas.bal | grep -q 'Codigo muerto eliminado: 6 de'
+	./balc --dce examples/dce/dce_ciclo.bal | grep -q 'en 3 pasadas'
+	./balc --dce examples/dce/dce_division.bal | grep -q 'pueden fallar (division o potencia): 1'
+	! ./balc --dce -s examples/dce/dce_llamadas.bal 2>/dev/null
+	@echo 'OK: eliminacion de codigo muerto (unitarias y con balc --dce)'
+
+# Proyecto II: IR independiente del parser generado, prueba con AST construido en C.
+.PHONY: test-ir
+tests/test_ir: tests/test_ir.c $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ir.c $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
+test-ir: tests/test_ir
+	./tests/test_ir
+-include Makefile.spilling.mk
+-include Makefile.spilling.backend.mk
+-include Makefile.spilling.cli.mk
+
+# Analisis predictivo LL(1) (LL1_SRC se define arriba, junto a las carpetas).
+# Programas con los que se compara el LL(1) contra Bison.
+LL1_PROGRAMAS := $(wildcard examples/*.bal examples/dce/*.bal tests/*.bal tests/modulos/*.bal tests/fixtures/*.bal)
+
+# La prueba compara el LL(1) con Bison, asi que tambien compila el parser.
+tests/test_ll1: tests/test_ll1.c $(LL1_SRC) include/ll1.h $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c include/sintactico.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ll1.c $(LL1_SRC) $(PARSER_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
+
+test-ll1: tests/test_ll1
+	@echo './tests/test_ll1 <$(words $(LL1_PROGRAMAS)) programas .bal>'
+	@./tests/test_ll1 $(LL1_PROGRAMAS)
+
+# Herramienta para la defensa:
+#   ./balc-ll1 --tabla               PRIMERO, SIGUIENTE y tabla M en Markdown
+#   ./balc-ll1 --traza archivo.bal   pila, entrada y accion paso a paso
+balc-ll1: $(LL1)/ll1_herramienta.c $(LL1_SRC) include/ll1.h $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LL1)/ll1_herramienta.c $(LL1_SRC) $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c -o $@
+
+# Regenera docs/ll1_tabla.md a partir de la gramatica.
+tabla-ll1: balc-ll1
+	./balc-ll1 --tabla > docs/ll1_tabla.md
+
+# Proyecto II: loop unrolling. Pruebas unitarias sobre IR (con interprete que
+# compara resultados antes/despues) y pruebas de extremo a extremo con balc.
+.PHONY: test-loop-unrolling
+loop_unrolling/pruebas/test_loop_unrolling: loop_unrolling/pruebas/test_loop_unrolling.c loop_unrolling/loop_unrolling.c \
+      loop_unrolling/loop_unrolling.h $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) loop_unrolling/pruebas/test_loop_unrolling.c loop_unrolling/loop_unrolling.c \
+	      $(IR)/ir.c $(SINTACTICO)/ast.c -o $@
+test-loop-unrolling: loop_unrolling/pruebas/test_loop_unrolling balc
+	./loop_unrolling/pruebas/test_loop_unrolling
+	sh loop_unrolling/pruebas/test_bal.sh
+
+# Proyecto II: reordenamiento seguro. Pruebas unitarias (interprete que
+# compara resultados y pruebas aleatorias) y de extremo a extremo con balc.
+.PHONY: test-reordenamiento
+reordenamiento/pruebas/test_reordenamiento: reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+      reordenamiento/reordenamiento.h $(IR)/ir.c $(SINTACTICO)/ast.c include/ir.h include/ast.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) reordenamiento/pruebas/test_reordenamiento.c reordenamiento/reordenamiento.c \
+	      $(IR)/ir.c $(SINTACTICO)/ast.c $(IR_DEFUSE_SRC) -o $@
+test-reordenamiento: reordenamiento/pruebas/test_reordenamiento balc
+	./reordenamiento/pruebas/test_reordenamiento
+	sh reordenamiento/pruebas/test_bal.sh
+
+# Productor físico IR/spilling en subconjunto validado, aislado del backend BAL.
+-include Makefile.ir_vliw.mk
+# Issue #7: API comun de usos, definiciones y efectos sobre IR.
+-include Makefile.ir_defuse.mk
+# Issue #23: banco fisico de registros de IR/spilling.
+-include Makefile.ir_fisico.mk
+# Issue #3: latencias de registros, memoria y efectos de llamadas/globales.
+-include Makefile.ir_latencias.mk
+
+# Reservas de spilling basadas en offsets reales de simbolos por funcion.
+-include Makefile.spilling.memoria.mk
+
+# Niveles oficiales acotados: reutilizar el DCE/reescritor IDE sin GTK.
+# Se agregan solo fuentes que balc aún no enlaza; no se duplican algoritmos.
+VLIW_OPT_SRC := tools/vliw/optimizacion_cli.c $(filter-out $(SRC),$(IDE_DCE_SRC) $(IDE_ASM_SRC) $(IDE_ANALISIS_SRC))
+SRC += $(VLIW_OPT_SRC)
+balc: $(VLIW_OPT_SRC) tools/vliw/optimizacion_cli.h include/ide_dce.h
+
+# Productor de programas IR, opt-in O2; conserva el productor de fragmentos.
+SRC += src/ir_vliw_programa.c
+balc: src/ir_vliw_programa.c include/ir_vliw_programa.h
+
+# Versionado virtual local: paso separado del spilling y del banco físico.
+SRC += src/ir_renombramiento.c
+balc: src/ir_renombramiento.c include/ir_renombramiento.h
+
+# Botón -O0 / -O2 del IDE (src/IDE/ide_optimizacion.c): compila con -O2 igual
+# que balc (ir_vliw_programa), así que necesita las mismas fuentes que balc,
+# sin su main ni la línea de comandos. Va AL FINAL porque SRC se completa con
+# los "+=" de arriba y de los Makefile.*.mk incluidos. Es "=" (no ":="): se
+# expande cuando se usa, con SRC ya completa.
+IDE_OPT_SRC = $(IDE)/ide_optimizacion.c $(IDE)/ide_optimizacion_ventana.c \
+	$(filter-out $(CLI)/main.c $(CLI)/cli.c tools/vliw/optimizacion_cli.c,$(SRC))
+balc-ide: $(IDE_OPT_SRC) include/ide_optimizacion.h include/ide_optimizacion_ventana.h
+
+# La prueba, sin ventanas: compara -O0 y -O2 en el simulador.
+IDE_OPT_PRUEBA_SRC = $(sort $(IDE)/ide_optimizacion.c $(MET_SRC) $(SIM_SRC) \
+	$(filter-out $(CLI)/main.c $(CLI)/cli.c tools/vliw/optimizacion_cli.c,$(SRC)))
+tests/test_ide_optimizacion: tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h include/metricas.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+.PHONY: test-ide-optimizacion
+test-ide-optimizacion: tests/test_ide_optimizacion
+	./tests/test_ide_optimizacion
+
+# Pruebas obligatorias del enunciado (tests/Pruebas_obligatorias/): 15
+# programas, 3 por optimización. Compara -O0 y -O2 en el simulador con los
+# resultados esperados y revisa que cada optimización actúe.
+tests/test_pruebas_obligatorias: tests/test_pruebas_obligatorias.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pruebas_obligatorias.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
+.PHONY: test-pruebas-obligatorias
+test-pruebas-obligatorias: tests/test_pruebas_obligatorias
+	./tests/test_pruebas_obligatorias

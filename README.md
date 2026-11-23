@@ -13,8 +13,8 @@ Windows aparecen bajo `/mnt/c/`. Sustituye la ruta del ejemplo por la tuya:
 sudo apt update
 sudo apt install build-essential flex bison uthash-dev
 cd "/mnt/c/ruta/al/repositorio"
-flex -o src/lexer_flex.c src/lexer.l
-bison -Wall -Werror -d -o Analisis_Sintactico/parser.c Analisis_Sintactico/gramatica.y
+flex -o src/Analisis_Lexico/lexer_flex.c src/Analisis_Lexico/lexer.l
+bison -Wall -Werror -d -o src/Analisis_Sintactico/parser.c src/Analisis_Sintactico/gramatica.y
 make
 ./balc -v examples/factorial.bal
 ```
@@ -22,9 +22,9 @@ make
 Para ejecutar las pruebas del lexer sin `make`:
 
 ```bash
-flex -o src/lexer_flex.c src/lexer.l
-gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude -Isrc \
-  tests/test_lexer.c src/lexer.c src/lexer_flex.c src/token.c -o tests/test_lexer
+flex -o src/Analisis_Lexico/lexer_flex.c src/Analisis_Lexico/lexer.l
+gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -Iinclude -Isrc/Analisis_Lexico \
+  tests/test_lexer.c src/Analisis_Lexico/lexer.c src/Analisis_Lexico/lexer_flex.c src/Analisis_Lexico/token.c -o tests/test_lexer
 ./tests/test_lexer
 ```
 
@@ -40,7 +40,7 @@ make
 make test
 ```
 
-`make` genera `src/lexer_flex.c` desde `src/lexer.l` y conserva la interfaz pública
+`make` genera `src/Analisis_Lexico/lexer_flex.c` desde `src/Analisis_Lexico/lexer.l` y conserva la interfaz pública
 `lexer_init`/`lexer_next`. Por eso el parser y el AST no necesitan cambios para usar
 el nuevo lexer.
 
@@ -55,6 +55,32 @@ gcc -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 tests/test_parser.c -o tests/t
 ## Resultado esperado
 
 Las pruebas terminan con `OK: 18 casos del lexer, incluido factorial.bal`.
+
+## Estructura del código
+
+El código de `src/` está dividido en una carpeta por fase del compilador, en el
+mismo orden en que un programa `.bal` las atraviesa:
+
+| Orden | Carpeta | Qué hace | Archivos principales |
+|---|---|---|---|
+| 1 | `src/Analisis_Lexico/` | Convierte el texto en tokens (Flex). | `lexer.l`, `lexer.c`, `token.c` |
+| 2 | `src/Analisis_Sintactico/` | Revisa la gramática y construye el AST (Bison). | `gramatica.y`, `puente_lexer.c`, `ast.c` |
+| 3 | `src/Analisis_Semantico/` | Tabla de símbolos, tipos, módulos (`bring`) y memoria. | `semantic.c`, `symbol_table.c`, `semantic_modules.c`, `memory.c` |
+| 4 | `src/Representacion_Intermedia/` | Código de tres direcciones y bloques básicos. | `ir.c` |
+| 4b | `src/DCE/` | Eliminación de código muerto con análisis de variables vivas, sobre la IR (`balc --dce`). Ver [docs/dce.md](docs/dce.md). | `dce.c` |
+| 5 | `src/Generacion_Codigo/` | Traduce el AST a ensamblador VLIW (expresiones, control, funciones). | `generacion_*.c`, `funciones_*.c` |
+| 6 | `src/Resolucion_y_Enlace/` | Resuelve variables, etiquetas y saltos, y enlaza las funciones. | `resolucion_*.c`, `enlace_funciones.c` |
+| 7 | `src/Codificacion_Binaria/` | Convierte cada bundle en palabras binarias y escribe `.bin`/`.mem`. | `codificacion_binaria.c`, `formato_binario.c` |
+| — | `src/Linea_Comandos/` | Programa `balc`: opciones de la terminal y diagnósticos en JSON. | `main.c`, `cli.c`, `diagnosticos.c` |
+| — | `src/Deteccion_Clones/` | Clones Tipo I y II entre archivos, comparando el camino en la gramática LL(1) (lo usan `balc --clones` y el IDE). | `clones.c` |
+| — | `src/IDE/` | Editor GTK: sugerencias, autocierre, errores y correcciones. | `ide_*.c` |
+| — | `src/LL1/` | Gramática LL(1), PRIMERO/SIGUIENTE, tabla M y analizador predictivo; el IDE la consulta para sugerir y corregir. Ver [docs/ll1.md](docs/ll1.md). | `ll1_*.c` |
+
+Las interfaces públicas (`.h`) están todas en `include/`. Solo tres
+encabezados viven junto a su código porque son internos o generados:
+`lexer_flex.h`, `parser.h` y `generacion_interna.h`. Las pruebas están en
+`tests/` y los programas de ejemplo en `examples/`. Los tres programas de la
+eliminación de código muerto están aparte, en `examples/dce/` (ver [docs/dce.md](docs/dce.md)).
 
 ## Uso del compilador
 
@@ -101,6 +127,148 @@ posiciones del fuente; sin `-t` solo analiza tokens y `-v` los lista. La
 estructura del árbol y las acciones de Bison se explican en `docs/ast.md`. La integración y sus
 límites se explican en `docs/parser.md`; el diseño léxico está en `docs/lexer.md`.
 
+## IDE
+
+El IDE es una ventana de escritorio hecha con GTK 3. Revisa el código mientras
+se escribe, usando el mismo léxico, parser y semántico de `balc`.
+
+### Instalar GTK
+
+Solo hace falta la primera vez:
+
+```bash
+sudo apt update
+sudo apt install libgtk-3-dev pkg-config
+```
+
+En WSL la ventana se abre sola si se tiene WSLg (Windows 11 o Windows 10
+actualizado). Se puede comprobar con `echo $DISPLAY`: si muestra algo como `:0`,
+funciona.
+
+### Compilar y abrir
+
+```bash
+make ide
+./balc-ide examples/factorial.bal   # abre un archivo
+./balc-ide                          # abre un archivo nuevo, sin nombre
+```
+
+Para probar la eliminación de código muerto, abre uno de sus ejemplos y pulsa
+el botón **Código muerto**:
+
+```bash
+./balc-ide examples/dce/dce_llamadas.bal   # llamadas con efectos que se conservan
+./balc-ide examples/dce/dce_ciclo.bal      # código muerto en un ciclo (2 pasadas)
+./balc-ide examples/dce/dce_division.bal   # divisiones que pueden fallar
+./balc-ide examples/dce/dce_ensamblador.bal  # "Aplicar al código" y el ensamblador baja de 528 a 435 bundles
+```
+
+Los archivos están en la carpeta `examples/dce/`. También se pueden abrir desde
+el IDE con el botón **Abrir** (Ctrl+O):
+
+| Archivo | Qué muestra | Abrir en el IDE | Ver en la terminal |
+|---|---|---|---|
+| [`examples/dce/dce_llamadas.bal`](examples/dce/dce_llamadas.bal) | Asignaciones muertas mezcladas con llamadas que escriben en un arreglo: las llamadas se conservan. | `./balc-ide examples/dce/dce_llamadas.bal` | `./balc --dce examples/dce/dce_llamadas.bal` |
+| [`examples/dce/dce_ciclo.bal`](examples/dce/dce_ciclo.bal) | Código muerto dentro de un ciclo; una variable queda muerta recién en la segunda pasada. | `./balc-ide examples/dce/dce_ciclo.bal` | `./balc --dce examples/dce/dce_ciclo.bal` |
+| [`examples/dce/dce_division.bal`](examples/dce/dce_division.bal) | Una división entre una variable se conserva porque puede fallar; una entre un número fijo se elimina. | `./balc-ide examples/dce/dce_division.bal` | `./balc --dce examples/dce/dce_division.bal` |
+| [`examples/dce/dce_ensamblador.bal`](examples/dce/dce_ensamblador.bal) | Solo parámetros `int`, así que el backend genera su ensamblador: con **Aplicar al código** el ensamblador y el binario salen sin el código muerto (528 → 435 bundles) y el simulador da el mismo resultado. | `./balc-ide examples/dce/dce_ensamblador.bal` | `./balc --dce examples/dce/dce_ensamblador.bal` |
+
+`make ide` genera el ejecutable `balc-ide`. No se sube al repositorio, porque se
+vuelve a generar al compilar.
+
+### Qué hace
+
+| Función | Cómo se usa |
+|---|---|
+| Loop unrolling | El botón **Loop unrolling** desenrolla los ciclos del código del editor con el módulo de Meibel (`loop_unrolling/`), lo mismo que `balc --unroll`. La ventana muestra la decisión para cada ciclo (total, parcial o sin cambios y por qué), las métricas antes y después, y la IR antes y después lado a lado con lo nuevo en verde. El factor k se puede cambiar ahí mismo. |
+| Reordenamiento | El botón **Reordenamiento** reordena las instrucciones dentro de cada bloque básico con el módulo de Meibel (`reordenamiento/`), lo mismo que `balc --reorder`. Separa cada escritura de la lectura que la usa sin romper dependencias RAW, WAR, WAW, de memoria, de efectos o de control. La ventana muestra los ciclos estimados antes y después, una tabla por bloque, la IR antes y después lado a lado (lo movido en verde con `*`) y el grafo de dependencias de cada bloque que cambió, con la ruta crítica en negrita. Se puede cambiar la latencia y desenrollar los ciclos primero (como `balc --unroll --reorder`). Prueba: `make test-ide-reordenamiento`. |
+| -O0 / -O1 / -O2 | El botón **-O0/-O1/-O2** compila el código del editor con los tres niveles de optimización de `balc` y ejecuta los tres binarios en el simulador hasta que `main` termina (`src/IDE/ide_optimizacion.c`). **-O0** es el backend tradicional. **-O1** aplica el DCE y compila el código BAL sin el código muerto con el mismo backend, igual que `balc -O1`. **-O2** pasa la IR por loop unrolling, renombramiento, DCE, reordenamiento y spilling, y la cadena física VLIW la calendariza, igual que `balc -O2`. Arriba dice si `-O1` y `-O2` dejan el mismo resultado de `main` que `-O0` (el valor final de sus variables, leído en la memoria del simulador). Las variables que `-O1` borró por ser código muerto no cuentan como diferencia. Pestañas: gráfica comparativa (ciclos, instrucciones ejecutadas, IPC, instrucciones en el código, tamaño y tiempo de compilación), gráficas de las instrucciones de la IR antes y después de cada optimización y de cuántas eliminó, reordenó y renombró cada una, qué hizo cada nivel y cada pasada, el resultado de `main`, los tres ensambladores, el código BAL que compila `-O1` y la IR de `-O2`. Prueba: `make test-ide-optimizacion`. |
+| Métricas | El botón **Métricas** compila el código del editor y lo ejecuta en el simulador VLIW (`src/Simulador_VLIW/`) hasta que `main` termina (`src/Metricas/`). Arriba muestra los ciclos, el IPC, las instrucciones ejecutadas, el tamaño del programa y el **tiempo de compilación**. La pestaña **Compilación** muestra cuánto tarda cada fase del compilador (léxico, sintáctico y semántico; memoria, generación y enlace; codificación y `.bin`), como la mediana de 5 compilaciones. Tiene gráficas de cuánto se usó cada slot (ALU, LSU, BRU, CRIPTO) y de cuántos bundles traían trabajo y cuántos eran solo NOP. Si el código tiene código muerto, compara las métricas con y sin él. La pestaña Tabla tiene todos los números, y al pasar el mouse sobre una barra se ve su valor exacto. Si el programa no termina en 5 millones de ciclos, lo avisa (¿un ciclo infinito?). Prueba: `make test-metricas`. |
+| Colores | El código se colorea como en VS Code (tema oscuro Dark+): control (`whether`, `whale`, `give`…) en morado, palabras del lenguaje y operadores (`create_funk`, `gauss`…) en azul, tipos en verde agua, funciones en amarillo, variables en celeste, números en verde claro, textos en naranja, comentarios en verde y `( ) [ ] { }` con un color por nivel. Usa el mismo lexer del compilador. |
+| Errores en vivo | Medio segundo después de dejar de escribir, los errores se subrayan en rojo. Al pasar el mouse encima se ve la explicación. |
+| Lista de errores | Está abajo de la ventana. Al hacer clic en un error, el cursor salta a su línea. |
+| Sugerencias | Al escribir aparecen las palabras clave y variables que empiezan igual. Se eligen con ↑/↓ y se aceptan con Enter o Tab. Esc las cierra. |
+| Autocierre | Al escribir `(`, `[`, `{`, `"` o `$` se agrega su cierre. Enter entre `{}` baja la llave y agrega sangría. |
+| Delimitadores | Si sobra o falta un paréntesis, corchete o llave, se indica cuál y dónde se abrió. |
+| Mensajes en español | Los errores del parser se traducen, por ejemplo `no se esperaba el nombre 'numero' en este lugar`. |
+| Corrección automática | Si el IDE sabe arreglar un error (un `;` que falta, un `)` o `}` sin cerrar, un cierre que sobra), la lista muestra el arreglo y un botón **Corregir**. Ctrl+. corrige el error de la línea del cursor y Ctrl+Z lo deshace. |
+| Código muerto | El botón **Código muerto** elimina los dos tipos de código muerto: asignaciones que nadie lee (análisis de variables vivas) y código inalcanzable (después de un `give`, o en una rama cuya condición siempre es falsa, con propagación de constantes). **Aplicar al código** cambia el código por el código sin el código muerto, así que el ensamblador y el binario salen de él. Las líneas eliminadas completas se tachan y las que solo perdieron una parte (por ejemplo, la llamada se conserva) quedan en gris. La pestaña **Código muerto** las lista, y **Ver IR y variables vivas** muestra la IR antes y después y la tabla `use`/`def`/`IN`/`OUT`. Ver [docs/dce.md](docs/dce.md). |
+| Ensamblador | El botón **Ensamblador** genera el ensamblador VLIW del código del editor (aunque no esté guardado), el mismo que `balc -s`. La pestaña **Ensamblador (.asm)** muestra cada bundle con sus 4 slots (`ALU \| LSU \| BRU \| CRIPTO`) y **Binario** muestra cada bundle con su PC y su codificación, como `balc -p`. Arriba dice cuánto tardó la compilación y cada una de sus fases. |
+| Clones | El botón **Buscar clones** compara el archivo abierto (aunque no esté guardado) con los demás `.bal` de su carpeta. Los clones se pintan de amarillo y la pestaña **Clones** dice dónde está cada copia; un clic lleva al fragmento. |
+
+| Atajo | Acción |
+|---|---|
+| Ctrl+N | Archivo nuevo |
+| Ctrl+O | Abrir archivo |
+| Ctrl+S | Guardar |
+| Ctrl+Espacio | Mostrar sugerencias |
+| Ctrl+. | Corregir el error de la línea del cursor |
+
+Si hay cambios sin guardar, el IDE pregunta antes de cerrar o de abrir otro archivo.
+
+Para revisar el código sin guardarlo, el IDE crea un archivo oculto
+`.ide_<nombre>.bal` en la misma carpeta y lo borra enseguida. Va en la misma
+carpeta para que los `bring` encuentren sus módulos.
+
+### Código muerto desde la terminal
+
+`balc --dce` muestra la IR, las variables vivas de cada bloque, lo que se
+eliminó y la IR después del DCE:
+
+```bash
+./balc --dce examples/dce/dce_llamadas.bal
+./balc --dce examples/dce/dce_ciclo.bal
+./balc --dce examples/dce/dce_division.bal
+make test-dce test-ide-dce                  # pruebas
+```
+
+### Clones desde la terminal
+
+`balc` también busca clones tipo I (código idéntico) y tipo II (mismo camino en
+la gramática con otros nombres o valores) entre varios archivos:
+
+```bash
+./balc --clones examples/*.bal              # listado para leer
+./balc --clones --json a.bal b.bal          # JSON
+./balc --clones --minimo 6 examples/*.bal   # clones más pequeños (por defecto 10 tokens)
+```
+
+Para decidir si dos fragmentos son clones se sigue el **camino de la gramática**:
+cada archivo se analiza con el analizador LL(1) (`src/LL1/`), y dos fragmentos
+son clones si el analizador aplicó las mismas producciones en el mismo orden.
+
+| Fragmentos | ¿Clon? | Por qué |
+|---|---|---|
+| Iguales salvo espacios, saltos de línea y comentarios | Tipo I | El lexer los descarta: la derivación es la misma. |
+| `factorial` copiada con otras variables y valores | Tipo II | Mismas producciones; solo cambian los `id` y `num`. |
+| `x : (a gauss 1);` y `x : a gauss 1;` | No | Los paréntesis usan `primario → ( expresion )`: otro camino. |
+| El mismo cuerpo en un `whale` y en un `whether` | No (solo el bloque de adentro) | `sentencia → ciclo` frente a `sentencia → condicional`. |
+
+Un archivo con errores de sintaxis no se revisa y se avisa cuál es.
+
+### Diagnósticos en JSON
+
+El IDE también puede usar los errores de `balc` en formato JSON:
+
+```bash
+./balc --diagnosticos tests/pipeline_error.bal
+```
+
+Termina con `0` si no hay errores, `1` si el fuente tiene errores y `2` si falló algo interno.
+
+### Pruebas
+
+```bash
+make test-diagnosticos
+make test-ide-nucleo
+make test-ide-analisis
+make test-ide-mensajes
+make test-ide-arreglos
+make test-clones
+```
+
+Estas pruebas no necesitan GTK y también se ejecutan con `make test`.
+
 ## Lenguaje ampliado
 
 El ejecutable se llama `balc`. Las reglas actuales,
@@ -132,6 +300,57 @@ El alcance, la conexión con símbolos y las limitaciones están en
 [docs/generacion_basica.md](docs/generacion_basica.md).
 `make test` incluye las pruebas nuevas. `-s` sigue reservado hasta integrar el backend.
 
+## Integración incremental IR + spilling + VLIW
+
+`make test-ir-vliw` compila y prueba el puente C `ir_vliw_desde_ir()` de
+`include/ir_vliw.h`. Usa el IR real, la pasada de spilling, offsets de pila,
+CB/S2, CFG/DAG y la cadena VLIW completa (S7/S8-A) en un subconjunto seguro de
+**una función sin llamadas ni variables del lenguaje**. Incluye bifurcaciones,
+etiquetas y backedges. Cada operación no soportada se rechaza sin producir
+binario parcial. Ver `docs/ir_vliw_integracion.md`.
+
+**No reemplaza** el flujo productivo `balc` ni acredita todavía un ejecutable
+BAL completo; `--ir` y `--ir-spilling` continúan siendo modos de inspección.
+
 ## Documentación del proyecto
 La documentación general de todo el proyecto se puede encontrar acá
 [Documentación](https://github.com/Izaguirre1g/Proyecto-Parte-1-Compiladores-e-Interpretes-Definici-n-de-Sintaxis-de-Lenguaje/blob/371cc01ac19cb05b255697d965b58717666bdbf7/docs/latex/Documentacion.pdf)
+
+## Vista previa del productor IR / spilling / VLIW
+
+Para inspeccionar los bundles generados por la nueva cadena física, sin
+cambiar el backend tradicional de `balc`, se puede ejecutar:
+
+```sh
+make
+./balc --vliw-ir=3 -s -p examples/vliw_ir_preview.bal
+make test-ir-vliw
+make test-ir-vliw-cli
+```
+
+La opción `--vliw-ir[=N]` acepta entre 3 y 8 registros temporales; `-v` muestra
+la IR reescrita, `-s` produce `.vliw.asm` y `.vliw.mem`, y `-p` lista los
+bundles y su codificación. Son **fragmentos para inspección**: no incluyen
+arranque/retorno/finalización ni son `.bin` ejecutables. Variables escalares
+BAL, funciones y otros casos todavía no implementados se rechazan sin salida.
+`balc` sin `--vliw-ir` sigue usando el backend del Proyecto I. Ver
+[docs/ir_vliw_integracion.md](docs/ir_vliw_integracion.md) para contratos,
+limitaciones y próximos pasos.
+
+## Contrato de memoria para register spilling (Proyecto II)
+
+Los home slots de parámetros y los offsets de variables locales se verifican
+contra las ubicaciones reales de `memory.c` antes de reservar los spills:
+`ir_spilling_backend_desde_tabla` (`include/ir_spilling_memoria.h`).
+Se usan marcos **por función**, no `mapa.marco_maximo_bytes` como si fuera
+el marco de cada función. El compilador no cambia el backend BAL por defecto;
+el productor VLIW todavía rechaza variables y llamadas fuera de su subset.
+
+```sh
+make test-spilling-memoria
+make test-spilling
+make test-ir-vliw
+```
+
+Contrato, offsets, advertencias de ABI y responsabilidades:
+[docs/contrato_memoria_spilling.md](docs/contrato_memoria_spilling.md).

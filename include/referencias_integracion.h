@@ -14,4 +14,7 @@ int ri_generar_funcion(const AstNodo *funcion, const SimTabla *simbolos,
                        size_t bytes_marco, const RrTabla *destinos,
                        FILE *salida, FILE *diagnosticos);
 
+/* Variante optativa para el ABI de referencias int 1D; mismos recursos. */
+int ri_generar_funcion_referencias(const AstNodo *funcion,const SimTabla *tabla,
+    size_t marco,const RrTabla *destinos,FILE *salida,FILE *diagnosticos);
 #endif

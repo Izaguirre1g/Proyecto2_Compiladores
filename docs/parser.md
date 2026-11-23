@@ -8,10 +8,10 @@ traduce explícitamente su enumeración (`TOKEN_MAIN`, etc.) a la de Bison
 
 ## Archivos que se editan
 
-- `Analisis_Sintactico/gramatica.y`: reglas y configuración de Bison.
-- `Analisis_Sintactico/puente_lexer.c`: adaptador, errores y función pública.
+- `src/Analisis_Sintactico/gramatica.y`: reglas y configuración de Bison.
+- `src/Analisis_Sintactico/puente_lexer.c`: adaptador, errores y función pública.
 - `include/sintactico.h`: contexto y contratos de `analizar_sintaxis` y `construir_ast`.
-- `include/ast.h` y `Analisis_Sintactico/ast.c`: nodos, creación, impresión y liberación del AST.
+- `include/ast.h` y `src/Analisis_Sintactico/ast.c`: nodos, creación, impresión y liberación del AST.
 
 `parser.c` y `parser.h` son generados: no se editan manualmente. `make` los
 regenera cuando cambia la gramática. Al agregar un token hay que declararlo
@@ -67,7 +67,7 @@ con `make test-ast`. Ninguna de estas pruebas ejecuta el programa fuente.
 
 ## Gramática formal
 
-Resumen en BNF de las reglas de `Analisis_Sintactico/gramatica.y`; ese archivo
+Resumen en BNF de las reglas de `src/Analisis_Sintactico/gramatica.y`; ese archivo
 es la fuente de verdad. Los no terminales van en minúscula y los terminales
 entre comillas (lexemas) o en mayúscula (`IDENTIFIER`, `INTEGER`, `STRING`,
 `CHARACTER`). `ε` es la producción vacía. El símbolo inicial es `programa`.

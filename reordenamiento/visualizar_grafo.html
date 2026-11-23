@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grafo de reordenamiento</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:15px system-ui,sans-serif;background:#f4f6f8;color:#182230}
+main{padding:22px;max-width:1600px;margin:auto}
+h1{font-size:25px;margin:0 0 8px}h2{font-size:17px;margin:22px 0 8px}
+p{line-height:1.5;margin:8px 0 16px}
+code{background:#e9eef3;padding:2px 4px;border-radius:3px}
+.barra{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#fff;border:1px solid #d0d5dd;padding:14px;border-radius:9px}
+button,select{padding:7px 12px;border:1px solid #98a2b3;border-radius:5px;background:#fff;font:inherit;cursor:pointer}
+button:disabled,select:disabled{opacity:.4;cursor:default}
+#estado{min-height:23px}.error{color:#b42318}
+.tarjetas{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0}
+.tarjeta{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:10px 12px}
+.tarjeta b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.tarjeta span{font-size:12px;color:#667085}
+.bien{color:#067647}
+.filtros{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:10px 0;font-size:14px}
+.filtros label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.muestra{display:inline-block;width:26px;height:0;border-top:3px solid}
+.cuerpo{display:grid;grid-template-columns:1fr 320px;gap:12px}
+@media (max-width:900px){.cuerpo{grid-template-columns:1fr}}
+#vista{height:68vh;min-height:380px;background:#fff;border:1px solid #d0d5dd;border-radius:9px;overflow:hidden;touch-action:none}
+#grafo{display:block;width:100%;height:100%;cursor:grab}
+#grafo.arrastrando{cursor:grabbing}
+#detalle{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:14px;font-size:14px;overflow:auto;max-height:68vh}
+#detalle h3{margin:0 0 8px;font-size:15px}
+#detalle ul{margin:4px 0 10px;padding-left:18px}#detalle li{margin:3px 0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.nodo rect{fill:#fff;stroke:#344054;stroke-width:1.5}
+.nodo.movido rect{fill:#fffaeb}
+.nodo.critico rect{stroke:#d92d20;stroke-width:3}
+.nodo.marca rect{fill:#f2f4f7;stroke-dasharray:4 3}
+.nodo{cursor:pointer}
+.nodo .t1{font:600 12.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#101828}
+.nodo .t2{font:11px system-ui,sans-serif;fill:#667085}
+.nodo.sel rect{stroke:#175cd3;stroke-width:3.5}
+.arista{fill:none;stroke-width:1.7}
+.arista.critica{stroke:#d92d20!important;stroke-width:3.4}
+.etq{font:10.5px system-ui,sans-serif;paint-order:stroke;stroke:#fff;stroke-width:4px}
+.tenue{opacity:.12}
+.linea{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:12px;overflow-x:auto}
+.fila{display:flex;align-items:center;gap:2px;margin:4px 0}
+.fila .nom{width:76px;flex:none;font-size:13px;font-weight:600}
+.celda{flex:none;width:46px;height:34px;border-radius:4px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;background:#eef4ff;border:1px solid #b2ccff;cursor:pointer}
+.celda.critico{background:#fef3f2;border-color:#fda29b}
+.celda.nop{background:repeating-linear-gradient(45deg,#f2f4f7,#f2f4f7 4px,#e4e7ec 4px,#e4e7ec 8px);border-color:#e4e7ec;color:#98a2b3;cursor:default}
+.celda.sel{outline:3px solid #175cd3}
+.reglas{font-size:12px;color:#667085;margin-left:78px;display:flex;gap:2px}
+.reglas span{flex:none;width:46px;text-align:center}
+</style>
+</head>
+<body><main>
+<h1>Grafo de dependencias del reordenamiento</h1>
+<p>Genera el JSON con <code>./balc --reorder-json reordenamiento/pruebas/01_war.bal &gt; 01_war.grafo.json</code>
+(o <code>./balc --unroll --reorder-json …</code> para ver el grafo después del loop unrolling).
+Cada caja es una instrucción del bloque y cada flecha una dependencia: la de arriba tiene que ir antes que la de abajo.
+La <b style="color:#d92d20">ruta crítica</b> es la cadena más larga de esperas: ningún orden puede ser más corto que ella.</p>
+
+<div class="barra">
+<label>Archivo JSON <input id="archivo" type="file" accept=".json,application/json"></label>
+<label>Bloque <select id="bloque" disabled></select></label>
+<button id="ajustar" disabled>Ajustar</button>
+<button id="acercar" disabled>+</button><button id="alejar" disabled>−</button>
+<span id="zoom">100 %</span>
+</div>
+<p id="estado" role="status">Selecciona un JSON. Arrastra para desplazarte, usa la rueda para el zoom y pulsa una instrucción para ver sus dependencias.</p>
+
+<div id="tarjetas" class="tarjetas"></div>
+
+<div class="filtros" id="filtros"></div>
+
+<div class="cuerpo">
+<div id="vista"><svg id="grafo" role="img" aria-label="Grafo de dependencias del bloque">
+<defs id="defs"></defs><g id="escena"></g></svg></div>
+<aside id="detalle"><h3>Detalle</h3><p>Pulsa una instrucción del grafo o de la línea de tiempo.</p></aside>
+</div>
+
+<h2>Línea de tiempo (un ciclo por casilla)</h2>
+<p style="margin-top:0">Cada casilla es un ciclo del procesador. Las rayadas son <b>esperas</b> (NOPs): el valor que se necesita todavía no está listo.
+El reordenamiento llena esos huecos con instrucciones independientes.</p>
+<div class="linea" id="linea"></div>
+<p>El archivo se lee únicamente en este navegador. No necesitas conexión a Internet.</p>
+</main>
+<script>
+'use strict';
+const ns='http://www.w3.org/2000/svg';
+const $=id=>document.getElementById(id);
+const svg=$('grafo'),escena=$('escena'),estado=$('estado'),selBloque=$('bloque');
+const botones=['ajustar','acercar','alejar'].map($);
+
+// Tipos de dependencia: color, trazo y si se muestran al inicio.
+const TIPOS={
+  RAW:{color:'#175cd3',trazo:'',nombre:'RAW (lee lo que otra escribe)',ver:true},
+  WAR:{color:'#dc6803',trazo:'7 4',nombre:'WAR (escribe lo que otra lee)',ver:true},
+  WAW:{color:'#7a5af8',trazo:'7 4',nombre:'WAW (escriben lo mismo)',ver:true},
+  MEMORIA:{color:'#0e9384',trazo:'2 3',nombre:'Memoria',ver:true},
+  EFECTO:{color:'#667085',trazo:'9 3 2 3',nombre:'Efecto (arg/call)',ver:true},
+  CONTROL:{color:'#98a2b3',trazo:'2 4',nombre:'Control (salto al final)',ver:false},
+};
+const PRIORIDAD=['RAW','MEMORIA','WAW','WAR','EFECTO','CONTROL'];
+let datos=null,bloque=null,seleccion=null,soloCritica=false;
+let escala=1,dx=0,dy=0,limites={ancho:1,alto:1},arrastre=null,movido=false,turno=0;
+const W=210,H=50,SEPX=40,SEPY=78;
+
+function crear(tipo,at={},texto){
+  const el=document.createElementNS(ns,tipo);
+  for(const [k,v] of Object.entries(at))el.setAttribute(k,String(v));
+  if(texto!==undefined)el.textContent=texto;
+  return el;
+}
+function html(tipo,at={},texto){
+  const el=document.createElement(tipo);
+  for(const [k,v] of Object.entries(at))el.setAttribute(k,String(v));
+  if(texto!==undefined)el.textContent=texto;
+  return el;
+}
+function corto(s,n){return s.length>n?s.slice(0,n-1)+'…':s;}
+function nombreVar(v){return v==='@memoria'?'memoria':v;}
+function principal(e){return PRIORIDAD.find(t=>e.tipos.includes(t))||'CONTROL';}
+function visible(e){
+  if(soloCritica)return e.critica;
+  return e.tipos.some(t=>TIPOS[t].ver);
+}
+
+// ---------- Validacion del JSON ----------
+function validar(d){
+  if(!d||d.formato!=='bal-reordenamiento'||!Array.isArray(d.bloques))
+    throw Error('No es un JSON de balc --reorder-json.');
+  for(const b of d.bloques){
+    if(!Array.isArray(b.nodos)||!Array.isArray(b.aristas)||!Array.isArray(b.orden)||!b.ruta_critica)
+      throw Error('El bloque '+b.id+' está incompleto.');
+    const n=b.nodos.length;
+    if(n>2000)throw Error('El visualizador admite hasta 2000 instrucciones por bloque.');
+    for(const e of b.aristas)
+      if(!(Number.isInteger(e.de)&&Number.isInteger(e.a)&&e.de>=0&&e.a<n&&e.de<e.a)||!Array.isArray(e.tipos))
+        throw Error('Hay una arista inválida en el bloque '+b.id+'.');
+  }
+}
+
+// ---------- Distribucion en capas ----------
+// Capa = camino mas largo (en aristas) desde una instruccion sin dependencias.
+// Dentro de cada capa se ordena por el promedio de x de sus predecesores.
+function distribuir(b){
+  const n=b.nodos.length,capa=new Array(n).fill(0),pred=[...Array(n)].map(()=>[]);
+  for(const e of b.aristas){pred[e.a].push(e.de);}
+  for(let j=0;j<n;++j)for(const i of pred[j])capa[j]=Math.max(capa[j],capa[i]+1);
+  const capas=[];
+  for(let i=0;i<n;++i)(capas[capa[i]]??=[]).push(i);
+  const x=new Array(n).fill(0);
+  const fijar=c=>c.forEach((i,k)=>x[i]=k);
+  capas.forEach(fijar);
+  for(let vuelta=0;vuelta<3;++vuelta)
+    for(const c of capas.slice(1)){
+      const bar=i=>{
+        const p=pred[i].filter(k=>!(b.aristas.find(e=>e.de===k&&e.a===i)?.tipos.every(t=>t==='CONTROL')));
+        return p.length?p.reduce((s,k)=>s+x[k],0)/p.length:x[i];
+      };
+      c.sort((a,b2)=>bar(a)-bar(b2)||a-b2);fijar(c);
+    }
+  const ancho=Math.max(...capas.map(c=>c.length))*(W+SEPX);
+  const pos=[];
+  capas.forEach((c,f)=>{
+    const ini=(ancho-c.length*(W+SEPX))/2+SEPX/2;
+    c.forEach((i,k)=>pos[i]={x:ini+k*(W+SEPX),y:30+f*(H+SEPY)});
+  });
+  limites={ancho:Math.max(ancho,W+SEPX),alto:30+capas.length*(H+SEPY)};
+  return pos;
+}
+
+// x de una columna vertical sin cajas entre las alturas ya y yb (exclusivas),
+// la mas cercana a `centro`. Los candidatos son los huecos entre cajas.
+function buscarPasillo(pos,ya,yb,centro){
+  const cajas=pos.filter(p=>p.y>ya&&p.y<yb);
+  const libre=x=>cajas.every(p=>x<p.x-8||x>p.x+W+8);
+  const candidatos=[centro];
+  for(const p of pos){candidatos.push(p.x-SEPX/2,p.x+W+SEPX/2);}
+  candidatos.sort((a,b)=>Math.abs(a-centro)-Math.abs(b-centro));
+  return candidatos.find(libre)??centro;
+}
+
+// ---------- Dibujo del grafo ----------
+function marcadores(){
+  const defs=$('defs');defs.replaceChildren();
+  const colores={...Object.fromEntries(Object.entries(TIPOS).map(([k,v])=>[k,v.color])),CRITICA:'#d92d20'};
+  for(const [k,c] of Object.entries(colores)){
+    const m=crear('marker',{id:'flecha-'+k,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'});
+    m.append(crear('path',{d:'M0,0 L10,5 L0,10 z',fill:c}));defs.append(m);
+  }
+}
+function dibujar(recentrar){
+  const b=bloque;escena.replaceChildren();
+  if(!b.nodos.length){limites={ancho:300,alto:100};
+    escena.append(crear('text',{x:20,y:50,class:'t2'},'Este bloque solo tiene etiquetas.'));ajustar();return;}
+  const pos=distribuir(b),frag=document.createDocumentFragment();
+  const capaAristas=crear('g'),capaEtq=crear('g'),capaNodos=crear('g');
+  const vecinos=new Set();
+  if(seleccion!==null){vecinos.add(seleccion);
+    for(const e of b.aristas)if(visible(e)&&(e.de===seleccion||e.a===seleccion)){vecinos.add(e.de);vecinos.add(e.a);}}
+  for(const e of b.aristas){
+    if(!visible(e))continue;
+    const t=principal(e),p=pos[e.de],q=pos[e.a];
+    // Si salta niveles, sale por el costado y baja por el pasillo entre cajas
+    // (asi no cruza por encima de las instrucciones intermedias).
+    const x1=p.x+W/2,y1=p.y+H,x2=q.x+W/2,y2=q.y-2;
+    let d,mx,myp;
+    if(q.y-p.y>H+SEPY+1){
+      // Salta niveles: baja por un pasillo libre (sin cajas) en todos los
+      // niveles intermedios, el mas cercano al centro de la arista.
+      const pasillo=buscarPasillo(pos,p.y,q.y,(x1+x2)/2);
+      const ya=y1+SEPY/2,yb=y2-SEPY/2;
+      d=`M${x1},${y1} C${x1},${ya} ${pasillo},${y1} ${pasillo},${ya} L${pasillo},${yb} C${pasillo},${y2} ${x2},${yb} ${x2},${y2}`;
+      mx=pasillo;myp=(ya+yb)/2;
+    }else{
+      const my=Math.max((y2-y1)/2,40);
+      d=`M${x1},${y1} C${x1},${y1+my} ${x2},${y2-my} ${x2},${y2}`;
+      mx=(x1+x2)/2;myp=(y1+y2)/2;                      // Punto medio de la curva
+    }
+    const tocada=seleccion===null||e.de===seleccion||e.a===seleccion;
+    const camino=crear('path',{d,class:'arista'+(e.critica?' critica':'')+(tocada?'':' tenue'),
+      stroke:TIPOS[t].color,'stroke-dasharray':e.critica?'':TIPOS[t].trazo,
+      'marker-end':`url(#flecha-${e.critica?'CRITICA':t})`});
+    camino.append(crear('title',{},`${e.tipos.join(' + ')}${e.por?' por '+nombreVar(e.por):''} · espera ${e.latencia} ciclo(s)\n#${b.nodos[e.de].pos} → #${b.nodos[e.a].pos}`));
+    capaAristas.append(camino);
+    if(t!=='CONTROL'&&(tocada||seleccion===null)){
+      const etq=crear('text',{x:mx+4,y:myp,class:'etq'+(tocada?'':' tenue'),
+        fill:e.critica?'#d92d20':TIPOS[t].color},`${t==='MEMORIA'?'mem':t}${e.por&&t!=='MEMORIA'?' '+nombreVar(e.por):''}${e.latencia>1?' ·'+e.latencia:''}`);
+      capaEtq.append(etq);
+    }
+  }
+  b.nodos.forEach((n,i)=>{
+    const sinCiclo=n.ciclo_antes===null;
+    const g=crear('g',{class:'nodo'+(n.critico?' critico':'')+(n.nueva_pos!==n.id?' movido':'')+
+      (sinCiclo?' marca':'')+(seleccion===i?' sel':'')+(seleccion!==null&&!vecinos.has(i)?' tenue':''),
+      transform:`translate(${pos[i].x},${pos[i].y})`,tabindex:0,role:'button'});
+    g.append(crear('title',{},`#${n.pos}  ${n.texto}\nlínea ${n.linea} · camino crítico ${n.altura}`));
+    g.append(crear('rect',{width:W,height:H,rx:8}));
+    g.append(crear('text',{x:10,y:20,class:'t1'},corto(`${String(n.pos).padStart(4,'0')}  ${n.texto}`,26)));
+    const ciclos=sinCiclo?'sin ciclo':`ciclo ${n.ciclo_antes} → ${n.ciclo_despues}`;
+    g.append(crear('text',{x:10,y:38,class:'t2'},`${ciclos} · crítico ${n.altura}${n.nueva_pos!==n.id?' · movida':''}`));
+    const elegir=()=>{seleccion=seleccion===i?null:i;dibujar(false);detalle();linea();};
+    g.addEventListener('click',()=>{if(!movido)elegir();});
+    g.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();elegir();}});
+    capaNodos.append(g);
+  });
+  frag.append(capaAristas,capaNodos,capaEtq);escena.append(frag);
+  if(recentrar)ajustar();else transformar();
+}
+
+// ---------- Panel de detalle ----------
+function detalle(){
+  const caja=$('detalle'),b=bloque;caja.replaceChildren();
+  if(seleccion===null){
+    caja.append(html('h3',{},`Bloque B${b.id}`));
+    const ul=html('ul');
+    if(b.fijas.length)ul.append(html('li',{},'Fijas al inicio: '+b.fijas.map(f=>f.texto).join(', ')));
+    ul.append(html('li',{},`Sucesores: ${b.sucesores.length?b.sucesores.map(s=>'B'+s).join(', '):'ninguno'}`));
+    ul.append(html('li',{},b.aplicado?`Se reordena: ${b.ciclos_antes} → ${b.ciclos_despues} ciclos.`:
+      'No se reordena: ningún orden necesita menos ciclos.'));
+    ul.append(html('li',{},`Ruta crítica: ${b.ruta_critica.ciclos} ciclos (mínimo posible).`));
+    caja.append(ul,html('h3',{},'Ruta crítica'));
+    const ol=html('ol',{class:'mono'});
+    for(const k of b.ruta_critica.nodos)ol.append(html('li',{},`#${b.nodos[k].pos}  ${b.nodos[k].texto}`));
+    caja.append(ol,html('p',{},'Pulsa una instrucción para ver qué la detiene y qué detiene ella.'));
+    return;
+  }
+  const n=b.nodos[seleccion];
+  caja.append(html('h3',{class:'mono'},`#${n.pos}  ${n.texto}`));
+  const ul=html('ul');
+  ul.append(html('li',{},`Línea ${n.linea} del fuente`));
+  ul.append(html('li',{},`Lee: ${n.lee.length?n.lee.map(nombreVar).join(', '):'—'} · Escribe: ${n.escribe.length?n.escribe.map(nombreVar).join(', '):'—'}`));
+  ul.append(html('li',{},n.ciclo_antes===null?'No ocupa ciclo (marca).':`Ciclo antes: ${n.ciclo_antes} · después: ${n.ciclo_despues}`));
+  ul.append(html('li',{},`Posición en el bloque: ${n.id} → ${n.nueva_pos}${n.nueva_pos!==n.id?' (se movió)':''}`));
+  ul.append(html('li',{},`Camino crítico desde aquí: ${n.altura} ciclos${n.critico?' — está en la ruta crítica':''}`));
+  caja.append(ul);
+  const lista=(titulo,filtro,otro)=>{
+    const es=b.aristas.filter(filtro);caja.append(html('h3',{},`${titulo} (${es.length})`));
+    if(!es.length){caja.append(html('p',{},'Ninguna.'));return;}
+    const l=html('ul');
+    for(const e of es){const m=b.nodos[otro(e)];
+      l.append(html('li',{},`${e.tipos.join('+')}${e.por?' '+nombreVar(e.por):''} · ${e.latencia}c — #${m.pos} ${corto(m.texto,24)}`));}
+    caja.append(l);
+  };
+  lista('Debe ir después de',e=>e.a===seleccion,e=>e.de);
+  lista('Debe ir antes de',e=>e.de===seleccion,e=>e.a);
+}
+
+// ---------- Linea de tiempo antes / despues ----------
+function linea(){
+  const caja=$('linea'),b=bloque;caja.replaceChildren();
+  const total=Math.max(b.ciclos_antes,b.ciclos_despues,1);
+  const reglas=html('div',{class:'reglas'});
+  for(let c=0;c<total;++c)reglas.append(html('span',{},String(c)));
+  caja.append(reglas);
+  for(const [nombre,campo,ciclos] of [['Antes','ciclo_antes',b.ciclos_antes],['Después','ciclo_despues',b.ciclos_despues]]){
+    const fila=html('div',{class:'fila'});fila.append(html('span',{class:'nom'},`${nombre} (${ciclos})`));
+    const porCiclo=new Map();b.nodos.forEach((n,i)=>{if(n[campo]!==null)porCiclo.set(n[campo],i);});
+    for(let c=0;c<ciclos;++c){
+      const i=porCiclo.get(c);
+      if(i===undefined){fila.append(html('span',{class:'celda nop',title:`ciclo ${c}: espera (NOP)`},''));continue;}
+      const n=b.nodos[i];
+      const celda=html('span',{class:'celda'+(n.critico?' critico':'')+(seleccion===i?' sel':''),
+        title:`ciclo ${c}: #${n.pos} ${n.texto}`},String(n.pos));
+      celda.addEventListener('click',()=>{seleccion=seleccion===i?null:i;dibujar(false);detalle();linea();});
+      fila.append(celda);
+    }
+    caja.append(fila);
+  }
+  const esperas=k=>k-b.nodos.filter(n=>n.ciclo_antes!==null).length;
+  caja.append(html('p',{style:'margin:8px 0 0;font-size:13px'},
+    `Esperas: ${esperas(b.ciclos_antes)} antes → ${esperas(b.ciclos_despues)} después. Ruta crítica: ${b.ruta_critica.ciclos} ciclos`+
+    (b.ciclos_despues===b.ruta_critica.ciclos?' — el orden nuevo ya es el mínimo posible.':'.')));
+}
+
+// ---------- Tarjetas y filtros ----------
+function tarjetas(){
+  const r=datos.resumen,b=bloque,caja=$('tarjetas');caja.replaceChildren();
+  const t=(v,txt,cls='')=>{const d=html('div',{class:'tarjeta'});d.append(html('b',{class:cls},v),html('span',{},txt));caja.append(d);};
+  t(`${r.ciclos_antes} → ${r.ciclos_despues}`,`ciclos del programa (latencia ${datos.latencia})`,r.ciclos_despues<r.ciclos_antes?'bien':'');
+  t(`${r.bloques_cambiados} / ${r.bloques}`,'bloques reordenados');
+  t(`B${b.id}: ${b.ciclos_antes} → ${b.ciclos_despues}`,'ciclos de este bloque',b.aplicado?'bien':'');
+  t(String(b.ruta_critica.ciclos),'ruta crítica (mínimo)');
+  t(String(b.nodos.length),'instrucciones en el grafo');
+  t(String(b.aristas.filter(e=>!e.tipos.every(x=>x==='CONTROL')).length),'dependencias (sin control)');
+  t(String(b.nodos.filter(n=>n.nueva_pos!==n.id).length),'instrucciones movidas');
+}
+function filtros(){
+  const caja=$('filtros');caja.replaceChildren();
+  for(const [k,t] of Object.entries(TIPOS)){
+    const l=html('label'),c=html('input',{type:'checkbox'});c.checked=t.ver;
+    c.addEventListener('change',()=>{t.ver=c.checked;if(bloque)dibujar(false);});
+    const m=html('span',{class:'muestra',style:`border-color:${t.color};border-top-style:${t.trazo?'dashed':'solid'}`});
+    l.append(c,m,document.createTextNode(t.nombre));caja.append(l);
+  }
+  const l=html('label'),c=html('input',{type:'checkbox'});
+  c.addEventListener('change',()=>{soloCritica=c.checked;if(bloque)dibujar(false);});
+  l.append(c,html('span',{class:'muestra',style:'border-color:#d92d20;border-top-width:4px'}),document.createTextNode('Solo la ruta crítica'));
+  caja.append(l);
+}
+
+// ---------- Zoom y desplazamiento ----------
+function transformar(){
+  escena.setAttribute('transform',`translate(${dx},${dy}) scale(${escala})`);
+  $('zoom').textContent=Math.round(escala*100)+' %';
+}
+function ajustar(){
+  const r=svg.getBoundingClientRect();
+  escala=Math.min(1.2,Math.max(.05,Math.min((r.width-30)/limites.ancho,(r.height-30)/limites.alto)));
+  dx=(r.width-limites.ancho*escala)/2;dy=Math.max(10,(r.height-limites.alto*escala)/2);
+  transformar();
+}
+function ampliar(f,x,y){
+  if(!bloque)return;
+  const r=svg.getBoundingClientRect();x=x??r.width/2;y=y??r.height/2;
+  const s=Math.max(.05,Math.min(4,escala*f));
+  dx=x-(x-dx)*s/escala;dy=y-(y-dy)*s/escala;escala=s;transformar();
+}
+
+function elegirBloque(id){
+  bloque=datos.bloques[id];seleccion=null;
+  tarjetas();dibujar(true);detalle();linea();
+}
+$('archivo').addEventListener('change',async()=>{
+  const mio=++turno,archivo=$('archivo').files[0];
+  datos=bloque=null;escena.replaceChildren();selBloque.replaceChildren();
+  [...botones,selBloque].forEach(b=>b.disabled=true);estado.className='';
+  if(!archivo){estado.textContent='Selecciona un JSON.';return;}
+  try{
+    if(archivo.size>20*1024*1024)throw Error('El archivo supera los 20 MiB.');
+    const texto=await archivo.text();if(mio!==turno)return;
+    const d=JSON.parse(texto);validar(d);datos=d;
+    if(!d.bloques.length)throw Error('El programa no tiene bloques.');
+    d.bloques.forEach(b=>{
+      const o=html('option',{value:b.id},`B${b.id} · ${b.nodos.length} instr. · ${b.ciclos_antes}→${b.ciclos_despues} ciclos${b.aplicado?' ✔':''}`);
+      selBloque.append(o);
+    });
+    // Empieza por el bloque que mas ciclos ahorra.
+    const mejor=d.bloques.reduce((m,b)=>b.ciclos_antes-b.ciclos_despues>m.ciclos_antes-m.ciclos_despues?b:m,d.bloques[0]);
+    selBloque.value=mejor.id;
+    [...botones,selBloque].forEach(b=>b.disabled=false);
+    estado.textContent=`${d.archivo}: ${d.bloques.length} bloques, latencia ${d.latencia}`+
+      (d.factor_unroll?`, después del loop unrolling (factor ${d.factor_unroll})`:'')+'.';
+    elegirBloque(mejor.id);
+  }catch(e){if(mio!==turno)return;estado.className='error';estado.textContent='No se pudo cargar el JSON: '+e.message;}
+});
+selBloque.addEventListener('change',()=>elegirBloque(Number(selBloque.value)));
+$('ajustar').onclick=ajustar;
+$('acercar').onclick=()=>ampliar(1.3);
+$('alejar').onclick=()=>ampliar(1/1.3);
+svg.addEventListener('wheel',e=>{if(!bloque)return;e.preventDefault();const r=svg.getBoundingClientRect();ampliar(Math.exp(-e.deltaY*.0015),e.clientX-r.left,e.clientY-r.top);},{passive:false});
+svg.addEventListener('pointerdown',e=>{if(!bloque||e.button!==0)return;arrastre={x:e.clientX,y:e.clientY,dx,dy};movido=false;});
+svg.addEventListener('pointermove',e=>{if(!arrastre)return;const x=e.clientX-arrastre.x,y=e.clientY-arrastre.y;
+  if(Math.hypot(x,y)>4){movido=true;svg.classList.add('arrastrando');svg.setPointerCapture(e.pointerId);dx=arrastre.dx+x;dy=arrastre.dy+y;transformar();}});
+function terminar(){arrastre=null;svg.classList.remove('arrastrando');}
+svg.addEventListener('pointerup',terminar);svg.addEventListener('pointercancel',terminar);
+window.addEventListener('resize',()=>{if(bloque)ajustar();});
+marcadores();filtros();
+</script>
+</body></html>

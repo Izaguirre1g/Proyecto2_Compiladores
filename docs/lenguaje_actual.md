@@ -36,6 +36,57 @@ Esta es la convención adoptada para concretar el token del avance. Se admiten
 constantes globales y locales; las variables y listas se declaran en bloques.
 Prohibir reasignaciones a constantes corresponde al análisis semántico.
 
+### Plegado de constantes
+
+Después del análisis semántico (y del enlace de `bring`), `sem_visitar_proyecto`
+en `src/Analisis_Semantico/semantic_modules.c` resuelve las constantes antes
+de entregar el AST al backend, porque cada backend las soportaba a medias:
+
+| Constante | Antes | Ahora (normal, `--ir`, `-O1`, `-O2`) |
+|---|---|---|
+| `declare_int` global, literal o expresión (`A pitagoras 3`) | solo normal y `-O2` | todos |
+| `declare_boolean` usada en condiciones (`whether (DEBUG)`) | solo `-O2` | todos* |
+| Arreglo constante global (`TABLA[i][j]`, índice variable o constante) | solo `-O2` | todos |
+| Constante local (`declare_const` dentro de una función) | `--ir` y `-O2` | todos |
+| Constante como tamaño de arreglo (`v * declare_int[N]`) | ninguno | todos |
+| Constantes importadas (`d.DOBLE`, `d.MATRIZ[1][0]`) | ninguno | todos |
+
+\* `-O1` no puede reescribir el texto cuando el DCE quita el salto de un
+`whether` cuya condición es constante y la variable se usa después; pasa igual
+con `whether (declare_true)` escrito a mano. Las variables `declare_boolean`
+siguen sin soporte en el backend normal (ocupan 1 byte en la tabla y el
+backend lee palabras de 4).
+
+Reglas:
+
+1. Una constante `declare_int` o `declare_boolean` cuyo valor se calcula en
+   compilación (literales, otras constantes, operadores, elementos de un
+   arreglo constante con índice constante) se reemplaza por su valor en cada
+   uso. Los parámetros y variables locales con el mismo nombre la tapan y no
+   se reemplazan.
+2. La aritmética es la de la sección de datos del binario (`fb_preparar_datos`):
+   32 bits con desborde circular, `euclides`/`euler` con signo truncando hacia
+   cero, `descartes` con exponente no negativo. Una división por cero no se
+   pliega (el error se informa como antes).
+3. Las constantes `declare_int` globales siguen declaradas, con su valor ya
+   calculado: el binario las sigue guardando en su sección de datos. La IR ignora una
+   constante global que ninguna función usa (`src/Representacion_Intermedia/ir.c`);
+   si alguna la usa todavía (no se pudo plegar), la rechaza como antes.
+4. Un arreglo constante global se declara como arreglo normal al inicio de
+   cada función que lo usa (la semántica ya impide modificarlo). Su literal se
+   lee en el ámbito global: un parámetro con el nombre de una constante del
+   literal no la tapa.
+5. Una constante local que no se puede calcular (depende de variables o
+   llamadas), o un arreglo constante local, pasa a ser una declaración normal.
+6. El AST plegado vuelve a pasar por la semántica; si fallara, se usa el AST
+   sin plegar, igual que antes.
+
+`semantic.c` también acepta indexar un arreglo constante importado
+(`d.MATRIZ[1][0]`), con las mismas reglas de índices y límites que un arreglo
+local. Pruebas: `make test-constantes` (`tests/fixtures/constantes.bal`, `constantes_ambito.bal`,
+`tests/modulos/constantes_principal.bal`), con resultados revisados en el
+simulador.
+
 ## Operadores
 
 Precedencia adoptada, de menor a mayor:
@@ -153,7 +204,71 @@ analizarse: la verificación del punto de entrada corresponde a la integración.
 
 `math.suma` genera un acceso a miembro; la llamada contiene ese acceso como
 destino. También se representan accesos indexados como `datos.matriz[i][j]`.
-Registrar una importación en el AST **no abre el archivo ni enlaza sus funciones**.
+El parser solo registra la importación; el archivo se abre y se enlaza en la
+semántica (ver abajo).
+
+### Enlace entre archivos
+
+`src/Analisis_Semantico/semantic_modules.c` carga y valida cada módulo
+(existencia, ciclos de importación, funciones, argumentos, tipos, privacidad).
+Después, en `sem_visitar_proyecto`, **une el programa y sus módulos en un solo
+AST** antes de entregarlo al backend, así que el ensamblador normal, `--ir`,
+`--dce`, `--unroll`, `--reorder`, `-O2` y el IDE generan código para programas
+con `bring` sin cambios propios:
+
+1. Cada módulo importado, directa o indirectamente, se copia una sola vez,
+   después de los módulos que él importa, aunque se importe con varios alias.
+2. Sus funciones y constantes llevan el nombre del archivo como prefijo:
+   `sumar` de `matematicas.bal` pasa a ser `matematicas__sumar`. Así no chocan
+   con nombres del programa ni de otros módulos (un `main` de un módulo queda
+   como `modulo__main`).
+3. Las referencias se reescriben: `math.sumar(2, 3)` → `matematicas__sumar(2, 3)`,
+   y dentro del módulo `sumar(...)` → `matematicas__sumar(...)`.
+4. Un parámetro o variable local con el mismo nombre que una constante del
+   módulo la tapa y no se renombra (se respeta el orden: en
+   `r * declare_int : base;` antes de declarar un `base` local, se usa la constante).
+5. Las constantes `declare_int` o `declare_boolean` con valor literal se
+   reemplazan por ese valor (`config.limite` → `10`), porque la IR todavía no
+   admite declaraciones globales.
+6. El AST unido vuelve a pasar por la semántica para construir su tabla de
+   símbolos y se entrega al backend. Un programa sin `bring` no cambia.
+7. El código copiado de un módulo queda en la **línea 0** ("otro archivo").
+   El DCE que reescribe el texto (`-O1` y "Aplicar al código" del IDE) edita
+   por número de línea: así nunca confunde la línea 5 de un módulo con la
+   línea 5 del principal. El código muerto de un módulo se compila tal cual.
+
+```text
+bring operaciones aka op;            %% operaciones.bal hace bring matematicas aka math
+... op.duplicar(5) ...
+```
+
+queda, para el backend, como
+
+```text
+create_funk #declare_int# matematicas__sumar(a * declare_int, b * declare_int) { ... }
+create_funk #declare_int# operaciones__duplicar(n * declare_int) {
+    give matematicas__sumar(n, n);
+}
+create_funk #declare_infinite_void# main() { ... operaciones__duplicar(5) ... }
+```
+
+`-O1` copia el programa a un directorio privado para reescribirlo; con
+`bring`, copia ahí también los módulos importados (y los que ellos importan)
+desde la carpeta del fuente, y borra todo al terminar
+(`tools/vliw/optimizacion_cli.c`).
+
+Pruebas: `make test-enlace` compila los programas válidos de `tests/modulos/`
+con el backend normal, `--ir`, `-O1` y `-O2`, y ejecuta en el simulador VLIW
+(`tests/test_enlace_simulador.c`) `enlace_principal.bal` (normal y `-O1`) y
+`enlace_dce.bal` (con `-O1` se borra una variable muerta del principal y el
+resultado no cambia), revisando sus resultados. Además, los binarios de un
+programa con `bring` son idénticos byte a byte a los del mismo programa escrito
+en un solo archivo con los nombres ya unidos.
+
+Limitaciones: un identificador escrito a mano como `modulo__nombre` choca con
+el nombre enlazado (la semántica lo informa como duplicado); un módulo no puede
+llamarse `entrada` con `-O1` (es el nombre de la copia de trabajo); los errores
+del backend dentro de código de un módulo se informan en la línea 0.
 
 ## Seek y seize
 

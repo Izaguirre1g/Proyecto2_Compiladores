@@ -45,4 +45,7 @@ int ef_enlazar(const Ast *ast, const SimTabla *tabla, uint32_t inicio,
                const EfArranque *arranque, RrTabla *funciones,
                FILE *salida, FILE *diagnosticos, EfResumen *resumen);
 
+/* Opt-in de referencias int 1D; conserva arranque y enlace iterativo. */
+int ef_enlazar_referencias(const Ast *ast,const SimTabla *tabla,uint32_t inicio,
+    const EfArranque *arranque,RrTabla *funciones,FILE *salida,FILE *diagnosticos,EfResumen *resumen);
 #endif
