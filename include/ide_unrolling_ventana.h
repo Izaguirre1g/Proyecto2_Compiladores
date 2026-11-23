@@ -1,7 +1,7 @@
 /*
  * Ventana "Loop unrolling" del IDE (botón "Loop unrolling").
  *
- *   - Arriba: el factor k (se puede cambiar: se vuelve a calcular) y las
+ *   - Arriba: el factor k (fijo: el valor por defecto, el mismo de balc) y las
  *     métricas antes y después (instrucciones, bloques, saltos, etiquetas).
  *   - Pestaña "Ciclos": cada ciclo con su línea, condición, paso, vueltas y
  *     la decisión (TOTAL, PARCIAL o sin cambios, con el motivo).
