@@ -24,6 +24,7 @@
 #include "ide_analisis.h"
 #include "ide_ensamblador.h"
 #include "ir.h"
+#include "ir_defuse.h"
 #include "semantic_modules.h"
 
 /* ------------------------------------------------------------------ */
@@ -154,6 +155,58 @@ static char *capturar_vivas(const DceVivas *v)
 }
 
 /*
+ * Las variables con nombre que se asignan en main (sin los temporales $tN),
+ * sin repetir. Son el resultado del programa: aunque main no las vuelva a
+ * leer, su valor final queda en la memoria y es lo que se mira (por ejemplo
+ * columna_encontrada en la búsqueda en la matriz).
+ *
+ * Los nombres se COPIAN: el DCE borra instrucciones de la IR mientras
+ * trabaja (por ejemplo "resultado = 0" si se pisa antes de leerse) y con
+ * ellas su texto, así que un puntero a la IR quedaría inválido en la
+ * pasada siguiente. Se libera con liberar_nombres.
+ * Devuelve 0 bien o -1 sin memoria.
+ */
+static int variables_de_main(const IrPrograma *ir, char ***lista, size_t *cantidad)
+{
+    *lista = NULL;
+    *cantidad = 0;
+    size_t capacidad = 0;
+    int en_main = 0;
+    for (size_t i = 0; i < ir->cantidad; ++i) {
+        const IrInstr *x = &ir->codigo[i];
+        if (x->op == IR_FUNC) en_main = x->dst != NULL && strcmp(x->dst, "main") == 0;
+        if (!en_main) continue;
+        IrDefUse du;
+        if (ir_consultar_def_usos(x, &du) != 0) continue;
+        for (size_t k = 0; k < du.cantidad_definiciones; ++k) {
+            const char *nombre = du.definiciones[k];
+            if (nombre == NULL || nombre[0] == '$') continue;  /* Temporal: no es del programa. */
+            int repetido = 0;
+            for (size_t j = 0; j < *cantidad && !repetido; ++j) repetido = strcmp((*lista)[j], nombre) == 0;
+            if (repetido) continue;
+            if (*cantidad == capacidad) {
+                size_t nueva = capacidad ? capacidad * 2 : 16;
+                char **l = realloc(*lista, nueva * sizeof *l);
+                if (l == NULL) return -1;  /* Lo ya copiado lo libera quien llama. */
+                *lista = l;
+                capacidad = nueva;
+            }
+            char *copia = copiar(nombre);
+            if (copia == NULL) return -1;
+            (*lista)[(*cantidad)++] = copia;
+        }
+    }
+    return 0;
+}
+
+/* Libera la lista de variables_de_main. */
+static void liberar_nombres(char **lista, size_t cantidad)
+{
+    for (size_t i = 0; i < cantidad; ++i) free(lista[i]);
+    free(lista);
+}
+
+/*
  * Lo llama el análisis semántico cuando el programa es válido.
  * Devuelve 0 si todo salió bien; 1 si la IR no soporta algo (el mensaje
  * "IR:linea:columna: ..." queda en "diag"); 2 si faltó memoria.
@@ -203,7 +256,17 @@ static int visitante(void *datos, const Ast *arbol, SimTabla *tabla, FILE *diag)
             dce_liberar_vivas(&vivas);
         }
     }
-    if (estado == 0 && dce_eliminar(&ir, &s->resultado) != 0) estado = 2;
+    /* El resultado de un programa BAL es la memoria final de TODAS las
+     * variables de main (BAL no tiene print): se le pasan al DCE como
+     * observables, igual que hace -O2 (ir_vliw_programa.c). */
+    char **observables = NULL;
+    size_t cantidad_observables = 0;
+    if (estado == 0 && variables_de_main(&ir, &observables, &cantidad_observables) != 0) estado = 2;
+    if (estado == 0 &&
+        dce_eliminar_con_observables(&ir, &s->resultado, (const char *const *)observables,
+                                     cantidad_observables) != 0)
+        estado = 2;
+    liberar_nombres(observables, cantidad_observables);
     if (estado == 0 && (s->ir_despues = capturar_ir(&ir)) == NULL) estado = 2;
 
     ir_liberar(&ir);
