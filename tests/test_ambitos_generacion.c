@@ -39,7 +39,10 @@ static void generar(const char *fuente, char *texto, size_t capacidad)
 int main(void)
 {
     char texto[16384], fuente[4096];
-    FILE *ejemplo = fopen("examples/ambitos.bal", "r");
+    /* Fixture de una sola función, sin main: generar() prueba módulos
+     * importados. El ejemplo público es ahora un programa ejecutable (58e330d)
+     * y no puede importarse según la semántica BAL. Conservamos el oráculo 44. */
+    FILE *ejemplo = fopen("tests/modulos/ambitos_generacion.bal", "r");
     assert(ejemplo);
     size_t leidos = fread(fuente, 1, sizeof(fuente) - 1, ejemplo);
     assert(!ferror(ejemplo) && feof(ejemplo)); fuente[leidos] = 0;

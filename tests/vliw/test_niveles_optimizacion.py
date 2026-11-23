@@ -50,11 +50,13 @@ class NivelesTests(unittest.TestCase):
 
     # Cada ejecución recibe su propia fuente, salidas y centinela del IDE. Así
     # se detecta cualquier sobrescritura del .ide_ homónimo junto al original.
-    def ejecutar(self,opciones,fuente=FUENTE):
+    def ejecutar(self,opciones,fuente=FUENTE,modulos=None):
         d=Path(tempfile.mkdtemp(dir=self.dir));f=d/'caso.bal';f.write_text(fuente)
         cent=d/'.ide_caso.bal';cent.write_text('NO SOBRESCRIBIR')
+        for nombre,texto in (modulos or {}).items():(d/nombre).write_text(texto)
         p=subprocess.run([str(self.balc),*opciones,str(f)],cwd=d,capture_output=True,text=True)
         self.assertEqual(f.read_text(),fuente);self.assertEqual(cent.read_text(),'NO SOBRESCRIBIR')
+        for nombre,texto in (modulos or {}).items():self.assertEqual((d/nombre).read_text(),texto)
         return p,d
 
     # O0 debe conservar exactamente las imágenes del camino histórico.
@@ -94,10 +96,26 @@ class NivelesTests(unittest.TestCase):
             with self.subTest(option=option):
                 p,d=self.ejecutar(['-O1',option]);self.assertEqual(p.returncode,2);self.assertFalse((d/'caso.bin').exists())
 
-    # Un bring real es rechazado; su aparición en comentario no es un módulo.
+    # Desde 14c00d3 O1 copia imports al snapshot: rechazar TODO bring ya no
+    # es el contrato. Un módulo ausente sigue siendo un error semántico sin
+    # publicación; uno válido debe enlazar su función sin alterar su fuente.
+    # El comentario no debe activar el cargador de módulos del lexer.
     def test_06_modulos_y_lexer(self):
-        p,d=self.ejecutar(['-O1'],'bring biblioteca;\n'+FUENTE);self.assertNotEqual(p.returncode,0);self.assertIn('módulos bring',p.stderr);self.assertFalse((d/'caso.bin').exists())
-        p,_=self.ejecutar(['-O1'],'%% bring no es una importación\n'+FUENTE);self.assertEqual(p.returncode,0)
+        p,d=self.ejecutar(['-O1'],'bring biblioteca;\n'+FUENTE)
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('análisis semántico/IR rechazado',p.stderr)
+        for ext in ('bin','mem','asm'):self.assertFalse((d/('caso.'+ext)).exists())
+        biblioteca=(ROOT/'tests/modulos/matematicas.bal').read_text()
+        principal=(ROOT/'tests/modulos/principal_llamada.bal').read_text()
+        for nivel in ('-O0','-O1'):
+            with self.subTest(nivel=nivel):
+                p,d=self.ejecutar([nivel,'-s','-m'],principal,
+                                 {'matematicas.bal':biblioteca})
+                self.assertEqual(p.returncode,0,p.stderr)
+                self.assertIn('sumar',p.stdout)
+                for ext in ('bin','mem','asm'):self.assertGreater((d/('caso.'+ext)).stat().st_size,0)
+        p,_=self.ejecutar(['-O1'],'%% bring no es una importación\n'+FUENTE)
+        self.assertEqual(p.returncode,0,p.stderr)
 
     # El límite se comprueba antes de parser/DCE y no publica salida parcial.
     def test_07_capacidad_y_fuente_corrupto(self):
