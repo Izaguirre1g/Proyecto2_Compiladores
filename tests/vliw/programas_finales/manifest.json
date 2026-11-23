@@ -111,17 +111,20 @@
       "observables": {
         "resultado": 24,
         "combinado": 13,
-        "total": 37
+        "total": 37,
+        "vacio": 0
       },
       "offsets_o0": {
         "resultado": 4,
         "combinado": 12,
-        "total": 16
+        "total": 16,
+        "vacio": 8
       },
       "offsets_o1": {
         "resultado": 4,
-        "combinado": 8,
-        "total": 12
+        "combinado": 12,
+        "total": 16,
+        "vacio": 8
       },
       "objetivo": "código muerto y resultados de llamadas reales",
       "transformacion_requerida": "dce"
@@ -130,7 +133,7 @@
       "id": "dce_funciones",
       "categoria": "dce",
       "fuente": "examples/dce/dce_ensamblador.bal",
-      "sha256": "9fe31fcb5aab6768b92f32ded322da85baca41901312e59e6706b9f8676b7bec",
+      "sha256": "28ba62fa0d005e655c263f2606c8890e455d2b1865ba60260ad8d55ad212b420",
       "observables": {
         "cuadrado4": 16,
         "suma_hasta5": 15

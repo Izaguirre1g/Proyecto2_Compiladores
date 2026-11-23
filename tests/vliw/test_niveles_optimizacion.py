@@ -16,10 +16,11 @@ import tempfile
 import unittest
 sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[2]
-# El arreglo escribe un observable; la variable muerta es una sentencia completa
-# de su propia línea, condición explícita del reescritor BAL del IDE.
+# La variable muerta auxiliar tiene un nombre distinto de las observables de
+# main: el API del DCE recibe nombres, no identidades de ámbitos. Ambas
+# declaraciones tienen su propia línea para ejercitar la reescritura BAL.
 FUENTE='''create_funk #declare_int# f(a * declare_int) {
- muerto * declare_int : 99;
+ muerto_aux * declare_int : 99;
  give a gauss 1;
 }
 create_funk #declare_infinite_void# main() {

@@ -974,7 +974,7 @@ balc: src/ir_renombramiento.c include/ir_renombramiento.h
 # expande cuando se usa, con SRC ya completa.
 IDE_OPT_SRC = $(IDE)/ide_optimizacion.c $(IDE)/ide_optimizacion_ventana.c \
 	$(filter-out $(CLI)/main.c $(CLI)/cli.c tools/vliw/optimizacion_cli.c,$(SRC))
-balc-ide: $(IDE_OPT_SRC) include/ide_optimizacion.h include/ide_optimizacion_ventana.h
+balc-ide: $(IDE_OPT_SRC) include/ide_optimizacion.h include/ide_optimizacion_ventana.h $(IDE)/ide_optimizacion_interno.h
 
 # La prueba, sin ventanas: compara -O0 y -O2 en el simulador.
 IDE_OPT_PRUEBA_SRC = $(sort $(IDE)/ide_optimizacion.c $(MET_SRC) $(SIM_SRC) \
@@ -982,7 +982,7 @@ IDE_OPT_PRUEBA_SRC = $(sort $(IDE)/ide_optimizacion.c $(MET_SRC) $(SIM_SRC) \
 tests/test_ide_optimizacion: tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC) include/ide_optimizacion.h include/metricas.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_ide_optimizacion.c $(IDE_OPT_PRUEBA_SRC) -o $@ -lm
 .PHONY: test-ide-optimizacion
-test-ide-optimizacion: tests/test_ide_optimizacion
+test-ide-optimizacion: tests/test_ide_optimizacion test-ide-optimizacion-comparador
 	./tests/test_ide_optimizacion
 
 # Pruebas obligatorias del enunciado (tests/Pruebas_obligatorias/): 15
@@ -993,3 +993,13 @@ tests/test_pruebas_obligatorias: tests/test_pruebas_obligatorias.c $(IDE_OPT_PRU
 .PHONY: test-pruebas-obligatorias
 test-pruebas-obligatorias: tests/test_pruebas_obligatorias
 	./tests/test_pruebas_obligatorias
+
+# El banco incluye la implementación privada para comprobar el comparador real.
+# Python compila y ejecuta ambos grupos en un temporal externo; no deja binarios
+# nuevos en el árbol ni requiere los archivos usados en auditorías anteriores.
+.PHONY: test-ide-optimizacion-comparador
+test-ide-optimizacion-comparador:
+	python3 tests/test_ide_optimizacion_comparador.py
+
+# Un cambio del contrato privado también debe recompilar sus consumidores.
+tests/test_ide_optimizacion tests/test_pruebas_obligatorias: $(IDE)/ide_optimizacion_interno.h

@@ -48,6 +48,12 @@ static void arreglos(void)
     vb.elementos=16;vb.desplazamiento=-1;COMPROBAR(comparar_resultados(&a,&b)==-1);
     vb.desplazamiento=250;COMPROBAR(comparar_resultados(&a,&b)==-1);
     vb.desplazamiento=12;b.memoria_final=NULL;COMPROBAR(comparar_resultados(&a,&b)==-1);
+    /* Dos escalares con resúmenes idénticos: la igualdad depende de DMEM.
+     * Cambiar sólo los bytes debe producir desigualdad, nunca igualdad visual. */
+    b.memoria_final=mb;va.elementos=vb.elementos=1;
+    COMPROBAR(comparar_resultados(&a,&b)==1);
+    mb[base]=7;COMPROBAR(comparar_resultados(&a,&b)==0);
+
 }
 
 /* Dos declaraciones homónimas mantienen el orden semántico que ya usa el
