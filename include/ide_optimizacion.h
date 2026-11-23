@@ -28,7 +28,8 @@
  * a leer (por ejemplo la columna de una búsqueda en una matriz). -O1 y -O2
  * las conservan (el DCE las recibe como observables), así que una variable
  * de main que a un nivel le falta ES una diferencia, igual que un valor
- * distinto. Se comparan por nombre (y por orden si dos se llaman igual).
+ * distinto. Se comparan por nombre (y por orden si dos se llaman igual), tipo,
+ * tamaño y bytes completos; el texto visible puede estar resumido.
  *
  * No modifica ningún módulo de los compañeros: solo llama a sus funciones
  * públicas, igual que visitante_o2 en src/Linea_Comandos/cli.c.
@@ -61,7 +62,9 @@ typedef struct {
     size_t marco_main;        /* Bytes del marco de main (para leer sus variables). */
     IdeVarMain *variables;    /* Variables locales de main... */
     size_t cantidad_variables;
-    char **valores;           /* ...y su valor final, como texto ("120", "[16, 15]"). */
+    char **valores;           /* ...y su resumen visual ("120", "[16, 15]"). */
+    unsigned char *memoria_final; /* MET_BYTES_MEMORIA bytes propios, sin truncar.
+                                  * Los conserva simular y los libera liberar_nivel. */
 } IdeOptNivel;
 
 typedef struct {

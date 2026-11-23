@@ -6,9 +6,11 @@
 #include "ide_optimizacion_ventana.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "ide_optimizacion.h"
+#include "ide_optimizacion_interno.h"
 #include "metricas_ventana.h"
 
 /* La ventana abierta (solo hay una) y sus datos: NULL si está cerrada. */
@@ -333,12 +335,14 @@ static GtkWidget *pestana_pasadas(const IdeOptimizacion *r)
 /* El valor de una variable de main en un nivel, buscada por nombre y por
  * cuántas veces apareció ese nombre antes (la misma regla de la comparación).
  * NULL si el nivel no la tiene. */
-static const char *valor_en(const IdeOptNivel *n, const char *nombre, size_t repeticion)
+static const char *valor_en(const IdeOptNivel *n, const char *nombre, size_t repeticion, size_t *indice)
 {
+    *indice = SIZE_MAX;
     if (n->valores == NULL) return NULL;
     for (size_t j = 0; j < n->cantidad_variables; ++j) {
         if (strcmp(n->variables[j].nombre, nombre) != 0) continue;
         if (repeticion-- > 0) continue;
+        *indice = j;
         return n->valores[j];
     }
     return NULL;
@@ -356,16 +360,20 @@ static GtkWidget *pestana_resultado(const IdeOptimizacion *r)
         size_t repeticion = 0;
         for (size_t k = 0; k < i; ++k) repeticion += strcmp(base->variables[k].nombre, nombre) == 0;
         const char *v[3];
+        size_t indices[3];
         int distinto = 0, comparadas = 0;
         for (int l = 0; l < 3; ++l) {
-            v[l] = valor_en(nivel_i(r, l), nombre, repeticion);
+            v[l] = valor_en(nivel_i(r, l), nombre, repeticion, &indices[l]);
             if (l == 0 || v[0] == NULL) continue;
             /* Un nivel que terminó pero ya no tiene la variable PERDIÓ parte
              * del resultado: cuenta como diferencia, igual que otro valor. */
             const IdeOptNivel *n = nivel_i(r, l);
             if (v[l] != NULL) {
-                comparadas++;
-                distinto |= strcmp(v[0], v[l]) != 0;
+                /* El texto puede omitir la cola de un arreglo; usamos el
+                 * mismo comparador completo que el veredicto general. */
+                int c = ide_opt_comparar_variable(&r->o0, indices[0], n, indices[l]);
+                comparadas += c >= 0;
+                distinto |= c == 0;
             } else if (n->compilado && n->simulacion.estado == MET_LISTO) {
                 comparadas++;
                 distinto = 1;

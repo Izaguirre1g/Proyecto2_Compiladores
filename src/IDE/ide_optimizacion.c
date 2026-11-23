@@ -19,6 +19,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "ide_optimizacion.h"
+#include "ide_optimizacion_interno.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -509,6 +510,45 @@ static int leer_valores(IdeOptNivel *n, const uint8_t *memoria)
     return 0;
 }
 
+/* Recupera el objeto completo desde la misma memoria usada por valor_de.
+ * El marco y desplazamiento pertenecen a CADA variante, no son su identidad.
+ * Antes de sumar o multiplicar se comprueban overflow, marco y límites DMEM.
+ * Devuelve un préstamo dentro de memoria_final o NULL ante datos incompletos. */
+static const unsigned char *datos_de(const IdeOptNivel *n, size_t i, size_t *bytes)
+{
+    if (!n || !n->memoria_final || !n->variables || i >= n->cantidad_variables ||
+        n->marco_main > CLI_TOPE_PILA) return NULL;
+    const IdeVarMain *v = &n->variables[i];
+    if (!v->elementos || !v->bytes_elemento ||
+        v->elementos > SIZE_MAX / v->bytes_elemento || v->desplazamiento < 0) return NULL;
+    size_t largo = v->elementos * v->bytes_elemento;
+    size_t offset = (size_t)v->desplazamiento;
+    size_t base = CLI_TOPE_PILA - n->marco_main;
+    if (offset > n->marco_main || largo > n->marco_main - offset ||
+        base > MET_BYTES_MEMORIA || offset > MET_BYTES_MEMORIA - base) return NULL;
+    base += offset;
+    if (largo > MET_BYTES_MEMORIA - base) return NULL;
+    *bytes = largo;
+    return n->memoria_final + base;
+}
+
+/* El resumen de 16 elementos queda reservado a la presentación. La comparación
+ * usa la instantánea completa capturada al terminar main y exige metadatos
+ * coherentes. No confunde offsets diferentes entre O0, O1 y O2 con diferencias. */
+int ide_opt_comparar_variable(const IdeOptNivel *a, size_t ia,
+                             const IdeOptNivel *b, size_t ib)
+{
+    if (!a || !b || !a->compilado || !b->compilado ||
+        a->simulacion.estado != MET_LISTO || b->simulacion.estado != MET_LISTO) return -1;
+    size_t na, nb;
+    const unsigned char *da = datos_de(a, ia, &na), *db = datos_de(b, ib, &nb);
+    if (!da || !db) return -1;
+    const IdeVarMain *x = &a->variables[ia], *y = &b->variables[ib];
+    if (x->elementos != y->elementos || x->bytes_elemento != y->bytes_elemento ||
+        x->es_char != y->es_char || x->es_boolean != y->es_boolean || na != nb) return 0;
+    return memcmp(da, db, na) == 0;
+}
+
 /* Ejecuta el binario del nivel y lee el resultado de main. "ancho": bytes
  * que recorre el ciclo final después de "fin" (ver MetMedicion.ancho_fin). */
 static int simular(IdeOptNivel *n, const unsigned char *balb, size_t largo, uint32_t fin,
@@ -523,6 +563,12 @@ static int simular(IdeOptNivel *n, const unsigned char *balb, size_t largo, uint
     int estado = met_simular(balb, largo, ruta, memoria, &n->simulacion);
     if (estado == 0 && n->simulacion.estado == MET_LISTO && n->marco_main > 0)
         estado = leer_valores(n, memoria);
+    /* Transferimos la reserva ya existente: no duplicamos DMEM ni creamos
+     * copias por elemento. La salida la libera con ide_optimizacion_liberar. */
+    if (estado == 0 && n->simulacion.estado == MET_LISTO && n->cantidad_variables > 0) {
+        n->memoria_final = memoria;
+        memoria = NULL;
+    }
     free(memoria);
     return estado;
 }
@@ -530,10 +576,10 @@ static int simular(IdeOptNivel *n, const unsigned char *balb, size_t largo, uint
 /*
  * Compara el resultado de main de un nivel con el de -O0, variable por
  * variable y POR NOMBRE (si un nombre se repite en bloques distintos, cuenta
- * el orden en que aparece). Una variable que el otro nivel no tiene no es
- * una diferencia: -O1 borra del código las variables muertas de main (nadie
- * las lee, no son resultado). 1 igual, 0 alguna distinta, -1 no se pudo
- * (alguno de los dos niveles no compiló o main no terminó).
+ * el orden en que aparece). Ese orden semántico conserva los homónimos
+ * de ámbitos distintos. Todas las variables de main son obligatorias:
+ * una ausente o un objeto distinto devuelve 0. Si no compiló/no terminó
+ * o faltan los datos completos, devuelve -1; 1 exige igualdad completa.
  */
 static int comparar_resultados(const IdeOptNivel *a, const IdeOptNivel *b)
 {
@@ -552,7 +598,8 @@ static int comparar_resultados(const IdeOptNivel *a, const IdeOptNivel *b)
         for (size_t j = 0; j < b->cantidad_variables && !encontrada; ++j) {
             if (strcmp(b->variables[j].nombre, a->variables[i].nombre) != 0) continue;
             if (repeticion-- > 0) continue;
-            if (strcmp(a->valores[i], b->valores[j]) != 0) return 0;
+            int comparacion = ide_opt_comparar_variable(a, i, b, j);
+            if (comparacion != 1) return comparacion;
             encontrada = 1;
         }
         /* Una variable de main que el optimizado ya no tiene ES una
@@ -708,6 +755,7 @@ static void liberar_nivel(IdeOptNivel *n)
     if (n->valores != NULL)
         for (size_t i = 0; i < n->cantidad_variables; ++i) free(n->valores[i]);
     free(n->valores);
+    free(n->memoria_final);
     free(n->variables);
     memset(n, 0, sizeof *n);
 }
