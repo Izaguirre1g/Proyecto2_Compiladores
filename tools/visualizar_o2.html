@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reporte -O2 (spilling)</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:15px system-ui,sans-serif;background:#f4f6f8;color:#182230}
+main{padding:22px;max-width:1400px;margin:auto}
+h1{font-size:25px;margin:0 0 8px}h2{font-size:17px;margin:26px 0 8px}
+p{line-height:1.5;margin:8px 0 16px}
+code{background:#e9eef3;padding:2px 4px;border-radius:3px}
+.barra{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#fff;border:1px dashed #98a2b3;padding:14px;border-radius:9px}
+.barra.encima{background:#eef4ff;border-color:#175cd3}
+#estado{min-height:23px}.error{color:#b42318}
+.tarjetas{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0}
+.tarjeta{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:10px 12px}
+.tarjeta b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tarjeta span{font-size:12px;color:#667085}
+.tarjeta.spill{border-left:5px solid #d92d20}
+.tarjeta.opt{border-left:5px solid #175cd3}
+.tarjeta.vliw{border-left:5px solid #067647}
+.caja{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:14px;margin:10px 0}
+.hbar{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px}
+.hbar .nom{width:150px;flex:none}
+.hbar .pista{flex:1;background:#f2f4f7;border-radius:4px;height:22px;overflow:hidden}
+.hbar .rel{height:100%;border-radius:4px}
+.hbar .val{width:70px;flex:none;text-align:right;font-variant-numeric:tabular-nums}
+.marco{display:flex;height:34px;border-radius:5px;overflow:hidden;border:1px solid #d0d5dd;margin:6px 0}
+.marco div{display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;white-space:nowrap;overflow:hidden}
+.leyenda{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:#475467}
+.leyenda i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:6px 9px;border-bottom:1px solid #eaecf0;text-align:left}
+th{background:#f9fafb;font-weight:600;position:sticky;top:0}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr{cursor:pointer}tbody tr:hover{background:#f5f8ff}tr.sel{background:#eef4ff}
+.scroll{max-height:420px;overflow:auto;border:1px solid #eaecf0;border-radius:6px}
+.dos{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:900px){.dos{grid-template-columns:1fr}}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.linea{overflow-x:auto;padding:6px 0}
+.linea svg{display:block}
+.nota{font-size:13px;color:#667085}
+#contenido[hidden]{display:none}
+</style>
+</head>
+<body><main>
+<h1>Reporte de <code>balc -O2</code>: spilling y calendarización</h1>
+<p>Genera el JSON con <code>./balc -O2 ejemplo_profe/03_SpillingDeRegistros.bal</code>; se crea
+<code>ejemplo_profe/03_SpillingDeRegistros.o2.json</code>. Funciona sin conexión: el archivo no sale de tu equipo.</p>
+
+<div class="barra" id="zona">
+  <input type="file" id="archivo" accept=".json,application/json">
+  <span>o arrastra aquí el archivo <code>.o2.json</code></span>
+</div>
+<div id="estado"></div>
+
+<div id="contenido" hidden>
+  <h2>Spilling (3 registros físicos)</h2>
+  <div class="tarjetas" id="tSpill"></div>
+  <div class="caja" id="accesos"></div>
+
+  <h2>Pasadas de optimización</h2>
+  <div class="tarjetas" id="tOpt"></div>
+
+  <h2>Código VLIW</h2>
+  <div class="tarjetas" id="tVliw"></div>
+
+  <h2>Marco de pila por función</h2>
+  <div class="caja">
+    <div class="leyenda">
+      <span><i style="background:#175cd3"></i>variables (objetos con offset)</span>
+      <span><i style="background:#d92d20"></i>spills y reservas del marco</span>
+    </div>
+    <div id="marcos"></div>
+    <p class="nota">El JSON trae el tamaño total del marco y los offsets de las variables. El resto del marco
+    lo ocupan las ranuras de spill (4 bytes cada una) y las reservas que agrega el backend.</p>
+  </div>
+
+  <div class="dos">
+    <div>
+      <h2>Variables en memoria</h2>
+      <div class="scroll"><table id="tablaObj"><thead><tr>
+        <th>Nombre</th><th>Función</th><th class="n">Línea</th><th class="n">Offset</th><th class="n">Bytes</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+    <div>
+      <h2>Bloques básicos</h2>
+      <div class="scroll"><table id="tablaBloq"><thead><tr>
+        <th class="n">Bloque</th><th class="n">Operaciones</th><th class="n">Bundles</th><th class="n">Rango de bundles</th><th class="n">Bundles con 2 ops</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="nota">Haz clic en un bloque para ver sus operaciones abajo.</p>
+    </div>
+  </div>
+
+  <h2>Operaciones por bundle</h2>
+  <div class="caja">
+    <div class="leyenda">
+      <span><i style="background:#98a2b3"></i>1 operación</span>
+      <span><i style="background:#067647"></i>2 operaciones en paralelo</span>
+      <span><i style="background:#f79009"></i>bloque seleccionado</span>
+    </div>
+    <div class="linea" id="lineaBundles"></div>
+  </div>
+
+  <h2 id="tituloOps">Operaciones</h2>
+  <div class="scroll"><table id="tablaOps"><thead><tr>
+    <th class="n">Operación</th><th class="n">Instrucción IR (spilling)</th><th class="n">Bloque</th><th class="n">Bundle</th><th class="n">PC</th>
+  </tr></thead><tbody></tbody></table></div>
+  <p class="nota">“Instrucción IR” es el índice en la IR después del spilling (<code>.o2-spilling.ir</code>);
+  “—” indica una operación que agregó el backend (prólogo, epílogo, enlace). Cada bundle ocupa 16 bytes.</p>
+</div>
+
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const el=(tag,props={},...hijos)=>{const e=document.createElement(tag);Object.assign(e,props);for(const h of hijos)e.append(h);return e;};
+let datos=null,bloqueSel=null;
+
+function tarjetas(cont,clase,items){
+  cont.replaceChildren(...items.map(([v,t])=>el('div',{className:'tarjeta '+clase},el('b',{textContent:v}),el('span',{textContent:t}))));
+}
+
+function validar(d){
+  if(!d||typeof d!=='object'||d.nivel!=='O2'||!Array.isArray(d.operaciones)||!Array.isArray(d.funciones)||!Array.isArray(d.objetos))
+    throw new Error('No es un JSON de balc -O2 (archivo .o2.json).');
+}
+
+function cargar(texto,nombre){
+  let d;
+  try{d=JSON.parse(texto);validar(d);}
+  catch(e){$('estado').replaceChildren(el('span',{className:'error',textContent:'No se pudo cargar el JSON: '+e.message}));$('contenido').hidden=true;return;}
+  datos=d;bloqueSel=null;
+  $('estado').textContent='Cargado: '+nombre;
+  dibujar();$('contenido').hidden=false;
+}
+
+function dibujar(){
+  const d=datos;
+  tarjetas($('tSpill'),'spill',[
+    [d.spills,'ranuras de spill'],
+    [d.spills*4+' B','memoria de spill (4 B c/u)'],
+    [d.loads,'spill_load (lecturas)'],
+    [d.stores,'spill_store (escrituras)'],
+    [d.loads+d.stores,'accesos a memoria por spill'],
+    [d.cantidad_ir_spilling,'instrucciones IR tras spilling'],
+  ]);
+  const max=Math.max(d.loads,d.stores,d.spills,1);
+  $('accesos').replaceChildren(...[
+    ['Ranuras de spill',d.spills,'#d92d20'],['spill_load',d.loads,'#f79009'],['spill_store',d.stores,'#7a5af8'],
+  ].map(([n,v,c])=>el('div',{className:'hbar'},el('span',{className:'nom',textContent:n}),
+    (()=>{const p=el('div',{className:'pista'});p.append(el('div',{className:'rel',style:`width:${100*v/max}%;background:${c}`}));return p;})(),
+    el('span',{className:'val',textContent:v}))));
+
+  tarjetas($('tOpt'),'opt',[
+    [d.dce,'eliminadas por DCE'],[d.unroll,'ciclos desenrollados'],[d.rename,'variables renombradas'],
+    [d.war_eliminadas??'—','dependencias WAR eliminadas'],[d.waw_eliminadas??'—','dependencias WAW eliminadas'],
+    [d.reorder,'instrucciones reordenadas'],
+  ]);
+  const ops=d.operaciones,porBundle=new Map();
+  for(const o of ops)porBundle.set(o.bundle,(porBundle.get(o.bundle)||0)+1);
+  let dobles=0;for(const c of porBundle.values())if(c>1)dobles++;
+  tarjetas($('tVliw'),'vliw',[
+    [d.bundles,'bundles'],[d.cantidad_operaciones,'operaciones'],[dobles,'bundles con 2 ops'],
+    [(d.cantidad_operaciones/Math.max(d.bundles,1)).toFixed(2),'operaciones por bundle'],
+    [d.pc_fin,'pc_fin (del reporte)'],[d.generaciones,'generaciones del enlace'],
+  ]);
+
+  // Marcos
+  $('marcos').replaceChildren(...d.funciones.map(f=>{
+    const vars=d.objetos.filter(o=>o.funcion===f.nombre);
+    const usados=vars.reduce((m,o)=>Math.max(m,o.offset+o.bytes),0);
+    const resto=Math.max(f.marco-usados,0),tot=Math.max(f.marco,1);
+    const barra=el('div',{className:'marco'},
+      el('div',{style:`width:${100*usados/tot}%;background:#175cd3`,textContent:usados?usados+' B':''}),
+      el('div',{style:`width:${100*resto/tot}%;background:#d92d20`,textContent:resto?resto+' B':''}));
+    return el('div',{},el('div',{},
+      el('b',{textContent:f.nombre}),
+      document.createTextNode(` — marco ${f.marco} B · ${vars.length} variables · PC ${f.inicio_pc}–${f.fin_pc}`)),barra);
+  }));
+
+  // Variables
+  $('tablaObj').tBodies[0].replaceChildren(...[...d.objetos].sort((a,b)=>a.funcion.localeCompare(b.funcion)||a.offset-b.offset).map(o=>
+    el('tr',{},el('td',{className:'mono',textContent:o.nombre}),el('td',{textContent:o.funcion}),
+      el('td',{className:'n',textContent:o.linea}),el('td',{className:'n',textContent:o.offset}),el('td',{className:'n',textContent:o.bytes}))));
+
+  // Bloques
+  const bloques=new Map();
+  for(const o of ops){
+    let b=bloques.get(o.bloque);if(!b)bloques.set(o.bloque,b={id:o.bloque,ops:0,bs:new Map()});
+    b.ops++;b.bs.set(o.bundle,(b.bs.get(o.bundle)||0)+1);
+  }
+  const filas=[...bloques.values()].sort((a,b)=>a.id-b.id);
+  $('tablaBloq').tBodies[0].replaceChildren(...filas.map(b=>{
+    const ks=[...b.bs.keys()],min=Math.min(...ks),mx=Math.max(...ks);
+    let dob=0;for(const c of b.bs.values())if(c>1)dob++;
+    const tr=el('tr',{},el('td',{className:'n',textContent:b.id}),el('td',{className:'n',textContent:b.ops}),
+      el('td',{className:'n',textContent:b.bs.size}),el('td',{className:'n',textContent:`${min}–${mx}`}),el('td',{className:'n',textContent:dob}));
+    tr.dataset.b=b.id;
+    tr.onclick=()=>{bloqueSel=bloqueSel===b.id?null:b.id;actualizarSel();};
+    return tr;
+  }));
+  actualizarSel();
+}
+
+function actualizarSel(){
+  const d=datos,ops=d.operaciones;
+  for(const tr of $('tablaBloq').tBodies[0].rows)tr.classList.toggle('sel',+tr.dataset.b===bloqueSel);
+  // Línea de bundles
+  const porBundle=new Map(),bloqDe=new Map();
+  for(const o of ops){porBundle.set(o.bundle,(porBundle.get(o.bundle)||0)+1);if(o.bloque===bloqueSel)bloqDe.set(o.bundle,true);}
+  const n=Math.max(d.bundles,1,...[...porBundle.keys()].map(x=>x+1)),w=Math.max(2,Math.min(8,Math.floor(1200/n))),h=40;
+  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('width',n*w);svg.setAttribute('height',h+16);
+  for(const [b,c] of porBundle){
+    const r=document.createElementNS(ns,'rect');
+    const alto=c>1?h:h/2;
+    r.setAttribute('x',b*w);r.setAttribute('y',h-alto);r.setAttribute('width',Math.max(w-1,1));r.setAttribute('height',alto);
+    r.setAttribute('fill',bloqDe.has(b)?'#f79009':c>1?'#067647':'#98a2b3');
+    const t=document.createElementNS(ns,'title');t.textContent=`bundle ${b} · ${c} op(s) · PC ${16*b}`;r.append(t);
+    svg.append(r);
+  }
+  for(let b=0;b<n;b+=100){
+    const t=document.createElementNS(ns,'text');t.setAttribute('x',b*w);t.setAttribute('y',h+13);
+    t.setAttribute('font-size','10');t.setAttribute('fill','#667085');t.textContent=b;svg.append(t);
+  }
+  $('lineaBundles').replaceChildren(svg);
+  // Operaciones
+  const lista=bloqueSel===null?ops:ops.filter(o=>o.bloque===bloqueSel);
+  $('tituloOps').textContent=bloqueSel===null?`Operaciones (${ops.length})`:`Operaciones del bloque ${bloqueSel} (${lista.length})`;
+  $('tablaOps').tBodies[0].replaceChildren(...lista.map(o=>el('tr',{},
+    el('td',{className:'n',textContent:o.indice}),el('td',{className:'n',textContent:o.ir_spilling??'—'}),
+    el('td',{className:'n',textContent:o.bloque}),el('td',{className:'n',textContent:o.bundle}),el('td',{className:'n',textContent:16*o.bundle}))));
+}
+
+function leer(f){if(!f)return;const r=new FileReader();r.onload=()=>cargar(r.result,f.name);r.readAsText(f);}
+$('archivo').onchange=e=>leer(e.target.files[0]);
+const zona=$('zona');
+zona.ondragover=e=>{e.preventDefault();zona.classList.add('encima');};
+zona.ondragleave=()=>zona.classList.remove('encima');
+zona.ondrop=e=>{e.preventDefault();zona.classList.remove('encima');leer(e.dataTransfer.files[0]);};
+</script>
+</main></body>
+</html>
