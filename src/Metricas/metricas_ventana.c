@@ -1,3 +1,6 @@
+// MAPA IDE: MetMedicion -> gráficas GTK de ejecución, compilacion, DCE y tabla.
+// El dibujo no ejecuta la CPU; presenta lo que ya calcularon S6 y M1.
+
 /*
  * Ventana "Métricas" (ver include/metricas_ventana.h).
  *
@@ -28,6 +31,8 @@
 /* Colores (tema oscuro, Dark+ como el editor)                        */
 /* ------------------------------------------------------------------ */
 
+// El tema gráfico usa colores RGB normalizados para Cairo; no cambian las mediciones.
+// Fila contiene datos y textos de una barra; Grafica agrupa filas, leyenda y regiones de tooltip.
 typedef struct { double r, g, b; } Color;
 #define COLOR(hex) {((hex) >> 16 & 0xFF) / 255.0, ((hex) >> 8 & 0xFF) / 255.0, ((hex) & 0xFF) / 255.0}
 
@@ -88,6 +93,8 @@ enum {
 };
 
 /* Alto de una fila: sus barras, o dos líneas de texto si tiene nota. */
+// INTERFAZ: calcula el espacio vertical de una fila de barras.
+// Una fila con notas utiliza más altura para mantener los textos legibles.
 static int alto_fila(const Grafica *g, const Fila *f)
 {
     int barras = g->series * ALTO_BARRA + (g->series - 1) * HUECO_BARRAS;
@@ -96,6 +103,8 @@ static int alto_fila(const Grafica *g, const Fila *f)
 }
 
 /* Alto total de la gráfica (para pedirle ese alto al GtkDrawingArea). */
+// INTERFAZ: suma las alturas de titulo, subtitulo, leyenda y filas.
+// El GtkDrawingArea necesita este alto para mostrar todos los datos.
 static int alto_grafica(const Grafica *g)
 {
     int alto = MARGEN + ALTO_TITULO + ALTO_SUBTITULO + 8 + MARGEN;
@@ -106,6 +115,8 @@ static int alto_grafica(const Grafica *g)
 
 /* Escribe un texto con su centro vertical en y. Si "derecha", x es donde
  * termina el texto. Devuelve el ancho en píxeles. */
+// DIBUJO: coloca una etiqueta con Pango y Cairo.
+// Permite tipografia en negrita y alineacion derecha sin alterar las metricas.
 static int escribir(cairo_t *cr, double x, double y, const char *texto, Color c, int negrita,
                     int puntos, int derecha)
 {
@@ -127,6 +138,8 @@ static int escribir(cairo_t *cr, double x, double y, const char *texto, Color c,
 
 /* Una barra que nace en la línea base (x) y tiene la punta redondeada
  * (radio 4) solo del lado del valor. */
+// DIBUJO: pinta una barra con bordes redondeados.
+// El ancho representa el dato ya normalizado por la escala de la gráfica.
 static void barra(cairo_t *cr, double x, double y, double ancho, double alto, Color c)
 {
     double r = fmin(4.0, fmin(ancho, alto / 2.0));
@@ -143,6 +156,9 @@ static void barra(cairo_t *cr, double x, double y, double ancho, double alto, Co
 }
 
 /* Dibuja la gráfica "datos" en el GtkDrawingArea. */
+// DIBUJO PRINCIPAL: representa titulo, filas, leyenda, barras y cifras.
+// Las escalas son visuales; los valores medidos permanecen sin modificar.
+// Los dibujos no recalculan las metricas: únicamente representan datos recibidos.
 static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
 {
     Grafica *g = datos;
@@ -175,11 +191,14 @@ static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
 
     /* Las filas. */
     const double base = MARGEN + ANCHO_NOMBRE;
+    // Se reserva espacio para etiquetas y valores antes de calcular el ancho util de las barras.
     double disponible = ancho - base - ANCHO_VALOR - MARGEN;
     if (disponible < 40) disponible = 40;
     double primera = y;
+    // En cada dibujo se reconstruyen las zonas interactivas correspondientes a las barras.
     g->cantidad_zonas = 0;
 
+    // Cada fila puede comparar una o varias series, según la ventana.
     for (int i = 0; i < g->cantidad; ++i) {
         Fila *f = &g->filas[i];
         int alto_f = alto_fila(g, f);
@@ -193,6 +212,7 @@ static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
         }
 
         /* Máximo de la escala: el de la gráfica, o el de esta fila. */
+        // Cada gráfica calcula su escala visual antes de dibujar las barras.
         double maximo = g->maximo;
         if (g->escala_por_fila) {
             maximo = 0;
@@ -202,12 +222,14 @@ static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
         int alto_barras = g->series * ALTO_BARRA + (g->series - 1) * HUECO_BARRAS;
         double yb = y + (alto_f - alto_barras) / 2.0;
         for (int s = 0; s < g->series; ++s) {
+            // La longitud visual es proporcional al valor; el número real se sigue mostrando en texto.
             double largo = maximo > 0 ? f->valor[s] / maximo * disponible : 0;
             if (f->valor[s] > 0 && largo < 2) largo = 2;   /* Que un valor pequeño se vea. */
             if (largo > 0) barra(cr, base, yb, largo, ALTO_BARRA, SERIES[s]);
             escribir(cr, base + largo + 6, yb + ALTO_BARRA / 2.0, f->texto[s], TEXTO_SUAVE, 0, 9, 0);
 
             /* Zona del tooltip: toda la franja de la barra (más fácil de apuntar). */
+            // La region de tooltip guarda el area del mouse que corresponde a esta barra.
             GdkRectangle *z = &g->zonas[g->cantidad_zonas];
             z->x = MARGEN;
             z->y = (int)yb - HUECO_BARRAS / 2;
@@ -229,6 +251,8 @@ static gboolean al_dibujar(GtkWidget *area, cairo_t *cr, gpointer datos)
 }
 
 /* Tooltip: el valor exacto de la barra bajo el mouse. */
+// INTERFAZ: identifica la barra bajo el cursor y muestra el valor exacto.
+// La interaccion permite leer cifras aún cuando la escala redondee su longitud.
 static gboolean al_pedir_tooltip(GtkWidget *area, gint x, gint y, gboolean teclado,
                                  GtkTooltip *tooltip, gpointer datos)
 {
@@ -247,8 +271,11 @@ static gboolean al_pedir_tooltip(GtkWidget *area, gint x, gint y, gboolean tecla
 }
 
 /* El widget de una gráfica. "g" debe seguir vivo mientras la ventana exista. */
+// INTERFAZ: crea un GtkDrawingArea para una gráfica calculada.
+// Conecta eventos de dibujo y tooltip a los callbacks anteriores.
 static GtkWidget *widget_grafica(Grafica *g)
 {
+    // GtkDrawingArea es un lienzo; al_dibujar() produce la gráfica cuando GTK lo solicita.
     GtkWidget *area = gtk_drawing_area_new();
     gtk_widget_set_size_request(area, 560, alto_grafica(g));
     gtk_widget_set_has_tooltip(area, TRUE);
@@ -272,6 +299,8 @@ typedef struct {
 static GtkWidget *ventana_met = NULL;
 static Datos *datos_met = NULL;
 
+// INTERFAZ: libera los datos de la ventana al cerrarla.
+// Evita mantener mediciones antiguas o buffers después de cerrar el dialogo.
 static void al_destruir_metricas(GtkWidget *widget, gpointer datos)
 {
     (void)widget;
@@ -286,6 +315,8 @@ static void al_destruir_metricas(GtkWidget *widget, gpointer datos)
 }
 
 /* Un número con espacios cada tres cifras: 1234567 -> "1 234 567". */
+// FORMATO: agrega separadores de millares a los contadores.
+// Solo cambia la presentacion, nunca el valor del contador.
 static void miles(uint64_t n, char *texto, size_t largo)
 {
     char cifras[32];
@@ -299,6 +330,8 @@ static void miles(uint64_t n, char *texto, size_t largo)
 }
 
 /* Cuánto cambió de "antes" a "despues", como "−64.9 %" o "sin cambio". */
+// FORMATO: describe crecimiento, disminucion o igualdad entre dos mediciones.
+// El porcentaje se calcula respecto al primer valor, si existe.
 static void cambio(double antes, double despues, char *texto, size_t largo)
 {
     if (antes == despues) snprintf(texto, largo, "sin cambio");
@@ -309,6 +342,9 @@ static void cambio(double antes, double despues, char *texto, size_t largo)
 
 /* Gráfica "Uso de cada slot": % de los bundles ejecutados con una
  * instrucción en ese slot. Escala común de 0 a 100 %. */
+// GRÁFICA EJECUCIÓN: calcula uso dinámico de ALU, LSU, BRU y CRIPTO.
+// Porcentaje = instrucciones retiradas en el slot / bundles completados.
+// Esta gráfica muestra cuantos bundles retirados usaron realmente cada unidad.
 static void armar_slots(Grafica *g, const SimMetricasResumen *s)
 {
     snprintf(g->titulo, sizeof g->titulo, "Uso de cada slot del bundle");
@@ -321,6 +357,7 @@ static void armar_slots(Grafica *g, const SimMetricasResumen *s)
     miles(s->completados, total, sizeof total);
     for (int i = 0; i < 4; ++i) {
         Fila *f = &g->filas[i];
+        // La escala porcentual se calcula a partir de retiros reales del simulador.
         double pct = met_porcentaje(s->instrucciones_por_slot[i], s->completados);
         char n[32];
         miles(s->instrucciones_por_slot[i], n, sizeof n);
@@ -333,6 +370,9 @@ static void armar_slots(Grafica *g, const SimMetricasResumen *s)
 }
 
 /* Gráfica "Bundles ejecutados": con trabajo y solo NOP. */
+// GRÁFICA EJECUCIÓN: distingue bundles con operaciones de bundles totalmente NOP.
+// Ambas cantidades cuentan retiros en WB, no instrucciones estáticas de IMEM.
+// Aqui un bundle solo NOP significa cuatro slots sin trabajo, no un bundle parcialmente vacio.
 static void armar_bundles(Grafica *g, const SimMetricasResumen *s)
 {
     snprintf(g->titulo, sizeof g->titulo, "Bundles ejecutados");
@@ -342,7 +382,9 @@ static void armar_bundles(Grafica *g, const SimMetricasResumen *s)
     g->series = 1;
     g->maximo = (double)s->completados;
     g->cantidad = 2;
+    // Las filas de compilacion se corresponden con fases reales del frontend/backend.
     const char *nombres[2] = {"Con al menos una instrucción", "Solo NOP"};
+    // Bundles utiles contienen al menos una instruccion; bundles NOP contienen cero.
     uint64_t valores[2] = {s->bundles_utiles, s->bundles_nop};
     for (int i = 0; i < 2; ++i) {
         Fila *f = &g->filas[i];
@@ -359,6 +401,9 @@ static void armar_bundles(Grafica *g, const SimMetricasResumen *s)
 
 /* Gráfica "Tiempo de compilación": cuánto tardó cada fase, con la misma
  * escala (el total), para ver qué fase pesa más. */
+// GRÁFICA COMPILACION: distribuye el tiempo entre fases del compilador.
+// Muestra la mediana de cinco compilaciones en milisegundos.
+// Los tiempos son duraciones de compilacion en ms; no son ciclos de ejecución.
 static void armar_compilacion(Grafica *g, const IdeAsmTiempos *t)
 {
     snprintf(g->titulo, sizeof g->titulo, "Tiempo de compilación por fase");
@@ -389,6 +434,8 @@ static void armar_compilacion(Grafica *g, const IdeAsmTiempos *t)
 
 /* Una fila de la comparación antes/después del DCE. "decimales" < 0: es un
  * conteo (se escribe con miles); si no, un número con esos decimales. */
+// GRÁFICA DCE: agrega una fila comparando el programa antes y después.
+// La fila conserva ambos valores y muestra su cambio porcentual.
 static void fila_dce(Grafica *g, const char *nombre, double antes, double despues, int decimales)
 {
     Fila *f = &g->filas[g->cantidad++];
@@ -407,6 +454,8 @@ static void fila_dce(Grafica *g, const char *nombre, double antes, double despue
 
 /* El texto conserva la precisión de size_t, aunque las barras usen double.
  * La falta de backend/overflow se muestra como ausencia, no como cero bytes. */
+// FORMATO IDE: escribe el tamaño de código en bytes y bundles.
+// Un bundle equivale a 16 bytes y puede contener instrucciones o NOP.
 static void texto_tamano(const MetMedicion *m, char *texto, size_t largo)
 {
     size_t bytes;
@@ -416,6 +465,8 @@ static void texto_tamano(const MetMedicion *m, char *texto, size_t largo)
 
 /* La diferencia absoluta indica su dirección; un original vacío no tiene
  * denominador porcentual. El mismo texto se utiliza en la gráfica y la tabla. */
+// FORMATO IDE: explica la diferencia de tamaño entre dos programas.
+// Diferencia de memoria estatica y ahorro de ciclos ejecutados.
 static void texto_cambio_tamano(const MetComparacionTamano *c, char *texto, size_t largo)
 {
     const char *tipo = c->reduccion ? "Reducción" : c->diferencia_bytes ? "Aumento" : "Sin cambio";
@@ -425,6 +476,9 @@ static void texto_cambio_tamano(const MetComparacionTamano *c, char *texto, size
     else snprintf(texto, largo, "%s: %zu bytes (porcentaje no definido)", tipo, c->diferencia_bytes);
 }
 
+// GRÁFICA DCE: construye la comparación de las dos ejecuciones.
+// Distingue IPC, ciclos, instrucciones y huella estatica de código.
+// Esta comparación usa la ruta DCE tradicional y no activa automaticamente O2.
 static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *despues)
 {
     snprintf(g->titulo, sizeof g->titulo, "Antes y después de eliminar el código muerto");
@@ -435,6 +489,7 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
     g->leyenda[0] = "Con código muerto (el código del editor)";
     g->leyenda[1] = "Sin código muerto";
     g->escala_por_fila = 1;
+    // El gráfico toma los contadores observados, sin volver a ejecutar CPU.
     const SimMetricasResumen *a = &antes->sim, *d = &despues->sim;
     fila_dce(g, "Ciclos", (double)a->ciclos, (double)d->ciclos, -1);
     fila_dce(g, "Instrucciones ejecutadas", (double)a->instrucciones_utiles,
@@ -444,6 +499,7 @@ static void armar_dce(Grafica *g, const MetMedicion *antes, const MetMedicion *d
     fila_dce(g, "Tamaño del programa (bundles)", (double)antes->bundles, (double)despues->bundles, -1);
     /* Conservamos la fila de bundles y añadimos la huella estática en bytes.
      * Los dos tamaños provienen de sus propias compilaciones antes/después DCE. */
+    // La comparación de tamanos utiliza bundles estaticos por 16 bytes.
     MetComparacionTamano c;
     if (met_comparar_tamano_codigo(antes, despues, &c) == 0) {
         Fila *f = &g->filas[g->cantidad++];
@@ -524,6 +580,7 @@ GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
             snprintf(f->tip[s], sizeof f->tip[s], "%s, %s: %s", e->nombre, g->leyenda[s], t);
         }
     }
+    // La misma rutina de dibujo sirve al boton Metricas y a la comparación O0/O1/O2.
     GtkWidget *area = widget_grafica(g);
     g_object_set_data_full(G_OBJECT(area), "grafica", p, g_free);
     return area;
@@ -531,18 +588,23 @@ GtkWidget *met_grafica_comparacion(const char *titulo, const char *subtitulo,
 
 /* Mide el código del editor y, si tiene código muerto, también el código
  * sin él (el mismo que da "Aplicar al código" del botón Código muerto). */
+// INTERFAZ: solicita mediciones del código y prepara la comparación opcional DCE.
+// Se apoya en metricas.c; esta ventana no implementa el pipeline.
+// El cálculo se delega a met_medir() y las ventanas solo consumen su resultado.
 static void calcular(Datos *d, const char *texto, const char *ruta)
 {
     if (met_medir(texto, strlen(texto), ruta, 0, &d->actual) != 0) {
         d->actual.estado = MET_FALLO_SIMULADOR;
         return;
     }
+    // Si la ejecución no termino, no se comparan resultados finales como si fueran validos.
     if (d->actual.estado != MET_LISTO) {
         snprintf(d->nota_dce, sizeof d->nota_dce,
                  "La comparación necesita que el código del editor termine en el simulador.");
         return;
     }
 
+    // Para comparar el código muerto se solicita una versión BAL reescrita por DCE.
     IdeDce dce;
     if (ide_dce_analizar(texto, strlen(texto), ruta, &dce) != 0) {
         snprintf(d->nota_dce, sizeof d->nota_dce, "No se pudo hacer el DCE (falta de memoria).");
@@ -572,6 +634,8 @@ static void calcular(Datos *d, const char *texto, const char *ruta)
 /* ------------------------------------------------------------------ */
 
 /* Un número grande con su nombre debajo, para la fila de arriba. */
+// INTERFAZ: crea una tarjeta grande para una cifra de la ejecución.
+// Su etiqueta identifica la magnitud y evita confundir ciclos con bundles.
 static GtkWidget *numero_principal(const char *valor, const char *nombre)
 {
     GtkWidget *etiqueta = gtk_label_new(NULL);
@@ -583,6 +647,8 @@ static GtkWidget *numero_principal(const char *valor, const char *nombre)
     return etiqueta;
 }
 
+// INTERFAZ: organiza los indicadores de ciclos, IPC, instrucciones, bundles y tiempo.
+// Cada valor proviene de MetMedicion calculada por el backend y el simulador.
 static GtkWidget *fila_principal(const MetMedicion *m)
 {
     char ciclos[32], instrucciones[32], bundles[32], ipc[32], compilacion[32];
@@ -602,6 +668,8 @@ static GtkWidget *fila_principal(const MetMedicion *m)
 }
 
 /* Un texto que ocupa el ancho y se parte en líneas. */
+// INTERFAZ: prepara una explicacion GTK con ajuste de linea.
+// El texto orienta al usuario cuando hay errores o resultados parciales.
 static GtkWidget *parrafo(const char *marcado)
 {
     GtkWidget *etiqueta = gtk_label_new(NULL);
@@ -612,6 +680,8 @@ static GtkWidget *parrafo(const char *marcado)
 }
 
 /* Varias gráficas una debajo de otra, con barra de desplazamiento. */
+// INTERFAZ: apila gráficas en un contenedor desplazable.
+// Permite mostrar varias metricas sin recortar barras ni etiquetas.
 static GtkWidget *columna_graficas(Grafica **graficas, int cantidad)
 {
     GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -631,6 +701,9 @@ static GtkWidget *columna_graficas(Grafica **graficas, int cantidad)
  * decimales ("real"): el IPC o un tiempo en milisegundos. */
 typedef struct { const char *nombre; uint64_t valor[2]; int decimales; double real[2]; } FilaTabla;
 
+// INTERFAZ: presenta los valores numericos precisos de las metricas.
+// Complementa las gráficas con contadores y porcentajes concretos.
+// La tabla conserva los contadores exactos, aunque las barras normalicen su longitud.
 static GtkWidget *pestana_tabla(const MetMedicion *m, const MetMedicion *otra)
 {
     const SimMetricasResumen *a = &m->sim;
@@ -704,6 +777,8 @@ static GtkWidget *pestana_tabla(const MetMedicion *m, const MetMedicion *otra)
 }
 
 /* Contenido cuando no hay métricas que mostrar. */
+// INTERFAZ: convierte un estado de medicion fallida en una explicacion.
+// Diferencia errores de fuente, backend, simulador y ejecución incompleta.
 static const char *sin_metricas(const MetMedicion *m)
 {
     switch (m->estado) {
@@ -718,6 +793,9 @@ static const char *sin_metricas(const MetMedicion *m)
     }
 }
 
+// PUNTO DE ENTRADA DEL BOTON METRICAS: abre la ventana y ejecuta la medicion.
+// Organiza las pestanas Ejecucion, Compilacion, DCE cuando procede, y Tabla.
+// Este es el punto al que llega el boton Metricas desde ide_gtk.c.
 void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta, const char *nombre)
 {
     if (ventana_met != NULL) gtk_widget_destroy(ventana_met);
@@ -788,14 +866,18 @@ void ide_mostrar_metricas(GtkWindow *padre, const char *texto, const char *ruta,
     g_free(resumen_tamano);
 
     /* Pestañas. */
+    // La pestaña Ejecucion combina uso de slots y clasificacion de bundles.
     armar_slots(&datos_met->slots, &m->sim);
     armar_bundles(&datos_met->bundles, &m->sim);
     Grafica *ejecucion[2] = {&datos_met->slots, &datos_met->bundles};
+    // Las pestañas separan ejecución, compilacion, comparación DCE y tabla de valores.
     GtkWidget *pestanas = gtk_notebook_new();
+    // Cada pestana usa los mismos datos medidos, sin ejecutar de nuevo el simulador.
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), columna_graficas(ejecucion, 2),
                              gtk_label_new("Ejecución"));
     armar_compilacion(&datos_met->compilacion, &m->compilacion);
     Grafica *compilacion[1] = {&datos_met->compilacion};
+    // La pestaña Compilacion presenta tiempos de frontend, backend y codificación.
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), columna_graficas(compilacion, 1),
                              gtk_label_new("Compilación"));
     if (datos_met->hay_dce) {

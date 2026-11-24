@@ -1,3 +1,6 @@
+// MAPA IDE: BAL del editor -> ensamblador/BALB tradicional -> M2 -> MetMedicion.
+// Los niveles O0/O1/O2 reutilizan met_simular(), pero O2 usa un productor distinto.
+
 /*
  * Métricas del código del editor (ver include/metricas.h).
  * El tamaño estático procede de los bundles emitidos; no del simulador.
@@ -39,6 +42,8 @@
 #define MET_SOSTENIDO 40u
 
 /* Copia una cadena (NULL si falta memoria). */
+// IDE: reserva una copia de texto para avisos y diagnosticos.
+// La ventana puede conservar la información después de liberar los temporales.
 static char *copiar(const char *s)
 {
     char *c = malloc(strlen(s) + 1);
@@ -56,6 +61,8 @@ static char *copiar(const char *s)
  *     nop | nop | sye x0,0 | nop  # -> __arranque_fin
  * Devuelve 0 si lo encontró, -1 si no.
  */
+// IDE: localiza en el ensamblador el salto final que señala el retorno de main.
+// Devuelve una dirección de bundle en bytes, no un índice de instruccion.
 static int buscar_fin(const char *ensamblador, uint32_t *direccion)
 {
     const char *buscado = "sye x0,0";
@@ -71,6 +78,7 @@ static int buscar_fin(const char *ensamblador, uint32_t *direccion)
         if (es_bundle) {
             /* Solo la parte antes del comentario "#". */
             size_t codigo = strcspn(linea, "#\n");
+            // El recorrido del ASM busca el salto final del arranque sin ejecutar el programa.
             for (size_t i = 0; i + largo_buscado <= codigo; ++i) {
                 if (strncmp(linea + i, buscado, largo_buscado) != 0) continue;
                 /* "sye x0,0" exacto: no "sye x0,0x10" ni "sye x0,016". */
@@ -99,12 +107,16 @@ static int buscar_fin(const char *ensamblador, uint32_t *direccion)
  * fin antes de que la llamada a main se ejecute). Por eso no basta con
  * verlo una vez: ver sigue_en_el_fin.
  */
+// IDE: comprueba si el PC pertenece a la region de salida esperada.
+// Evita aceptar como final cualquier salto transitorio a una dirección parecida.
 static int llego_al_fin(uint32_t pc, uint32_t fin, uint32_t ancho)
 {
     return pc >= fin && pc <= fin + ancho;
 }
 
 /* Explicación de un error del pipeline (sim_pipeline.h). */
+// IDE: convierte un estado de error de S6 en un mensaje legible.
+// Permite informar si fallo PC, decodificacion, ALU, LSU, BRU o CRIPTO.
 static const char *explicar_pipeline(SimPipelineEstado e)
 {
     switch (e) {
@@ -124,6 +136,8 @@ typedef enum { CORRIDA_FIN, CORRIDA_PRESUPUESTO, CORRIDA_ERROR, CORRIDA_SIN_MEMO
 
 /* Revisa cómo quedó el simulador después de avanzar. Devuelve 0 si puede
  * seguir (o terminó), o CORRIDA_ERROR / CORRIDA_SIN_MEMORIA. */
+// IDE: comprueba el estado completo de la sesion M2 después de avanzar.
+// Distingue pausa normal, finalización y errores o observaciones pendientes.
 static int revisar(const SimEjecucion *e, SimPipelineEstado *pipeline)
 {
     SimEjecucionEstado st;
@@ -140,13 +154,17 @@ static int revisar(const SimEjecucion *e, SimPipelineEstado *pipeline)
  * ciclo por ciclo. 1 si se quedó (main terminó de verdad), 0 si salió (era
  * un paso de una sola vez) o -1 si el simulador falló.
  */
+// IDE: confirma que el PC permanece en la zona de salida por varios ciclos.
+// Evita declarar que main termino al observar una visita pasajera.
 static int sigue_en_el_fin(SimEjecucion *e, uint32_t fin, uint32_t ancho, SimPipelineEstado *pipeline)
 {
     SimMetricasResumen r;
     for (unsigned i = 0; i < MET_SOSTENIDO; ++i) {
         sim_ejecucion_avanzar(e);
         if (revisar(e, pipeline) != 0 || sim_ejecucion_resultados(e, &r) != SIM_METRICAS_OK) return -1;
+        // La terminación por agotamiento de imagen se maneja por separado del bucle de salida.
         if (*pipeline == SIM_PIPE_TERMINADO) return 1;
+        // Si el PC abandona la zona final, el candidato de terminación se descarta.
         if (!llego_al_fin(r.pc, fin, ancho)) return 0;
     }
     return 1;
@@ -158,12 +176,15 @@ static int sigue_en_el_fin(SimEjecucion *e, uint32_t fin, uint32_t ancho, SimPip
  * Si "memoria" no es NULL, al terminar main copia ahí la memoria de datos
  * (MET_BYTES_MEMORIA bytes): ahí quedan las variables de main.
  */
+// IDE: ejecuta el programa por tramos y después afina el ciclo de terminación.
+// El primer recorrido busca la zona final; el segundo localiza el corte exacto.
 static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipeline,
                      uint8_t *memoria)
 {
     const uint32_t fin = m->direccion_fin;
     const uint32_t ancho = m->ancho_fin != 0 ? m->ancho_fin : MET_ANCHO_FIN_O0;
     SimEjecucion *e = NULL;
+    // El IDE utiliza una sesion M2 real, cargada desde la imagen BALB.
     if (sim_ejecucion_crear(ruta, SIM_EJECUCION_BALB, SIM_BUSQUEDA_FINITA, &e, NULL) !=
         SIM_EJECUCION_OK) return CORRIDA_ERROR;
 
@@ -172,18 +193,22 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
     uint64_t visto = 0;   /* Ciclo de la revisión que vio el fin. */
     int estado = 0;
     for (;;) {
+        // Se avanza por tramos para evitar calcular la huella de 64 KiB en cada flanco.
         sim_ejecucion_ejecutar(e, MET_TRAMO);
         if ((estado = revisar(e, pipeline)) != 0) break;
         if (sim_ejecucion_resultados(e, &r) != SIM_METRICAS_OK) { estado = CORRIDA_ERROR; break; }
         if (*pipeline == SIM_PIPE_TERMINADO) { visto = r.ciclos; break; }
+        // Detectar un PC en la salida no basta: se espera estabilidad antes de aceptar el corte.
         if (llego_al_fin(r.pc, fin, ancho)) {
             int queda = sigue_en_el_fin(e, fin, ancho, pipeline);
             if (queda < 0) { estado = CORRIDA_ERROR; break; }
             if (queda == 1) { visto = r.ciclos; break; }
         }
+        // Al agotar el presupuesto reportamos SIN TERMINAR en vez de inventar resultado final.
         if (r.ciclos >= m->presupuesto) {
             /* No terminó: se quedan las métricas hasta aquí. */
             m->sim = r;
+            // Las sesiones temporales se liberan cuando se alcanza el corte o aparece un error.
             sim_ejecucion_liberar(&e);
             return CORRIDA_PRESUPUESTO;
         }
@@ -213,7 +238,9 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
     sim_ejecucion_liberar(&e);
     if (sim_ejecucion_crear(ruta, SIM_EJECUCION_BALB, SIM_BUSQUEDA_FINITA, &e, NULL) !=
         SIM_EJECUCION_OK) return CORRIDA_ERROR;
+    // La segunda corrida salta al tramo cercano al final para ahorrar consultas frecuentes.
     uint64_t desde = visto > 2u * MET_TRAMO + 3u ? visto - 2u * MET_TRAMO - 3u : 0;
+    // Segunda corrida: se aproxima al punto final y luego afina ciclo por ciclo.
     if (desde > 0) sim_ejecucion_ejecutar(e, desde);
 
     Corrida resultado = CORRIDA_ERROR;
@@ -229,6 +256,7 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
             candidato = r;
             ciclo_candidato = ciclo;
         }
+        // Un PC estable durante suficientes ciclos acredita el primer corte de main.
         if (hay_candidato && ciclo - ciclo_candidato >= MET_SOSTENIDO) {
             /* Se quedó: main ya había regresado en el ciclo candidato. En el
              * ciclo final no se escribe memoria, así que es la misma de ese ciclo. */
@@ -246,6 +274,8 @@ static Corrida correr(const char *ruta, MetMedicion *m, SimPipelineEstado *pipel
 }
 
 /* Orden de qsort: de la compilación más rápida a la más lenta (por el total). */
+// IDE: comparador para ordenar duraciones de compilacion.
+// Se utiliza para tomar una mediana en vez de confiar en una medicion aislada.
 static int comparar_tiempos(const void *a, const void *b)
 {
     double x = ((const IdeAsmTiempos *)a)->total, y = ((const IdeAsmTiempos *)b)->total;
@@ -258,6 +288,8 @@ static int comparar_tiempos(const void *a, const void *b)
  * corrida MEDIANA por tiempo total, con sus fases. Así las fases suman lo
  * mismo que ese total. Devuelve 0 bien, -1 si una compilación falló.
  */
+// IDE: repite compilaciones y toma la mediana del tiempo total.
+// Las mediciones describen compilacion, no ciclos de simulación.
 static int medir_compilacion(const char *texto, size_t largo, const char *ruta,
                              const IdeAsmTiempos *primera, IdeAsmTiempos *mediana)
 {
@@ -265,21 +297,28 @@ static int medir_compilacion(const char *texto, size_t largo, const char *ruta,
     corridas[0] = *primera;
     for (int i = 1; i < MET_COMPILACIONES; ++i) {
         IdeEnsamblador otra;
+        // Se obtiene ensamblador y BALB reales antes de invocar el simulador.
         if (ide_ensamblador_generar(texto, largo, ruta, &otra) != 0) return -1;
         corridas[i] = otra.tiempos;
         ide_ensamblador_liberar(&otra);
     }
+    // Se ordenan las duraciones y se elige la central para reducir ruido.
     qsort(corridas, MET_COMPILACIONES, sizeof corridas[0], comparar_tiempos);
     *mediana = corridas[MET_COMPILACIONES / 2];
     return 0;
 }
 
+// API IDE: expone la localizacion de la dirección de finalización.
+// La deteccion consulta el ensamblador generado por la ruta correspondiente.
 int met_buscar_fin(const char *ensamblador, uint32_t *direccion)
 {
     if (ensamblador == NULL || direccion == NULL) return -1;
     return buscar_fin(ensamblador, direccion);
 }
 
+// API IDE: ejecuta una imagen BALB real con el simulador M2.
+// Deja ciclos, IPC y operaciones en MetMedicion; puede copiar DMEM final.
+// Esta API se reutiliza también en la comparación de niveles O0/O1/O2.
 int met_simular(const unsigned char *balb, size_t largo_balb, const char *ruta,
                 uint8_t *memoria, MetMedicion *m)
 {
@@ -297,6 +336,7 @@ int met_simular(const unsigned char *balb, size_t largo_balb, const char *ruta,
             /* Pasos 4 y 5. */
             SimPipelineEstado pipeline = SIM_PIPE_ACTIVO;
             char texto_motivo[160];
+            // El resultado distingue termino, presupuesto agotado y errores del simulador.
             switch (correr(bin, m, &pipeline, memoria)) {
                 case CORRIDA_FIN:
                     m->estado = MET_LISTO;
@@ -320,6 +360,7 @@ int met_simular(const unsigned char *balb, size_t largo_balb, const char *ruta,
                     break;
             }
         }
+        // El archivo BALB temporal se elimina independientemente del resultado.
         remove(bin);
     }
     free(bin);
@@ -327,6 +368,9 @@ int met_simular(const unsigned char *balb, size_t largo_balb, const char *ruta,
     return estado;
 }
 
+// FUNCIÓN CENTRAL DE METRICAS IDE: compila el código del editor y lo simula.
+// Usa el backend tradicional; el boton de niveles usa otra ruta para O2.
+// La ruta del boton Metricas es la compilacion tradicional del editor, NO el backend O2.
 int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presupuesto,
               MetMedicion *m)
 {
@@ -353,9 +397,11 @@ int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presup
         ide_ensamblador_liberar(&a);
         return m->motivo != NULL ? 0 : -1;
     }
+    // Cantidad de bundles ESTATICOS de la imagen, independiente de los ciclos dinamicos.
     m->bundles = a.bundles;
 
     /* Paso 2. */
+    // El PC final se deriva del ensamblador, no de adivinar cuando acaba main.
     if (buscar_fin(a.ensamblador, &m->direccion_fin) != 0) {
         m->estado = MET_SIN_BACKEND;
         m->motivo = copiar("el ensamblador no tiene el salto final del arranque (sye x0,0)");
@@ -372,6 +418,8 @@ int met_medir(const char *texto, size_t largo, const char *ruta, uint64_t presup
 
 /* La conversión utiliza el conteo emitido, nunca bundles retirados o ciclos.
  * Comprobamos antes de multiplicar para poder reutilizarla fuera de IMEM actual. */
+// IDE: calcula la huella estatica de los bundles del programa.
+// Cada bundle VLIW ocupa 16 bytes, independientemente de cuantos slots sean NOP.
 int met_calcular_bytes_codigo(size_t bundles, size_t *bytes)
 {
     if (bytes == NULL || bundles > SIZE_MAX / MET_BYTES_BUNDLE) return -1;
@@ -381,15 +429,20 @@ int met_calcular_bytes_codigo(size_t bundles, size_t *bytes)
 
 /* Una ejecución cortada conserva su imagen completa. En cambio, un fallo de
  * compilación no acredita una imagen, aunque el llamador dejara un conteo viejo. */
+// IDE: obtiene el tamaño estático de una medicion terminada o limitada.
+// No cuenta ciclos ni bytes efectivamente leidos de memoria.
 int met_tamano_codigo(const MetMedicion *m, size_t *bytes)
 {
     if (m == NULL || (m->estado != MET_LISTO && m->estado != MET_SIN_TERMINAR)) return -1;
+    // La huella estatica se calcula multiplicando por 16; los NOP también ocupan bits.
     return met_calcular_bytes_codigo(m->bundles, bytes);
 }
 
 /* Usamos una magnitud y un signo separado: dos tamaños size_t pueden diferir
  * más que PTRDIFF_MAX. El porcentaje divide en coma flotante después de la
  * resta exacta, sin multiplicar enteros por 100 ni dividir por cero. */
+// IDE: compara la huella de código de dos compilaciones.
+// La diferencia de bytes no demuestra por si sola mejor rendimiento.
 int met_comparar_tamano_codigo(const MetMedicion *antes, const MetMedicion *despues,
                               MetComparacionTamano *comparacion)
 {
@@ -408,17 +461,23 @@ int met_comparar_tamano_codigo(const MetMedicion *antes, const MetMedicion *desp
     return 0;
 }
 
+// IDE: convierte parte/total a porcentaje para las gráficas.
+// Un denominador cero produce cero y evita division invalida.
 double met_porcentaje(uint64_t parte, uint64_t total)
 {
     return total == 0 ? 0.0 : 100.0 * (double)parte / (double)total;
 }
 
+// IDE: traduce el índice de slot al nombre ALU, LSU, BRU o CRIPTO.
+// El orden coincide con los cuatro campos del bundle del procesador.
 const char *met_nombre_slot(int slot)
 {
     static const char *const nombres[4] = {"ALU", "LSU", "BRU", "CRIPTO"};
     return slot >= 0 && slot < 4 ? nombres[slot] : "?";
 }
 
+// IDE: obtiene del recolector M1 las diferencias de rendimiento.
+// Solo compara mediciones válidas: no confunde una pausa con terminación.
 int met_comparar(const MetMedicion *antes, const MetMedicion *despues,
                  SimMetricasComparacion *comparacion)
 {
@@ -428,6 +487,8 @@ int met_comparar(const MetMedicion *antes, const MetMedicion *despues,
                ? 0 : -1;
 }
 
+// IDE: libera textos y restablece una MetMedicion.
+// No libera el simulador: la sesion ya fue cerrada al medir.
 void met_liberar(MetMedicion *m)
 {
     if (m == NULL) return;

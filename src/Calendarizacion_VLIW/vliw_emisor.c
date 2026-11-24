@@ -1,3 +1,5 @@
+// S8 escribe en texto ensamblador los bundles que S7 ya organizó.
+// Mantiene cada operación en su slot; convierte los destinos directos a las etiquetas del nuevo plan.
 /* Conserva slots, NOP y etiquetas de protección de S7. La única sustitución
  * textual es el destino directo BRU; CB resuelve y valida el desplazamiento. */
 #include "vliw_emisor.h"
@@ -12,6 +14,7 @@
  * texto es almacenamiento propio; longitud excluye el terminador y capacidad mide la reserva
  * disponible para construir ASM sin publicarlo parcialmente.
  */
+// El buffer cadena almacena el texto ensamblador mientras se va generando.
 typedef struct { char *texto; size_t longitud, capacidad; } Cadena;
 typedef enum { FORMA_NORMAL, FORMA_COND, FORMA_SYE, FORMA_SYER, FORMA_RET } Forma;
 
@@ -31,8 +34,10 @@ static VliwEmisorEstado error(VliwEmisorDiagnostico *d, VliwEmisorEstado s,
 #define FALLAR(s,i,b,m) error(d,s,i,b,m)
 /* La reserva geométrica no publica el buffer. Se comprueba el tamaño antes
  * de sumar el terminador; realloc fallido conserva el bloque liberable. */
+// Añade texto al buffer y lo amplía si la capacidad actual no alcanza.
 static bool agregar(Cadena *c, const char *s, size_t n)
 {
+    // Comprueba que el tamaño requerido pueda representarse antes de reservarlo.
     if (n > SIZE_MAX-c->longitud-1) return false;
     // Incluimos el terminador en el tamaño requerido y hacemos crecer el buffer sin perder el
     // puntero anterior si realloc falla. Solo después de reservar copiamos el fragmento y
@@ -41,6 +46,7 @@ static bool agregar(Cadena *c, const char *s, size_t n)
     if (requerido > c->capacidad) {
         size_t nueva = c->capacidad ? c->capacidad : 128;
         while (nueva < requerido) nueva = nueva > SIZE_MAX/2 ? requerido : nueva*2;
+        // Aumenta la capacidad del buffer conservando el texto ya escrito.
         char *p = realloc(c->texto,nueva);
         if (!p) return false;
         c->texto = p; c->capacidad = nueva;
@@ -56,6 +62,7 @@ static bool literal(Cadena *c,const char *s) { return agregar(c,s,strlen(s)); }
  * Genera el nombre interno único del bloque en el arreglo recibido; no toma etiquetas del
  * texto de la instrucción.
  */
+// Crea etiquetas únicas como __vliw_b0 para identificar bloques del plan.
 static void etiqueta(char nombre[64],size_t b)
 {
     /* Prefijo reservado interno. Ningún texto puede declarar etiquetas: los
@@ -77,6 +84,7 @@ static char *recortar(char *s)
  * Valida la sintaxis del destino que se sustituirá: identificador o entero con base; no
  * infiere su PC ni su bloque.
  */
+// Reconoce si un destino de salto está escrito con una etiqueta o un desplazamiento.
 static bool token_destino(const char *s)
 {
     /* Solo valida la forma del operando que se DESCARTARÁ. No obtiene un PC,
@@ -97,6 +105,7 @@ static bool token_destino(const char *s)
 }
 /* Contrasta el texto de una operación con S2 y sus metadatos físicos.
  * El emisor rechaza inconsistencias; no replanifica ni corrige el programa. */
+// Valida el texto ISA antes de emitirlo y detecta las instrucciones de salto.
 static VliwEmisorEstado validar_texto(const VliwInstruccion *in,size_t i,
                                      Forma *forma,VliwEmisorDiagnostico *d)
 {
@@ -149,6 +158,7 @@ static VliwEmisorEstado validar_texto(const VliwInstruccion *in,size_t i,
  * Busca el índice destino en los sucesores declarados del bloque; devuelve false si el CFG no
  * contiene esa arista.
  */
+// Comprueba que el destino elegido sea una salida posible del bloque en el CFG.
 static bool contiene(const VliwBloque *b,size_t destino)
 {
     for (size_t j=0;j<b->cantidad_sucesores;++j) if (b->sucesores[j]==destino) return true;
@@ -156,6 +166,7 @@ static bool contiene(const VliwBloque *b,size_t destino)
 }
 /* El CFG se interpreta como conjunto: tomado y caída pueden coincidir,
  * pero el orden de sus elementos nunca decide cuál ruta se toma. */
+// Verifica que los destinos declarados coincidan con los sucesores del bloque.
 static bool cfg_exacto(const VliwBloque *b,size_t tomado,size_t caida)
 {
     size_t cantidad=1+(size_t)(caida!=VLIW_VACIO && caida!=tomado);
@@ -166,6 +177,7 @@ static bool cfg_exacto(const VliwBloque *b,size_t tomado,size_t caida)
  * Contrasta forma BRU, tipo de transferencia, destino y caída con el CFG; devuelve diagnóstico
  * y rechaza destinos sin resolver.
  */
+// Rechaza un salto si su clase o sus destinos contradicen la ISA o el CFG.
 static VliwEmisorEstado validar_destino(const VliwEntrada *e,size_t i,Forma f,
                                        const VliwDestino *t,VliwEmisorDiagnostico *d)
 {
@@ -212,15 +224,18 @@ static uint64_t registro(uint8_t r) { return r>0 && r<32 ? UINT64_C(1)<<r : 0; }
  * Decodifica mediante S2 los bundles ya producidos por CB y contrasta NOP, slots, máscaras y
  * efectos con los metadatos S7.
  */
+// Verifica mediante CB y S2 que el texto emitido conserve la operación física.
 static VliwEmisorEstado verificar_codigo(const VliwEntrada *e,const VliwPlan *p,
                                          const CbPrograma *cb,VliwEmisorDiagnostico *d)
 {
+    // El codificador no puede agregar ni quitar bundles respecto del plan.
     if (cb->cantidad!=p->cantidad_bundles)
         return FALLAR(VLIW_EM_CODIFICADOR,VLIW_VACIO,VLIW_VACIO,"el codificador alteró la cantidad de bundles");
     /*
      * Contrastamos el layout de S7 con el código de CB, incluyendo los slots vacíos: ninguna
      * operación puede aparecer o desaparecer al emitir.
      */
+    // Recorre los cuatro slots de cada bundle y compara sus operaciones decodificadas.
     for (size_t q=0;q<p->cantidad_bundles;++q) for (unsigned s=0;s<4;++s) {
         size_t indice=p->bundles[q].instrucciones[s]; uint32_t palabra=cb->bundles[q].slots[s];
         if (indice==VLIW_VACIO) {
@@ -274,6 +289,7 @@ void vliw_emisor_liberar(char **s) { if (s) { free(*s); *s=NULL; } }
  * No acepta etiquetas, comentarios, saltos de línea ni separadores de slots.
  * Las máscaras deben coincidir con los operandos S2 (excluido x0) y los efectos
  * deben cubrir la semántica real. No se reparan metadatos ni destinos antiguos. */
+// vliw_cadena_fisica.c llama a vliw_emitir() y recibe el texto en c->asm_texto.
 VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
                              const VliwDestinos *destinos,char **salida,VliwEmisorDiagnostico *d)
 {
@@ -281,6 +297,7 @@ VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
     if (!e || !p || !salida || *salida)
         return FALLAR(VLIW_EM_ARGUMENTO,VLIW_VACIO,VLIW_VACIO,"entrada, plan y salida NULL inicial requeridos");
     VliwDiagnostico sd;
+    // No escribe ensamblador de un plan que S7 considera inválido.
     VliwEstado v=vliw_verificar(e,p,&sd);
     if (d) d->estado_plan=v;
     if (v!=VLIW_OK) return FALLAR(v==VLIW_MEMORIA?VLIW_EM_MEMORIA:VLIW_EM_PLAN,sd.instruccion,VLIW_VACIO,sd.mensaje);
@@ -299,6 +316,7 @@ VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
     // Construimos un mapa de índice de instrucción a destino y rechazamos duplicados o entradas
     // ajenas a BRU. Después revisamos los sucesores CFG y cada texto antes de comenzar la
     // emisión.
+    // Comprueba que los saltos directos tengan sus destinos estructurados.
     for(size_t t=0;t<nt;++t) {
         size_t i=destinos->items[t].instruccion;
         if(i>=n || e->instrucciones[i].control==VLIW_CONTROL_NINGUNO || por_indice[i]!=VLIW_VACIO) {
@@ -310,6 +328,7 @@ VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
         for(size_t j=0;j<i;++j)if(e->bloques[b].sucesores[i]==e->bloques[b].sucesores[j]) {
             estado=FALLAR(VLIW_EM_DESTINO,VLIW_VACIO,b,"sucesor CFG duplicado");goto terminar;
         }
+    // Rechaza instrucciones sin un texto ISA válido.
     for(size_t i=0;i<n;++i) {
         estado=validar_texto(&e->instrucciones[i],i,&formas[i],d);if(estado)goto terminar;
         if(e->instrucciones[i].control!=VLIW_CONTROL_NINGUNO) {
@@ -320,19 +339,24 @@ VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
     /* El recorrido es por bundle y slot del plan, nunca por id externo.
      * La etiqueta precede al guard inicial; no consume una posición IMEM. */
     size_t bloque=0;
+    // Recorre los bundles en orden; no cambia su distribución.
     for(size_t q=0;q<p->cantidad_bundles;++q) {
+        // Coloca las etiquetas antes de los bundles de guarda para que los saltos entren de forma segura.
         if(bloque<e->cantidad_bloques && p->inicio_por_bloque[bloque]==q) {
             char nombre[64];etiqueta(nombre,bloque++);
             if(!literal(&c,nombre)||!literal(&c,":\n"))goto memoria;
         }
+        // Escribe cada bundle con cuatro slots en orden ALU | LSU | BRU | CRIPTO.
         for(unsigned s=0;s<4;++s) {
             if(s && !literal(&c," | "))goto memoria;
             size_t i=p->bundles[q].instrucciones[s];
             // Un slot vacío emite la palabra textual nop y conserva su posición
             // ALU/LSU/BRU/CRIPTO. No compactamos operaciones dentro de la línea: eso alteraría
             // el bundle planificado.
+            // Los slots sin instrucción se escriben como nop.
             if(i==VLIW_VACIO) {if(!literal(&c,"nop"))goto memoria;continue;}
             const char *texto=e->instrucciones[i].texto;
+            // Actualiza el destino del salto a la etiqueta calculada para el nuevo plan.
             if(formas[i]==FORMA_COND || formas[i]==FORMA_SYE) {
                 // En una transferencia directa conservamos el texto hasta la última coma y
                 // sustituimos únicamente el destino por la etiqueta del bloque tomado. CB
@@ -349,6 +373,7 @@ VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
         /* Se valida el texto COMPLETO con el codificador real, incluidos
          * rangos y caminos RAW. No se implementa otro cálculo de inmediatos.
          * El tmpfile es privado y nunca contiene una salida publicada parcial. */
+        // El archivo temporal contiene diagnósticos del codificador, no el binario.
         FILE *diag=tmpfile();char detalle[256]={0};
         if(!diag) {estado=FALLAR(VLIW_EM_IO,VLIW_VACIO,VLIW_VACIO,"no se pudo crear el flujo privado de diagnóstico");goto terminar;}
         // Delegamos la codificación completa a CB y recuperamos su diagnóstico privado. Un fallo
@@ -366,10 +391,12 @@ VliwEmisorEstado vliw_emitir(const VliwEntrada *e,const VliwPlan *p,
             if(d) {size_t len=strlen(d->mensaje);snprintf(d->mensaje+len,sizeof(d->mensaje)-len,": %s",detalle);}
             goto terminar;
         }
+        // Decodifica lo emitido para comprobar que conserve las instrucciones previstas.
         estado=verificar_codigo(e,p,&cb,d);if(estado)goto terminar;
     }
     /* Único punto de publicación: solo después de validar el texto completo
      * y contrastar sus palabras con los metadatos mediante S2. */
+    // Entrega el texto generado solo cuando pasó todas las verificaciones.
     *salida=c.texto;c.texto=NULL;
     estado=FALLAR(VLIW_EM_OK,VLIW_VACIO,VLIW_VACIO,"ensamblador completo y validado");goto terminar;
 memoria:

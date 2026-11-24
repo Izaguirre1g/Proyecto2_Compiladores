@@ -1,3 +1,6 @@
+// MAPA S1: archivo .mem o BALB -> SimImagen (IMEM + DMEM).
+// El cargador válida bytes; S2 decodifica y S6 ejecuta después.
+
 /* Cargador de programas para el simulador VLIW.
  * Valida archivos MEM y BALB y organiza instrucciones y datos en IMEM/DMEM.
  * La carga no decodifica ni ejecuta las palabras recibidas. */
@@ -14,6 +17,8 @@ enum { BALB_CABECERA = 48, BALB_MAX_DATOS = 16384 };
 
 /* Emite un diagnóstico con argumentos variables y devuelve el estado recibido.
  * Una salida NULL omite el mensaje, pero conserva el mismo código de error. */
+// AUXILIAR: prepara el diagnostico del cargador sin modificar la imagen.
+// Si se recibe un FILE*, escribe la causa; siempre devuelve el estado de error recibido.
 static SimCargaEstado fallo(FILE *salida, SimCargaEstado estado,
                             const char *formato, ...)
 {
@@ -33,6 +38,8 @@ static SimCargaEstado fallo(FILE *salida, SimCargaEstado estado,
 /* Reconstruye una palabra de 32 bits desde cuatro bytes little-endian:
  * p[0] contiene los bits menos significativos y p[3] los más altos.
  * El llamador debe proporcionar cuatro bytes legibles. */
+// AUXILIAR: convierte cuatro bytes consecutivos en una palabra de 32 bits.
+// El archivo BALB usa little-endian: primer byte = bits menos significativos.
 static uint32_t leer32(const uint8_t *p)
 {
     /* Cada byte se convierte antes de desplazarlo para operar en uint32_t.
@@ -44,6 +51,8 @@ static uint32_t leer32(const uint8_t *p)
 
 /* Traduce un carácter hexadecimal a un valor entre 0 y 15. El -1 distingue
  * cualquier carácter ajeno a esa representación, incluso los espacios. */
+// AUXILIAR: convierte un digito hexadecimal ASCII en su valor 0..15.
+// Devuelve -1 si el carácter no pertenece al conjunto 0-9, a-f, A-F.
 static int hexadecimal(int c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -55,11 +64,15 @@ static int hexadecimal(int c)
 /* Lee bundles hexadecimales de un archivo ya abierto y llena la imagen privada.
  * Cada línea no vacía aporta un bundle. Si hay un formato inválido o un error
  * de lectura, cargar() descartará la imagen parcial al recibir el estado. */
+// FORMATO .mem: transforma cada linea hexadecimal válida en un bundle de cuatro slots.
+// El archivo enumera los slots al reves del arreglo interno; el cargador invierte ese orden.
+// Los accesos de archivo siempre diferencian errores de formato de fallos de entrada/salida.
 static SimCargaEstado leer_mem(FILE *f, SimImagen *imagen, FILE *diag)
 {
     /* Acumuladores del bundle actual; solo se copian a IMEM al completar
      * una línea válida. digitos cuenta los caracteres hexadecimales leídos
      * y linea permite señalar dónde se encontró una entrada incorrecta. */
+    // Estos cuatro acumuladores son las futuras palabras del bundle; su orden interno es ALU, LSU, BRU, CRIPTO.
     uint32_t slots[SIM_CARGADOR_SLOTS] = {0};
     size_t digitos = 0, linea = 1;
     /* c es int para distinguir todos los bytes de EOF. fin_palabra recuerda
@@ -68,6 +81,7 @@ static SimCargaEstado leer_mem(FILE *f, SimImagen *imagen, FILE *diag)
     int c, fin_palabra = 0;
     for (;;) {
         c = fgetc(f);
+        // Fin de linea: solo ahora se acepta el bundle, cuando ya tiene sus 32 digitos.
         if (c == '\n' || c == EOF) {
             /* EOF también permite procesar la última línea sin salto final.
              * ferror separa ese final normal de una falla real de lectura. */
@@ -77,13 +91,16 @@ static SimCargaEstado leer_mem(FILE *f, SimImagen *imagen, FILE *diag)
              * llegar los 32 dígitos completos. Una palabra NOP usa ocho ceros;
              * un bundle con cuatro NOP usa 32. Una línea vacía no agrega nada. */
             if (digitos) {
+                // Rechazamos una linea parcial: hacen falta 8 digitos por cada uno de los 4 slots.
                 if (digitos != 32)
                     return fallo(diag, SIM_CARGA_FORMATO,
                                  ".mem, línea %zu: se requieren 32 dígitos hexadecimales", linea);
                 /* Se comprueba la capacidad antes de usar el índice de IMEM.
                  * El incremento registra el bundle que acaba de copiarse. */
+                // IMEM tiene capacidad fija: se válida antes de escribir.
                 if (imagen->cantidad_bundles == SIM_CARGADOR_IMEM_BUNDLES)
                     return fallo(diag, SIM_CARGA_FORMATO, ".mem excede los 1024 bundles de IMEM");
+                // La imagen solo incorpora el bundle cuando toda la linea ha sido aceptada.
                 memcpy(imagen->imem[imagen->cantidad_bundles++], slots, sizeof slots);
             }
             if (c == EOF) break;
@@ -108,6 +125,7 @@ static SimCargaEstado leer_mem(FILE *f, SimImagen *imagen, FILE *diag)
             /* Ocho dígitos forman cada palabra: digitos / 8 identifica la
              * palabra textual. Restar de 3 invierte CRIPTO→ALU del archivo
              * para almacenarlas en el orden interno ALU=0 hasta CRIPTO=3. */
+            // El .mem presenta CRIPTO primero, pero IMEM lo guarda como slot 3; por eso se invierte el índice.
             size_t slot = 3 - digitos / 8;
             /* Desplazar cuatro bits abre espacio para el nuevo dígito; el OR
              * lo incorpora. El contador avanza para ubicar el próximo dígito. */
@@ -125,6 +143,8 @@ static SimCargaEstado leer_mem(FILE *f, SimImagen *imagen, FILE *diag)
 /* Copia exactamente n bytes al destino proporcionado por el llamador.
  * Una lectura corta es IO si falló el flujo, o FORMATO si terminó el archivo
  * antes de completar la parte que el encabezado o el formato exigían. */
+// AUXILIAR BALB: exige el número exacto de bytes requerido por el formato.
+// Distingue un archivo truncado de un fallo de lectura.
 static SimCargaEstado leer_exacto(FILE *f, uint8_t *p, size_t n, FILE *diag)
 {
     if (fread(p, 1, n, f) == n) return SIM_CARGA_OK;
@@ -135,25 +155,32 @@ static SimCargaEstado leer_exacto(FILE *f, uint8_t *p, size_t n, FILE *diag)
 /* Interpreta BALB v1 desde el inicio del archivo y llena la imagen privada.
  * Primero valida todos los metadatos; luego lee código y datos en ese orden.
  * Un rechazo devuelve su causa sin publicar la imagen al usuario de la API. */
+// FORMATO .bin/BALB: interpreta la cabecera y carga las secciones de código y datos.
+// Antes de copiar revisa firma, versión, tamanos, offsets, entrada y limites de memoria.
 static SimCargaEstado leer_balb(FILE *f, SimImagen *imagen, FILE *diag)
 {
     /* Los primeros 48 bytes son metadatos: cuatro de firma y once campos de
      * cuatro bytes. No se pueden tratar como el primer bundle de código. */
+    // La cabecera BALB no contiene instrucciones; describe donde estan las secciones del archivo.
     uint8_t cabecera[BALB_CABECERA];
+    // Una lectura incompleta detiene la carga: no se publica una imagen parcialmente válida.
     SimCargaEstado estado = leer_exacto(f, cabecera, sizeof cabecera, diag);
     if (estado != SIM_CARGA_OK) return estado;
     /* La firma identifica el contenedor y permite rechazar binarios crudos
      * u otros archivos antes de interpretar sus bytes como campos BALB. */
+    // Se comprueba la firma antes de interpretar otros bytes como instrucciones.
     if (memcmp(cabecera, "BALB", 4))
         return fallo(diag, SIM_CARGA_FORMATO, "firma BALB inválida");
 
     uint32_t campos[11];
     /* La firma ocupa los primeros cuatro bytes. Cada iteración avanza otros
      * cuatro y reconstruye un campo little-endian, sin alinear punteros C. */
+    // Cada campo de cabecera tiene cuatro bytes; leer32 maneja el orden little-endian.
     for (size_t i = 0; i < 11; ++i) campos[i] = leer32(cabecera + 4 + 4 * i);
     /* Los tamaños cuentan bytes; los offsets localizan secciones dentro del
      * archivo. entrada y las bases son direcciones del procesador: pertenecen
      * a IMEM/DMEM y no incluyen el encabezado del contenedor. */
+    // Los campos se extraen del encabezado y se validan antes de reservar/copiar secciones.
     uint32_t version = campos[0], encabezado = campos[1], total = campos[2];
     uint32_t entrada = campos[3], offset_codigo = campos[4], codigo = campos[5];
     uint32_t base_codigo = campos[6], offset_datos = campos[7], datos = campos[8];
@@ -161,10 +188,12 @@ static SimCargaEstado leer_balb(FILE *f, SimImagen *imagen, FILE *diag)
 
     /* Solo se conoce esta versión y su disposición fija. Otro encabezado
      * podría cambiar el significado o la posición de los campos restantes. */
+    // El lector conoce únicamente la versión 1 del contenedor.
     if (version != 1 || encabezado != BALB_CABECERA)
         return fallo(diag, SIM_CARGA_FORMATO, "versión o tamaño de encabezado BALB incompatible");
     /* Se exige al menos un bundle, sin palabras parciales al final, y una
      * longitud que quepa en los 1024 bundles de IMEM. */
+    // Un segmento de código debe medir un número entero de bundles de 16 bytes.
     if (!codigo || codigo % SIM_CARGADOR_BYTES_BUNDLE ||
         codigo > SIM_CARGADOR_IMEM_BUNDLES * SIM_CARGADOR_BYTES_BUNDLE)
         return fallo(diag, SIM_CARGA_FORMATO, "tamaño de código inválido o fuera de IMEM");
@@ -232,6 +261,9 @@ typedef SimCargaEstado (*Lector)(FILE *, SimImagen *, FILE *);
 /* Administra la carga completa y sus recursos para cualquiera de los lectores.
  * Devuelve la imagen mediante el doble puntero solo si lectura y cierre
  * terminan bien; ante cualquier fallo devuelve el estado y descarta la reserva. */
+// ENTRADA COMUN S1: abre el archivo y reserva una imagen privada para IMEM/DMEM.
+// Solo entrega la imagen al usuario cuando todo el archivo paso la validación.
+// La eleccion de formato ocurre aqui; el archivo se cierra incluso en los caminos de error.
 static SimCargaEstado cargar(const char *ruta, SimImagen **imagen, FILE *diag,
                              Lector lector)
 {
@@ -264,17 +296,22 @@ static SimCargaEstado cargar(const char *ruta, SimImagen **imagen, FILE *diag,
     /* La reserva privada se descarta al fallar. Solo la asignación de la rama
      * de éxito entrega su propiedad al llamador: nunca ve una imagen parcial. */
     if (estado != SIM_CARGA_OK) free(nueva);
+    // Se transfiere la imagen al cliente solo después de validar y llenar IMEM/DMEM.
     else *imagen = nueva;
     return estado;
 }
 
 /* Entrada pública para la imagen hexadecimal; comparte las garantías de cargar. */
+// API PUBLICA S1: carga una imagen textual .mem mediante cargar().
+// No ejecuta ni decodifica la semantica de las instrucciones.
 SimCargaEstado sim_cargar_mem(const char *ruta, SimImagen **imagen, FILE *diag)
 {
     return cargar(ruta, imagen, diag, leer_mem);
 }
 
 /* Entrada pública para el contenedor; nunca interpreta su encabezado como código. */
+// API PUBLICA S1: carga el contenedor binario BALB mediante cargar().
+// Devuelve una SimImagen que consumira sim_pipeline_iniciar().
 SimCargaEstado sim_cargar_balb(const char *ruta, SimImagen **imagen, FILE *diag)
 {
     return cargar(ruta, imagen, diag, leer_balb);
@@ -283,6 +320,8 @@ SimCargaEstado sim_cargar_balb(const char *ruta, SimImagen **imagen, FILE *diag)
 /* Devuelve al sistema la reserva entregada por una carga correcta. Al poner
  * el puntero del llamador en NULL se puede volver a cargar o liberar sin
  * repetir la liberación de esa reserva. No modifica otros alias del puntero. */
+// LIBERACION S1: destruye la imagen reservada por el cargador.
+// Admite puntero nulo y deja NULL el puntero del llamador.
 void sim_liberar_imagen(SimImagen **imagen)
 {
     if (imagen) {

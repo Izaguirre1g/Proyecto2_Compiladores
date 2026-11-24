@@ -1,3 +1,5 @@
+// Verifica que la entrada física de S7 sea coherente con la ISA, los bloques y las dependencias.
+// Solo valida: no mueve instrucciones ni genera binario.
 /* Comprueba el contrato físico de integración sin producir instrucciones ni planes.
  * Consume VliwEntrada/VliwDestinos prestados; CB y S2 reconocen la ISA existente.
  * Las reservas y contextos locales son privados: solo se devuelve un diagnóstico.
@@ -27,6 +29,7 @@ static VliwIntegracionEstado informar(VliwIntegracionDiagnostico *d,
 
 /* Obtiene el bit de un GPR real, sin x0 ni el marcador de registro ausente S2.
  * No asigna registros: se usa solo para contrastar operandos ya decodificados. */
+// Cada bit representa un registro físico; x0 queda fuera porque siempre vale cero.
 static uint64_t bit_registro(unsigned r)
 {
     return r > 0 && r < 32 ? UINT64_C(1) << r : 0;
@@ -34,6 +37,7 @@ static uint64_t bit_registro(unsigned r)
 
 /* Acepta la forma del operando directo que S8-A sustituirá, sin interpretar su
  * valor antiguo como PC. La cadena privada ya fue recortada y es ASCII. */
+// Comprueba el formato del destino, sin modificar ni resolver el salto.
 static bool destino_lexico(const char *s)
 {
     if (isalpha((unsigned char)*s) || *s == '_') {
@@ -57,10 +61,12 @@ static bool destino_lexico(const char *s)
 /* Reconoce una operación mediante CB/S2 sobre un contexto privado de un slot.
  * Solo normaliza el destino directo que se reemplazará al emitir; no obtiene
  * destinos del texto ni publica ensamblador. Libera CB y el flujo en todo caso. */
+// Codifica una operación aislada con CB y la decodifica con S2 para validarla.
 static VliwIntegracionEstado reconocer(const VliwInstruccion *in, size_t i,
     SimInstruccion *real, VliwIntegracionDiagnostico *d)
 {
     const char *s = in->texto;
+    // El texto de la operación es obligatorio para contrastarlo con su codificación.
     if (!s || !*s) return ERROR(VLIW_INT_ISA,i,VAC,in->bloque,VAC,"falta texto ISA no-NOP");
     size_t n = 0;
     // Impedimos que una operación introduzca otra línea, etiqueta o slot. El
@@ -92,12 +98,14 @@ static VliwIntegracionEstado reconocer(const VliwInstruccion *in, size_t i,
             return ERROR(VLIW_INT_ISA,i,VAC,in->bloque,VAC,"destino textual malformado");
         coma[1]='0'; coma[2]='\0';
     }
+    // Coloca la instrucción en su slot físico y deja NOP en los otros tres.
     const char *slots[4]={"nop","nop","nop","nop"}; slots[in->slot]=op;
     char contexto[256];
     (void)snprintf(contexto,sizeof contexto,"%s | %s | %s | %s\n",slots[0],slots[1],slots[2],slots[3]);
     FILE *diag=tmpfile();
     if (!diag) return ERROR(VLIW_INT_IO,i,VAC,in->bloque,VAC,"no se pudo crear diagnóstico privado CB");
     CbPrograma cb={0};
+    // CB genera la palabra binaria de prueba y S2 comprueba su significado.
     int resultado=cb_ensamblar(contexto,&cb,diag);
     char detalle[256]={0};
     bool io=fflush(diag)!=0 || fseek(diag,0,SEEK_SET)!=0;
@@ -117,11 +125,14 @@ static VliwIntegracionEstado reconocer(const VliwInstruccion *in, size_t i,
 
 /* Contrasta operandos y efectos mínimos con la instrucción real S2. No devuelve
  * metadatos nuevos: rechaza los recibidos si describen otra operación. */
+// Confirma que los operandos declarados correspondan a la operación física real.
 static VliwIntegracionEstado fisica(const VliwInstruccion *in, size_t i,
     const SimInstruccion *r, VliwIntegracionDiagnostico *d)
 {
+    // Reconstruye lecturas y escrituras de registros usando los operandos de S2.
     uint64_t lee=bit_registro(r->rs1)|bit_registro(r->rs2);
     uint64_t escribe=bit_registro(r->rd)|bit_registro(r->rd2);
+    // No permite declarar menos registros de los que realmente utiliza la operación.
     if ((in->lee & ~UINT64_C(1))!=lee || (in->escribe & ~UINT64_C(1))!=escribe)
         return ERROR(VLIW_INT_METADATOS,i,VAC,in->bloque,VAC,"máscaras no coinciden con los operandos físicos S2");
     unsigned minimo=0;
@@ -148,6 +159,7 @@ static VliwIntegracionEstado fisica(const VliwInstruccion *in, size_t i,
 
 /* Busca una arista CFG en el arreglo prestado. No interpreta el orden como
  * tomado/caída: los sucesores representan un conjunto de bloques. */
+// Comprueba si el destino del salto es un sucesor permitido por el CFG.
 static bool contiene(const VliwBloque *b, size_t destino)
 {
     for (size_t j=0;j<b->cantidad_sucesores;++j)
@@ -157,10 +169,12 @@ static bool contiene(const VliwBloque *b, size_t destino)
 
 /* Comprueba una transferencia con la tabla explícita de S8-A y la forma S2.
  * Solo las directas tienen tomado estático; no calcula direcciones indirectas. */
+// Rechaza saltos cuyos destinos no correspondan al flujo de control declarado.
 static VliwIntegracionEstado transferencia(const VliwEntrada *e, size_t i,
     const SimInstruccion *r, const VliwDestino *t, size_t it, VliwIntegracionDiagnostico *d)
 {
     const VliwInstruccion *in=&e->instrucciones[i]; const VliwBloque *b=&e->bloques[in->bloque];
+    // Las transferencias de control directas deben tener una descripción de destino.
     if (!t || (unsigned)t->tipo>VLIW_DEST_NO_RESUELTO)
         return ERROR(VLIW_INT_DESTINO,i,VAC,in->bloque,it,"falta destino único o su tipo es inválido");
     if (t->tipo==VLIW_DEST_NO_RESUELTO)
@@ -193,6 +207,7 @@ static VliwIntegracionEstado transferencia(const VliwEntrada *e, size_t i,
 
 /* Identifica las barreras que S7 aísla conservadoramente: CRIPTO, estado,
  * excepciones, efectos desconocidos y límites de llamada/retorno. */
+// Identifica barreras que impiden adelantar instrucciones de forma insegura.
 static bool barrera(const VliwInstruccion *in)
 {
     return in->slot==VLIW_SLOT_CRIPTO || (in->efectos & GLOBAL) ||
@@ -202,8 +217,10 @@ static bool barrera(const VliwInstruccion *in)
 /* Valida el DAG externo y la cobertura de riesgos por caminos ponderados.
  * Las aristas crecen en posición original, por lo que ese orden ya es
  * topológico. La reserva temporal se libera también en el primer rechazo. */
+// Verifica que las aristas del DAG protejan los riesgos reales entre instrucciones.
 static VliwIntegracionEstado dependencias(const VliwEntrada *e, VliwIntegracionDiagnostico *d)
 {
+    // Prepara las dimensiones necesarias para comprobar las dependencias.
     size_t n=e->cantidad_instrucciones,m=e->cantidad_dependencias;
     for (size_t a=0;a<m;++a) {
         const VliwDependencia *ar=&e->dependencias[a];
@@ -214,6 +231,7 @@ static VliwIntegracionEstado dependencias(const VliwEntrada *e, VliwIntegracionD
         if (ar->distancia>=VLIW_MAX_BUNDLES)
             return ERROR(VLIW_INT_CAPACIDAD,ar->despues,a,VAC,VAC,"distancia imposible dentro de IMEM ordinaria");
         const VliwInstruccion *u=&e->instrucciones[ar->antes],*v=&e->instrucciones[ar->despues];
+        // Comprueba RAW, WAR y WAW usando las máscaras de lectura y escritura.
         uint64_t raw=u->escribe & v->lee & ~UINT64_C(1);
         uint64_t war=u->lee & v->escribe & ~UINT64_C(1);
         uint64_t waw=u->escribe & v->escribe & ~UINT64_C(1);
@@ -226,6 +244,7 @@ static VliwIntegracionEstado dependencias(const VliwEntrada *e, VliwIntegracionD
     VliwIntegracionEstado estado=VLIW_INT_OK;
     for (size_t origen=0;origen<n && !estado;++origen) {
         for (size_t j=0;j<n;++j) dist[j]=VAC;
+        // Busca caminos entre operaciones para verificar que haya una restricción suficiente.
         dist[origen]=0;
         // Cada camino suma distancias mínimas. Saturar en 1023 evita overflow
         // y permite rechazar cadenas imposibles; no se calcula un plan aquí.
@@ -249,6 +268,7 @@ static VliwIntegracionEstado dependencias(const VliwEntrada *e, VliwIntegracionD
             if (dist[j]!=VAC && dist[j]>=VLIW_MAX_BUNDLES) {
                 estado=ERROR(VLIW_INT_CAPACIDAD,j,VAC,v->bloque,VAC,"camino del DAG no cabe en IMEM"); break;
             }
+            // Rechaza un grafo que permitiría ejecutar en un orden inseguro.
             if (minimo && (dist[j]==VAC || dist[j]<minimo)) {
                 estado=ERROR(VLIW_INT_DEPENDENCIA,j,VAC,v->bloque,VAC,"falta un camino suficiente para un riesgo físico visible"); break;
             }
@@ -261,6 +281,7 @@ static VliwIntegracionEstado dependencias(const VliwEntrada *e, VliwIntegracionD
 /* Recorre el contrato por capas, antes de cada acceso dependiente. No corrige
  * entradas ni cambia metadatos_completos; todas las salidas son diagnósticos
  * por valor y los recursos adquiridos pertenecen solo a la llamada. */
+// vliw_cadena_fisica.c llama a esta validación antes de ejecutar S7.
 VliwIntegracionEstado vliw_integracion_validar(const VliwEntrada *e,
     const VliwDestinos *destinos, VliwIntegracionDiagnostico *d)
 {
@@ -279,6 +300,7 @@ VliwIntegracionEstado vliw_integracion_validar(const VliwEntrada *e,
     if (!e->metadatos_completos)
         return ERROR(VLIW_INT_NO_ACREDITADOS,VAC,VAC,VAC,VAC,"falta declaración externa de metadatos completos");
     size_t siguiente=0;
+    // Comprueba que cada instrucción pertenezca a un bloque y que los bloques sean válidos.
     for (size_t b=0;b<nb;++b) {
         const VliwBloque *bb=&e->bloques[b];
         if (bb->inicio!=siguiente || bb->fin<=bb->inicio || bb->fin>n ||
@@ -297,6 +319,7 @@ VliwIntegracionEstado vliw_integracion_validar(const VliwEntrada *e,
     if (siguiente!=n) return ERROR(VLIW_INT_CFG,VAC,VAC,VAC,VAC,"cobertura incompleta de instrucciones");
     // La tabla se revisa antes de buscar por instrucción: no aceptamos una
     // entrada duplicada ni un destino que no corresponda a una BRU real.
+    // Rechaza destinos duplicados o bloques de destino inexistentes.
     for (size_t t=0;t<nt;++t) {
         size_t i=destinos->items[t].instruccion;
         if (i>=n || e->instrucciones[i].control==VLIW_CONTROL_NINGUNO)
@@ -317,12 +340,15 @@ VliwIntegracionEstado vliw_integracion_validar(const VliwEntrada *e,
         for (size_t j=0;j<i;++j) if (in->id==e->instrucciones[j].id)
             return ERROR(VLIW_INT_ESTRUCTURA,i,VAC,in->bloque,VAC,"identificador de operación repetido");
         SimInstruccion real;
+        // Comprueba cada texto contra la instrucción física que representa.
         VliwIntegracionEstado estado=reconocer(in,i,&real,d);
         if (estado) return estado;
+        // Los registros y efectos declarados deben cubrir lo que realmente utiliza la instrucción.
         estado=fisica(in,i,&real,d); if (estado) return estado;
         if (in->control!=VLIW_CONTROL_NINGUNO) {
             const VliwDestino *t=NULL;size_t it=VAC;
             for (size_t q=0;q<nt;++q) if (destinos->items[q].instruccion==i) {t=&destinos->items[q];it=q;break;}
+            // Confirma que los saltos coincidan con las conexiones permitidas del CFG.
             estado=transferencia(e,i,&real,t,it,d);if (estado) return estado;
         }
     }
@@ -334,6 +360,7 @@ VliwIntegracionEstado vliw_integracion_validar(const VliwEntrada *e,
                 return ERROR(VLIW_INT_CFG,bb->fin-1,VAC,b,VAC,"caída secuencial incorrecta");
         }
     }
+    // Finaliza verificando las restricciones físicas del grafo.
     VliwIntegracionEstado estado=dependencias(e,d);
     if (estado) return estado;
     return ERROR(VLIW_INT_OK,VAC,VAC,VAC,VAC,"coherencia local válida; garantías semánticas a cargo del productor");

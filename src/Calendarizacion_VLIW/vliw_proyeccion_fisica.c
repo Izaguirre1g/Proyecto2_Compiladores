@@ -1,3 +1,5 @@
+// Transforma los datos físicos en una VliwEntrada que entienden el calendarizador S7 y el emisor S8.
+// Guarda copias propias para que el plan no dependa de arreglos externos que puedan cambiar.
 /* Construye una vista S7 independiente de la vida del productor físico.
  * Recibe CFG/DAG/metadatos reales y garantías explícitas; posee las copias
  * publicadas. Reutiliza validadores, sin backend, enlace ni acreditación BAL. */
@@ -33,6 +35,7 @@ void vliw_proyeccion_liberar(VliwProyeccion **salida)
 /* Se comparan valores arquitectónicos, nunca padding ni bits que S2 ignora.
  * El offset de un salto directo será sustituido por S8-A; SYER y las ALU que
  * materializan direcciones conservan todos sus inmediatos y obligaciones. */
+// Contrasta los campos de las instrucciones decodificadas, no solo sus nombres en texto.
 bool vliw_proyeccion_misma_operacion(const SimInstruccion *a,const SimInstruccion *b)
 {
     if(!a || !b || a->estado!=SIM_DECODE_OK || b->estado!=SIM_DECODE_OK)return false;
@@ -52,10 +55,12 @@ bool vliw_proyeccion_misma_operacion(const SimInstruccion *a,const SimInstruccio
  * S2 compara operación, operandos, inmediatos y campos CRIPTO con la palabra
  * original. Así un texto con máscaras iguales pero otro inmediato se rechaza.
  * El contexto, programa y flujo de diagnóstico son privados y se liberan aquí. */
+// Comprueba que el texto ensamblador codifique la misma operación que la palabra física recibida.
 static VliwProyeccionEstado contrastar_texto(const VliwCfgOperacion *o,
     const char *texto,size_t i,VliwProyeccionDiagnostico *d)
 {
     SimInstruccion original,real;
+    // Primero decodifica con S2 la palabra física original.
     if(sim_decode_palabra(o->palabra,(unsigned)o->slot,&original)!=SIM_DECODE_OK)
         return informar(d,VLIW_PROY_TEXTO,0,i,"S2 rechazó la operación física");
     char copia[160];size_t n=strlen(texto);memcpy(copia,texto,n+1);
@@ -64,10 +69,12 @@ static VliwProyeccionEstado contrastar_texto(const VliwCfgOperacion *o,
         if(!coma)return informar(d,VLIW_PROY_TEXTO,0,i,"falta marcador de destino directo");
         coma[1]='0';coma[2]='\0';
     }
+    // Crea un bundle de prueba con la operación en su slot y NOP en los restantes.
     const char *slots[4]={"nop","nop","nop","nop"};slots[o->slot]=copia;
     char contexto[256],detalle[256]={0};
     (void)snprintf(contexto,sizeof contexto,"%s | %s | %s | %s\n",slots[0],slots[1],slots[2],slots[3]);
     FILE *f=tmpfile();if(!f)return informar(d,VLIW_PROY_IO,0,i,"no se pudo crear diagnóstico CB");
+    // Codifica el texto de prueba con CB y compara el resultado usando S2.
     CbPrograma cb={0};int estado=cb_ensamblar(contexto,&cb,f);
     bool io=fflush(f)!=0 || fseek(f,0,SEEK_SET)!=0;
     if(!io && !fgets(detalle,sizeof detalle,f))io=ferror(f)!=0;
@@ -85,6 +92,7 @@ static VliwProyeccionEstado contrastar_texto(const VliwCfgOperacion *o,
  * generación, operaciones, camino y cada arista recibida. No reconstruye las
  * dependencias para sustituir una entrada errónea: la reconstrucción solo es
  * contraste, se libera y se copian las aristas originales si coinciden. */
+// No confía en un DAG posiblemente modificado: lo recalcula y contrasta.
 static VliwProyeccionEstado comprobar_dag(const VliwProyeccionEntrada *e,VliwProyeccionDiagnostico *d)
 {
     const VliwDag *a=e->dag;
@@ -107,6 +115,7 @@ static VliwProyeccionEstado comprobar_dag(const VliwProyeccionEntrada *e,VliwPro
 /* Coordina guardas, contraste real y copias propias. Las cantidades públicas
  * se fijan antes de reservar para permitir liberar cualquier construcción
  * parcial; los arreglos de hijos empiezan en cero. Solo el último punto publica. */
+// vliw_cadena_fisica.c llama aquí y guarda la proyección en c->proyeccion.
 VliwProyeccionEstado vliw_proyeccion_construir(const VliwProyeccionEntrada *e,
     VliwProyeccion **salida,VliwProyeccionDiagnostico *d)
 {
@@ -124,33 +133,39 @@ VliwProyeccionEstado vliw_proyeccion_construir(const VliwProyeccionEntrada *e,
     if(n && !e->garantias.reubicaciones_resueltas)
         return informar(d,VLIW_PROY_REUBICACION,0,VAC,"reubicaciones o direcciones materializadas pendientes");
     if(d)d->fase=VLIW_PROY_CONTRASTE_DAG;
+    // Rechaza un DAG que no coincida con las operaciones y metadatos actuales.
     VliwProyeccionEstado estado=comprobar_dag(e,d);if(estado)return estado;
     const VliwCfg *cfg=e->fisica.cfg;
     if(d)d->fase=VLIW_PROY_COPIA;
     VliwProyeccion *p=calloc(1,sizeof *p);
     if(!p)return informar(d,VLIW_PROY_MEMORIA,0,VAC,"sin memoria para proyección");
+    // Calcula cuántos espacios necesita para instrucciones, bloques y dependencias.
     p->generacion=e->fisica.generacion;p->entrada.cantidad_instrucciones=n;
     p->entrada.cantidad_dependencias=e->dag->cantidad_dependencias;
     p->entrada.cantidad_bloques=cfg->cantidad_bloques;p->destinos.cantidad=cfg->cantidad_destinos;
     // Esta copia procede exclusivamente de una declaración explícita aceptada.
     // Un éxito de S2/CFG/DAG no activa garantías que el productor no proporcionó.
     p->entrada.metadatos_completos=e->garantias.completitud_declarada;
+    // Reserva memoria independiente para las operaciones que utilizará S7.
     VliwInstruccion *in=n?calloc(n,sizeof *in):NULL;p->entrada.instrucciones=in;
     VliwBloque *bloques=cfg->cantidad_bloques?calloc(cfg->cantidad_bloques,sizeof *bloques):NULL;p->entrada.bloques=bloques;
     VliwDependencia *ar=e->dag->cantidad_dependencias?malloc(e->dag->cantidad_dependencias*sizeof *ar):NULL;p->entrada.dependencias=ar;
     VliwDestino *dest=cfg->cantidad_destinos?malloc(cfg->cantidad_destinos*sizeof *dest):NULL;p->destinos.items=dest;
     if((n && !in) || (cfg->cantidad_bloques && !bloques) || (e->dag->cantidad_dependencias && !ar) ||
         (cfg->cantidad_destinos && !dest))goto memoria;
+    // Transfiere las restricciones de orden y distancia que produjo el DAG.
     for(size_t k=0;k<e->dag->cantidad_dependencias;++k)ar[k]=e->dag->dependencias[k];
     for(size_t k=0;k<cfg->cantidad_destinos;++k)dest[k]=cfg->destinos[k];
     // Las tablas conservan partición y destinos físicos del CFG. Cada sucesor
     // se copia a almacenamiento independiente; no se conserva la tabla virtual IR.
+    // Copia los bloques básicos y sus relaciones de control.
     for(size_t b=0;b<cfg->cantidad_bloques;++b){
         size_t ns=cfg->bloques[b].cantidad_sucesores;
         size_t *su=ns?malloc(ns*sizeof *su):NULL;if(ns && !su)goto memoria;
         if(ns)memcpy(su,cfg->bloques[b].sucesores,ns*sizeof *su);
         bloques[b]=(VliwBloque){cfg->bloques[b].inicio,cfg->bloques[b].fin,su,ns};
     }
+    // Combina los efectos deducidos de la ISA con los efectos aportados por el compilador.
     for(size_t i=0;i<n;++i){
         const char *s=e->textos[i];size_t len=0;
         if(!s){estado=informar(d,VLIW_PROY_TEXTO,0,i,"falta texto ISA");goto fin;}
@@ -167,6 +182,7 @@ VliwProyeccionEstado vliw_proyeccion_construir(const VliwProyeccionEntrada *e,
     // inmediatos que no aparecen en las máscaras de dependencias.
     if(d)d->fase=VLIW_PROY_VALIDACION;
     VliwIntegracionDiagnostico id;
+    // Llama al validador de integración para revisar el resultado preparado.
     VliwIntegracionEstado ie=vliw_integracion_validar(&p->entrada,&p->destinos,&id);
     if(d){d->integracion=id;d->dependencia=id.dependencia;d->bloque=id.bloque;d->destino=id.destino;}
     if(ie){estado=informar(d,ie==VLIW_INT_MEMORIA?VLIW_PROY_MEMORIA:ie==VLIW_INT_IO?VLIW_PROY_IO:
@@ -174,6 +190,7 @@ VliwProyeccionEstado vliw_proyeccion_construir(const VliwProyeccionEntrada *e,
     if(d)d->fase=VLIW_PROY_CONTRASTE_TEXTO;
     for(size_t i=0;i<n;++i){estado=contrastar_texto(&e->fisica.flujo->operaciones[i],in[i].texto,i,d);if(estado)goto fin;}
     if(d)d->fase=VLIW_PROY_COMPLETA;
+    // Publica la proyección solo después de verificar sus datos y dependencias.
     *salida=p;return informar(d,VLIW_PROY_OK,0,VAC,"proyección propia validada; garantías externas conservadas");
 memoria:
     estado=informar(d,VLIW_PROY_MEMORIA,0,VAC,"sin memoria para copiar la entrada física");

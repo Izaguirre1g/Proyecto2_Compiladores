@@ -1,3 +1,5 @@
+// Divide las instrucciones físicas en bloques básicos y determina cómo puede pasar el control entre ellos.
+// La cadena recibe este CFG en c->cfg; el DAG lo usa para respetar los límites de cada bloque.
 /* Particiona operaciones ISA explícitas y construye sus sucesores lógicos.
  * Valida palabras mediante S2 y entrega arreglos propios compatibles S7/S8-A.
  * No deduce ABI, no interpreta PCs, no crea dependencias ni ejecuta código. */
@@ -15,6 +17,7 @@ static VliwCfgEstado informar(VliwCfgDiagnostico *d,VliwCfgEstado e,size_t i,con
 #define ERROR(e,i,m) informar(d,e,i,m)
 /* Busca por identidad simbólica, nunca por PC o nombre textual ambiguo.
  * La tabla ya fue validada; devuelve VAC si la referencia está sin definir. */
+// Busca un símbolo por su identificador numérico; VAC significa que no se encontró.
 static size_t simbolo(const VliwCfgEntrada *e,size_t id)
 {
     for(size_t j=0;j<e->cantidad_simbolos;++j)
@@ -23,6 +26,7 @@ static size_t simbolo(const VliwCfgEntrada *e,size_t id)
 }
 /* Obtiene la función que contiene una posición de la partición ya validada;
  * no publica referencias a sus elementos ni infiere funciones desde saltos. */
+// Localiza la función cuyo rango [inicio, fin) contiene la posición solicitada.
 static size_t funcion(const VliwCfgEntrada *e,size_t pos)
 {
     for(size_t f=0;f<e->cantidad_funciones;++f)
@@ -31,6 +35,7 @@ static size_t funcion(const VliwCfgEntrada *e,size_t pos)
 }
 /* Deduplica sucesores como conjunto, incluso si etiquetas distintas apuntan
  * a una entrada. El auxiliar tiene capacidad para todos los bloques. */
+// Evita duplicar el mismo bloque dentro de la lista de sucesores.
 static void agregar(size_t *v,size_t *n,size_t b)
 {
     for(size_t j=0;j<*n;++j) if(v[j]==b) return;
@@ -47,6 +52,7 @@ void vliw_cfg_liberar(VliwCfg **c)
 }
 /* Verifica dimensiones antes de recorrer tablas o multiplicar reservas.
  * La cota física es necesaria, no demuestra que el futuro plan quepa. */
+// Rechaza tamaños incompatibles y arreglos ausentes antes de recorrer las instrucciones.
 static VliwCfgEstado dimensiones(const VliwCfgEntrada *e,VliwCfgDiagnostico *d)
 {
     size_t n=e->cantidad_operaciones;
@@ -69,12 +75,14 @@ static VliwCfgEstado dimensiones(const VliwCfgEntrada *e,VliwCfgDiagnostico *d)
 }
 /* Comprueba funciones, símbolos, palabras y referencias antes de publicar
  * bloques. Los auxiliares marcan líderes y referencia por posición original. */
+// Valida funciones, símbolos y saltos; utiliza el arreglo de líderes para identificar inicios de bloque.
 static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
     size_t *por_operacion,VliwCfgDiagnostico *d)
 {
     size_t n=e->cantidad_operaciones,fin=0;
     /* Primero acreditamos la partición de funciones. Así una referencia
      * posterior no puede usar una función vacía, solapada o fuera del flujo. */
+    // Verifica que las funciones delimiten intervalos válidos dentro del flujo de operaciones.
     for(size_t f=0;f<e->cantidad_funciones;++f) {
         const VliwCfgFuncion *v=&e->funciones[f];
         if(v->id==VAC || v->inicio!=fin || v->fin<=v->inicio || v->fin>n)
@@ -87,6 +95,7 @@ static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
     /* Cada símbolo conserva función y posición; identidades distintas pueden
      * compartir entrada. Marcar todas las etiquetas evita saltar al medio
      * de un bloque, incluso si todavía no examinamos las transferencias. */
+    // Comprueba que las referencias simbólicas correspondan a símbolos conocidos.
     for(size_t s=0;s<e->cantidad_simbolos;++s) {
         const VliwCfgSimbolo *v=&e->simbolos[s];
         size_t f=funcion(e,v->posicion);
@@ -98,6 +107,7 @@ static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
     }
     /* Las fronteras adicionales vienen justificadas por el productor; no
      * se deducen restricciones invisibles de una expansión desde sus opcodes. */
+    // Marca como líderes las posiciones donde debe empezar un bloque básico.
     for(size_t j=0;j<e->cantidad_fronteras;++j) {
         if(e->fronteras[j]>=n) return ERROR(VLIW_CFG_FRONTERA,j,"frontera fuera del flujo");
         lider[e->fronteras[j]]=1;
@@ -105,6 +115,7 @@ static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
     /* S2 valida palabra, slot y forma física. La intención de llamada/retorno
      * es externa: no inferimos ABI a partir de escrituras o lecturas de x1.
      * Una BRU deja a la operación siguiente en un bloque diferente. */
+    // Analiza los saltos y sus fronteras para separar el flujo en bloques básicos.
     for(size_t i=0;i<n;++i) {
         const VliwCfgOperacion *o=&e->operaciones[i]; SimInstruccion real;
         for(size_t j=0;j<i;++j) if(e->operaciones[j].id==o->id)
@@ -119,6 +130,7 @@ static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
     }
     /* Construimos una referencia única por posición BRU y contrastamos tipo,
      * continuación y crédito del destino. Los IDs simbólicos no son PCs. */
+    // Rechaza transferencias de control cuya clase o destino no sean coherentes.
     for(size_t t=0;t<e->cantidad_transferencias;++t) {
         const VliwCfgTransferencia *v=&e->transferencias[t];size_t i=v->operacion;
         if(i>=n) return ERROR(VLIW_CFG_DESTINO,t,"transferencia fuera del flujo");
@@ -171,6 +183,7 @@ static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
     }
     /* Solo después de conocer todos los líderes podemos rechazar entradas
      * interiores a regiones protegidas, incluidas las creadas por una BRU. */
+    // No permite destinos dentro de regiones declaradas indivisibles.
     for(size_t r=0;r<e->cantidad_regiones;++r) {
         const VliwCfgRegion *v=&e->regiones[r];
         if(v->inicio>=v->fin || v->fin>n || funcion(e,v->inicio)!=funcion(e,v->fin-1))
@@ -182,6 +195,7 @@ static VliwCfgEstado validar(const VliwCfgEntrada *e,unsigned char *lider,
 }
 /* Coordina validación, líderes, partición y resolución de sucesores. La
  * salida del cliente cambia una sola vez; cualquier fallo libera temporales. */
+// vliw_cadena_fisica.c llama a esta función y guarda el CFG resultante en c->cfg.
 VliwCfgEstado vliw_cfg_construir(const VliwCfgEntrada *e,VliwCfg **salida,VliwCfgDiagnostico *d)
 {
     if(!e || !salida || *salida) return ERROR(VLIW_CFG_ARGUMENTO,VAC,"entrada y salida inicial NULL requeridas");
@@ -191,15 +205,18 @@ VliwCfgEstado vliw_cfg_construir(const VliwCfgEntrada *e,VliwCfg **salida,VliwCf
     size_t *referencia=n ? malloc(n*sizeof *referencia) : NULL;
     VliwCfg *c=NULL;size_t *sucesores=NULL;
     if(n && (!lider || !referencia)) {estado=ERROR(VLIW_CFG_MEMORIA,VAC,"sin auxiliares para fronteras");goto fin;}
+    // Construye el mapa de posiciones que deben iniciar nuevos bloques.
     estado=validar(e,lider,referencia,d);if(estado) goto fin;
     c=calloc(1,sizeof *c);
     if(!c) {estado=ERROR(VLIW_CFG_MEMORIA,VAC,"sin resultado CFG");goto fin;}
     c->generacion=e->generacion;c->cantidad_operaciones=n;c->destinos_dinamicos_acreditados=true;
     c->cantidad_destinos=e->cantidad_transferencias;
+    // Cuenta los líderes para reservar un bloque por cada inicio detectado.
     for(size_t i=0;i<n;++i) c->cantidad_bloques+=lider[i]!=0;
     size_t nb=c->cantidad_bloques;
     /* Los líderes dividen sin huecos. Cada posición recibe exactamente un
      * índice de bloque, conservando IDs/operaciones originales inmutables. */
+    // Reserva memoria para los bloques y sus relaciones de control.
     c->bloques=nb ? calloc(nb,sizeof *c->bloques) : NULL;
     c->bloque_por_operacion=n ? malloc(n*sizeof(size_t)) : NULL;
     c->destinos=c->cantidad_destinos ? calloc(c->cantidad_destinos,sizeof *c->destinos) : NULL;
@@ -208,12 +225,14 @@ VliwCfgEstado vliw_cfg_construir(const VliwCfgEntrada *e,VliwCfg **salida,VliwCf
        (c->cantidad_destinos && !c->destinos)) {estado=ERROR(VLIW_CFG_MEMORIA,VAC,"sin arreglos CFG");goto fin;}
     size_t b=0;
     for(size_t i=0;i<n;++i) {
+        // Delimita cada bloque desde un líder hasta el siguiente.
         if(lider[i]) {if(i) {c->bloques[b].fin=i;++b;} c->bloques[b].inicio=i;}
         c->bloque_por_operacion[i]=b;
     }
     if(nb) c->bloques[nb-1].fin=n;
     /* El CFG puede contener ciclos: agregar un sucesor anterior no crea
      * una dependencia de emisión ni inicia un recorrido recursivo. */
+    // Determina las salidas de cada bloque: salto tomado y/o continuación secuencial.
     for(b=0;b<nb;++b) {
         size_t i=c->bloques[b].fin-1,t=referencia[i],ns=0;
         if(t==VAC) {if(b+1<nb) agregar(sucesores,&ns,b+1);}
@@ -237,6 +256,7 @@ VliwCfgEstado vliw_cfg_construir(const VliwCfgEntrada *e,VliwCfg **salida,VliwCf
             c->bloques[b].sucesores=propios;c->bloques[b].cantidad_sucesores=ns;
         }
     }
+    // Asigna el CFG a la salida únicamente si quedó completo y válido.
     *salida=c;c=NULL;estado=ERROR(VLIW_CFG_OK,VAC,"CFG estructural construido; ABI/DAG/reubicaciones externos");
 fin:
     free(lider);free(referencia);free(sucesores);vliw_cfg_liberar(&c);

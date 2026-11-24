@@ -1,3 +1,6 @@
+// MAPA ALU: ID entrega operandos -> ALU calcula resultado en EX -> WB escribe el registro.
+// Esta función NO decide cuando ejecutar una instruccion.
+
 /* Ejecuta la semántica ALU del RTL con aritmética definida por C.
  * Los operandos y el resultado conservan exactamente 32 bits. */
 #include "sim_alu.h"
@@ -5,6 +8,8 @@
 /* Admite las 18 operaciones ALU; b ya contiene el registro o el inmediato
  * extendido elegido por ID. Devuelve false para otra operación o salida NULL,
  * conservando el resultado recibido. No ejecuta NOP ni escribe registros. */
+// EJECUCIÓN ALU (EX): calcula una de las operaciones aritmeticas, logicas o de desplazamiento.
+// Recibe los valores ya capturados por ID; NO lee registros ni los escribe en WB.
 bool sim_alu_ejecutar(SimOperacion operacion, uint32_t a, uint32_t b,
                       uint32_t *resultado)
 {
@@ -12,7 +17,9 @@ bool sim_alu_ejecutar(SimOperacion operacion, uint32_t a, uint32_t b,
     uint32_t valor;
     /* RTL limita el corrimiento a operand_b[4:0]. Así 32 produce cero
      * posiciones y 0xffffffff, incluido un inmediato -1, produce 31. */
+    // Solo los cinco bits bajos de b determinan el desplazamiento.
     unsigned cantidad = b & 31u;
+    // Cada caso implementa una familia de opcodes; ALU no decide latencias ni actualiza registros.
     switch (operacion) {
     case SIM_OP_SUMA: case SIM_OP_SUMAI:
         /* La suma/resta unsigned se reduce módulo 2^32, incluso al cruzar
@@ -27,6 +34,7 @@ bool sim_alu_ejecutar(SimOperacion operacion, uint32_t a, uint32_t b,
     case SIM_OP_XOR: case SIM_OP_XORI: valor = a ^ b; break;
     case SIM_OP_CIZQ: case SIM_OP_CIZQI: valor = a << cantidad; break;
     case SIM_OP_CDER: case SIM_OP_CDERI: valor = a >> cantidad; break;
+    // Corrimiento aritmetico: conserva el signo rellenando bits altos cuando corresponde.
     case SIM_OP_CADER: case SIM_OP_CADERI:
         /* Primero se desplaza sin signo. Si el bit 31 era uno se rellenan
          * los bits altos con una máscara. cantidad=0 evita desplazar por 32;
@@ -35,6 +43,7 @@ bool sim_alu_ejecutar(SimOperacion operacion, uint32_t a, uint32_t b,
         if (cantidad && (a & UINT32_C(0x80000000)))
             valor |= UINT32_MAX << (32u - cantidad);
         break;
+    // Comparacion signed mediante un truco seguro con el bit de signo.
     case SIM_OP_MRQ:
         /* Invertir el bit de signo reordena los valores para comparar unsigned:
          * INT_MIN pasa a 0 y cero a 0x80000000. Conserva el orden signed de
@@ -47,6 +56,7 @@ bool sim_alu_ejecutar(SimOperacion operacion, uint32_t a, uint32_t b,
     default:
         return false;
     }
+    // La instruccion deja el cálculo preparado; su destino se escribira en WB.
     *resultado = valor;
     return true;
 }

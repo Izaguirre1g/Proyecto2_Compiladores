@@ -1,3 +1,6 @@
+// MAPA B1: ejecuta dos programas con M2 y compara resultados arquitectonicos publicos.
+// Un cambio de rendimiento no demuestra equivalencia; ambos deben terminar para comparación estricta.
+
 /* Ejecuta con M2, compara datos públicos y delega las diferencias a M1. */
 #define _POSIX_C_SOURCE 200809L
 #include "sim_comparador.h"
@@ -16,15 +19,20 @@ struct SimComparador {
 
 /* Libera rutas e historial de ambos lados y el resultado recibido. Admite
  * salida NULL o vacía y deja el puntero del llamador en NULL. */
+// B1: libera ambos nombres de programa y sus historiales de excepciones.
+// Cada comparación posee sus datos aunque ya se hayan cerrado las sesiones M2.
 void sim_comparador_liberar(SimComparador **salida)
 {
     if (!salida || !*salida) return;
     SimComparador *c=*salida;
+    // Se recorren ambos programas con el mismo contrato y presupuesto de comparación.
     for (unsigned i=0;i<2;++i) { free(c->rutas[i]); free(c->traps[i]); }
     free(c); *salida=NULL;
 }
 /* Libera la cadena propia exportada por B1 y deja *s en NULL. No requiere
  * que el comparador siga vivo; un doble puntero NULL no produce efectos. */
+// B1: libera el informe generado y limpia el puntero.
+// El texto exportado es independiente del comparador.
 void sim_comparador_liberar_reporte(char **s)
 {
     if (s) { free(*s); *s=NULL; }
@@ -33,6 +41,8 @@ void sim_comparador_liberar_reporte(char **s)
  * Comprueba que el resumen describa el reset público: ciclo cero, registros vacíos, INIT y
  * ningún bundle o trap pendiente.
  */
+// B1: válida que una ejecución arranque en el reset publico esperado.
+// Una diferencia inicial hace que los resultados finales no sean comparables.
 static bool inicial(const SimMetricasResumen *r)
 {
     if (!r->valido || r->estado!=SIM_PIPE_ACTIVO || r->ciclos || r->pc ||
@@ -46,6 +56,8 @@ static bool inicial(const SimMetricasResumen *r)
 /* M2 puede detenerse después de aceptar un flanco pero antes de observarlo.
  * Reintentar solo esa observación conserva sus efectos. Tras resolverla se
  * consulta el reloj para consumir únicamente el presupuesto todavía restante. */
+// B1: ejecuta M2 con presupuesto y posibilidad de reintentar observaciones.
+// No vuelve a ejecutar un flanco que M1 ya dejo pendiente.
 static SimEjecucionCodigo ejecutar(SimEjecucion *s,uint64_t presupuesto,unsigned maximo)
 {
     unsigned intentos=0; uint64_t restantes=presupuesto;
@@ -68,6 +80,8 @@ static SimEjecucionCodigo ejecutar(SimEjecucion *s,uint64_t presupuesto,unsigned
 
 /* Comparar cada byte detecta también cambios fuera de la zona esperada; FNV
  * no sustituye esta prueba. El primer índice es siempre dirección de byte. */
+// B1: compara byte por byte las dos DMEM y localiza la primera diferencia.
+// Comparar una huella no seria suficiente para certificar igualdad de memoria.
 static size_t memoria(const uint8_t *a,const uint8_t *b,size_t *primero)
 {
     size_t distintos=0; *primero=0;
@@ -87,6 +101,8 @@ static size_t memoria(const uint8_t *a,const uint8_t *b,size_t *primero)
  * rutas, snapshots e historial. CARGA/ejecución producen un resultado ERROR;
  * argumentos/reservas de B1 fallidos devuelven código sin publicar salida.
  * diagnosticos es prestado y admite NULL. No se modifica ningún componente. */
+// FUNCIÓN CENTRAL B1: ejecuta referencia y candidato como dos sesiones independientes.
+// Solo declara equivalencia estricta cuando ambos terminan y sus estados publicos coinciden.
 SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     SimComparador **salida,FILE *diag)
 {
@@ -99,6 +115,7 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     SimComparador *c=calloc(1,sizeof *c);
     if (!c) return SIM_COMPARADOR_MEMORIA;
     c->r.resultado=SIM_COMPARADOR_ERROR; c->r.lado_error=-1;
+    // Una sesion ejecuta la referencia y la otra el candidato; sus estados nunca se mezclan.
     SimEjecucion *s[2]={NULL,NULL}; uint8_t *datos=NULL;
     SimComparadorCodigo codigo=SIM_COMPARADOR_OK;
     SimComparadorPrograma programas[2]={o->referencia,o->candidato};
@@ -130,12 +147,15 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     // Antes de ejecutar exigimos reset público compatible y todos los bytes DMEM iniciales
     // iguales. Si no coinciden, la comparación queda inconclusa: igualarlos silenciosamente
     // cambiaría las entradas.
+    // Si la memoria inicial difiere, no tiene sentido exigir resultados finales iguales.
     c->r.bytes_iniciales_distintos=memoria(datos,datos+SIM_CARGADOR_DMEM_BYTES,&c->r.primer_byte_inicial);
+    // Antes de comparar, ambos programas deben compartir un reset y DMEM inicial compatibles.
     c->r.iniciales_compatibles=!c->r.bytes_iniciales_distintos &&
         inicial(&c->r.resumenes[0]) && inicial(&c->r.resumenes[1]);
     if (!c->r.iniciales_compatibles) {
         /* No se igualan datos silenciosamente ni se ejecutan entradas distintas.
          * Esto es falta de comparabilidad, no una diferencia funcional final. */
+        // INCONCLUSO significa que faltan condiciones para certificar igualdad, no que haya diferencia.
         c->r.resultado=SIM_COMPARADOR_INCONCLUSO; c->r.motivo=SIM_COMPARADOR_INICIALES;
         goto terminar;
     }
@@ -150,8 +170,10 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
             goto terminar;
         }
     }
+    // Los cambios de rendimiento pueden informarse incluso antes del veredicto funcional.
     c->r.error_metricas=sim_metricas_comparar(&c->r.resumenes[0],&c->r.resumenes[1],&c->r.metricas);
     if (c->r.error_metricas!=SIM_METRICAS_OK) { c->r.motivo=SIM_COMPARADOR_CONSULTA; goto terminar; }
+    // Las diferencias de ciclos e IPC se guardan separadas del juicio funcional.
     c->r.metricas_disponibles=true;
     /* Se conservan los eventos como diagnósticos propios antes de destruir
      * las sesiones. Entre layouts solo se comparan cantidad y vector en orden. */
@@ -169,6 +191,7 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
             }
         }
     }
+    // Ambos programas deben terminar para que el veredicto estricto sea concluyente.
     if (c->r.resumenes[0].estado!=SIM_PIPE_TERMINADO || c->r.resumenes[1].estado!=SIM_PIPE_TERMINADO) {
         c->r.resultado=SIM_COMPARADOR_INCONCLUSO; c->r.motivo=SIM_COMPARADOR_NO_TERMINADO;
         goto terminar;
@@ -176,6 +199,8 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     // Ambos programas ya terminaron: ahora comparamos los 32 GPR y registramos la primera
     // diferencia y su cantidad. Las métricas de rendimiento calculadas antes no prueban esta
     // igualdad funcional.
+    // La comprobacion funcional completa incluye registros, memoria y estado publico.
+    // La comparación estricta se habilita cuando las dos sesiones terminaron.
     c->r.comparacion_realizada=true;
     for (unsigned i=0;i<32;++i) if (c->r.resumenes[0].registros[i]!=c->r.resumenes[1].registros[i]) {
         if (!c->r.registros_distintos) {
@@ -203,6 +228,7 @@ SimComparadorCodigo sim_comparador_ejecutar(const SimComparadorOpciones *o,
     }
     /* No se compara PC final ni trap_pc: identifican posiciones del layout.
      * Tampoco se ignoran temporales: otro renombramiento necesita otro contrato. */
+    // Si hay cualquier diferencia en GPR, DMEM, CRIPTO o traps, el veredicto es DIFERENTE. Equivalencia exige igualdad funcional, no el mismo tiempo.
     c->r.resultado=c->r.registros_distintos || c->r.bytes_distintos || c->r.crypto_distinto ||
         c->r.cantidad_traps_distinta || c->r.vector_distinto ? SIM_COMPARADOR_DIFERENTE:SIM_COMPARADOR_EQUIVALENTE;
 terminar:
@@ -224,6 +250,8 @@ sin_memoria:
 /* Copias propias; no entregan acceso a sesiones ya destruidas ni a la bóveda.
  * Solo se ofrece contrato estricto: otro renombramiento requiere acuerdos
  * futuros, no se ignoran temporales ni registros de enlace arbitrariamente. */
+// CONSULTA B1: devuelve el resultado de la comparación ya realizada.
+// La estructura describe equivalencia, diferencia o falta de conclusion.
 SimComparadorCodigo sim_comparador_resumen(const SimComparador *c,SimComparadorResumen *r)
 {
     if (!c || !r) return SIM_COMPARADOR_ARGUMENTO;
@@ -231,6 +259,8 @@ SimComparadorCodigo sim_comparador_resumen(const SimComparador *c,SimComparadorR
 }
 /* Copia el trap indicado del lado 0 o 1, sin entregar almacenamiento interno.
  * Punteros nulos, lado o índice inválidos devuelven ARGUMENTO sin escribir salida. */
+// CONSULTA B1: obtiene un trap de cualquiera de los dos programas.
+// Sirve para contrastar secuencias de excepciones sin exponer buffers.
 SimComparadorCodigo sim_comparador_trap(const SimComparador *c,unsigned lado,size_t i,SimMetricaTrap *t)
 {
     if (!c || !t || lado>1 || i>=c->cantidades[lado] || !c->traps[lado]) return SIM_COMPARADOR_ARGUMENTO;
@@ -244,6 +274,8 @@ typedef struct { char *s; size_t n,cap; SimComparadorCodigo error; } Texto;
  * Amplía el buffer privado de B1 y agrega texto formateado; preserva el error para impedir la
  * publicación de un reporte parcial.
  */
+// AUXILIAR REPORTE B1: concatena texto formateado al informe.
+// Comprueba capacidad y propaga errores de memoria.
 static void agregar(Texto *b,const char *f,...)
 {
     if (b->error) return;
@@ -275,6 +307,8 @@ static void agregar(Texto *b,const char *f,...)
  * Escapa comillas, barras y controles de una cadena en el buffer JSON sin cambiar el texto
  * prestado.
  */
+// AUXILIAR REPORTE B1: inserta cadenas escapadas en un informe JSON.
+// La salida queda legible sin caracteres de control ilegales.
 static void cadena(Texto *b,const char *s)
 {
     agregar(b,"\"");
@@ -298,6 +332,8 @@ static void cadena(Texto *b,const char *s)
 /*
  * Devuelve el nombre estable del resultado de comparación para los reportes públicos.
  */
+// AUXILIAR B1: convierte el resultado de equivalencia a texto.
+// No ejecuta otra comparación: solamente describe el resultado guardado.
 static const char *resultado(SimComparadorResultado r)
 {
     static const char *const nombres[]={"EQUIVALENTE","DIFERENTE","INCONCLUSO","ERROR"};
@@ -307,6 +343,8 @@ static const char *resultado(SimComparadorResultado r)
  * Traduce el estado del pipeline a su nombre para el reporte, sin cambiar el estado de
  * ejecución.
  */
+// AUXILIAR B1: nombra el estado de ejecución del pipeline.
+// Permite explicar pausas, terminación y errores.
 static const char *estado(SimPipelineEstado e)
 {
     static const char *const nombres[]={"ACTIVO","TERMINADO","LIMITE","ARGUMENTO","PC",
@@ -317,6 +355,8 @@ static const char *estado(SimPipelineEstado e)
  * Devuelve la descripción del motivo de comparación para distinguir diferencias, límites y
  * errores.
  */
+// AUXILIAR B1: transforma el motivo del veredicto en una etiqueta legible.
+// Diferencia una carga fallida de una comparación inconclusa.
 static const char *motivo(SimComparadorMotivo m)
 {
     static const char *const nombres[]={"sin impedimento","condiciones iniciales incompatibles",
@@ -327,6 +367,8 @@ static const char *motivo(SimComparadorMotivo m)
  * Escribe una diferencia de métricas conservando signo y magnitud; no convierte una mejora
  * numérica en equivalencia.
  */
+// AUXILIAR REPORTE B1: imprime una diferencia numerica de metricas.
+// Respeta el signo y la magnitud calculados por M1.
 static void delta(Texto *b,SimMetricasDiferencia d,bool json)
 {
     if (json) agregar(b,"{\"negativa\":%s,\"magnitud\":%" PRIu64 "}",d.negativa?"true":"false",d.magnitud);
@@ -336,6 +378,8 @@ static void delta(Texto *b,SimMetricasDiferencia d,bool json)
  * Serializa el resumen de un lado de B1, incluyendo métricas y excepciones disponibles, sin
  * exponer secretos criptográficos.
  */
+// AUXILIAR REPORTE B1: incorpora los datos de uno de los dos programas.
+// Incluye ruta, estado y resumen sin mezclar las sesiones.
 static void programa(Texto *b,const SimComparador *c,unsigned i)
 {
     const SimMetricasResumen *r=&c->r.resumenes[i];
@@ -360,6 +404,9 @@ static void programa(Texto *b,const SimComparador *c,unsigned i)
 /* Reporte B1 nuevo TEXTO/JSON v1; no cambia ni reproduce el JSON completo M1.
  * Salida inicialmente NULL, publicación transaccional. Liberar la cadena con
  * esta API, independientemente de la vida del resultado. */
+// EXPORTACION B1: genera un reporte completo en texto o JSON.
+// Conserva los veredictos y advertencias sobre los limites de comparabilidad.
+// El informe explica diferencia de metricas y limites de equivalencia estricta.
 SimComparadorCodigo sim_comparador_exportar(const SimComparador *c,SimMetricasFormato f,char **salida)
 {
     if (!c || !salida || *salida || (unsigned)f>SIM_METRICAS_JSON) return SIM_COMPARADOR_ARGUMENTO;

@@ -1,3 +1,5 @@
+// Calcula ocupación estática del plan y permite mostrar sus bundles en tabla, CSV o JSON.
+// Estas cifras describen el plan generado; los ciclos reales se miden en el simulador.
 /* Exporta el layout S7 en tabla, CSV y JSON. Las únicas categorías de NOP
  * inferidas son las guardas documentadas; los otros vacíos quedan neutrales. */
 #include "vliw_visualizador.h"
@@ -7,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Usa los nombres ALU, LSU, BRU y CRIPTO en las salidas.
 static const char *const slots[] = {"ALU", "LSU", "BRU", "CRIPTO"};
 static const char *const tipos[] = {"RAW", "WAR", "WAW", "MEMORIA", "CONTROL", "BARRERA"};
 static const char *const destinos_tipo[] = {"DIRECTO", "CONDICIONAL", "INDIRECTO", "RETORNO", "NO_RESUELTO"};
@@ -54,6 +57,7 @@ static void iniciar_diagnostico(VliwVisualDiagnostico *d)
  * Consulta si el CFG tiene una arista hacia B0 para reconocer los NOP de protección de esa
  * entrada.
  */
+// Detecta si el primer bloque necesita protección porque existe un salto de regreso.
 static bool proteger_inicial(const VliwEntrada *e)
 {
     for (size_t b = 0; b < e->cantidad_bloques; ++b)
@@ -65,6 +69,7 @@ static bool proteger_inicial(const VliwEntrada *e)
  * Reconoce los dos primeros bundles de una entrada protegida; otros vacíos no se atribuyen a
  * esta causa.
  */
+// Reconoce los bundles de guarda antes de las operaciones útiles.
 static bool proteccion(const Vista *v, size_t q)
 {
     size_t b = v->p->bundles[q].bloque;
@@ -74,6 +79,7 @@ static bool proteccion(const Vista *v, size_t q)
  * Recorre los cuatro slots del bundle y detecta si alguna instrucción contiene una
  * transferencia de control.
  */
+// Identifica bundles que contienen instrucciones de control de flujo.
 static bool control(const Vista *v, size_t q)
 {
     const VliwBundle *b = &v->p->bundles[q];
@@ -86,6 +92,7 @@ static bool control(const Vista *v, size_t q)
  * Clasifica el bundle como protección, vacío, control u operaciones, con prioridad para las
  * guardas del bloque.
  */
+// Clasifica cada bundle para describir su función en las estadísticas.
 static const char *clase(const Vista *v, size_t q)
 {
     if (proteccion(v, q)) return "PROTECCION";
@@ -102,6 +109,7 @@ static bool ausente(const char *s) { return !s || !*s; }
  * 1023 acota slots/bytes y hace seguras las restas de posiciones verificadas. */
 /* Valida el plan mediante S7 y prepara la vista prestada para estadísticas
  * y formatos. Un plan rechazado no se presenta como una calendarización válida. */
+// Verifica el plan antes de calcular cuántos bundles y slots se utilizan.
 static VliwVisualEstado preparar(const VliwEntrada *e, const VliwPlan *p,
     Vista *v, VliwVisualDiagnostico *d)
 {
@@ -121,9 +129,11 @@ static VliwVisualEstado preparar(const VliwEntrada *e, const VliwPlan *p,
     a->bundles_totales = p->cantidad_bundles;
     a->bundles_vacios = p->cantidad_vacios;
     a->bundles_con_operaciones = p->cantidad_bundles - p->cantidad_vacios;
+    // Cada bundle aporta cuatro slots posibles, incluso si alguno queda como NOP.
     a->slots_disponibles = VLIW_SLOTS * p->cantidad_bundles;
     a->slots_utilizados = e->cantidad_instrucciones;
     a->slots_vacios = a->slots_disponibles - a->slots_utilizados;
+    // Calcula tamaño de código: 16 bytes por bundle de 128 bits.
     a->bytes_imem = 16 * p->cantidad_bundles;
     a->bloques = e->cantidad_bloques;
     for (size_t i = 0; i < e->cantidad_instrucciones; ++i) {
@@ -136,6 +146,7 @@ static VliwVisualEstado preparar(const VliwEntrada *e, const VliwPlan *p,
     // Recorridos los slots y tipos de dependencia, calculamos utilización y operaciones por
     // bundle. El plan vacío mantiene sus cocientes iniciales en cero y evita dividir entre cero.
     if (a->bundles_totales) {
+        // Calcula el porcentaje de slots útiles frente a los slots disponibles.
         a->utilizacion_porcentual = 100.0 * (double)a->slots_utilizados / (double)a->slots_disponibles;
         a->operaciones_por_bundle = (double)a->instrucciones_utiles / (double)a->bundles_totales;
     }
@@ -145,6 +156,7 @@ static VliwVisualEstado preparar(const VliwEntrada *e, const VliwPlan *p,
  * Se valida el plan con S7. resultado solo cambia en éxito. No se interpretan
  * textos para calcular estadísticas; NULL o "" se cuentan como ausentes.
  * Un programa vacío tiene todos los valores y cocientes en cero. */
+// vliw_cadena_fisica.c llama aquí y guarda las cifras en c->estadisticas.
 VliwVisualEstado vliw_estadisticas(const VliwEntrada *e, const VliwPlan *p,
     VliwEstadisticas *resultado, VliwVisualDiagnostico *d)
 {
@@ -164,6 +176,7 @@ VliwVisualEstado vliw_estadisticas(const VliwEntrada *e, const VliwPlan *p,
  * Asegura espacio para el texto y su terminador mediante crecimiento geométrico; conserva un
  * error previo y no pierde el bloque ante realloc fallido.
  */
+// Aumenta la capacidad del buffer donde se escribe la salida.
 static bool reservar(Buffer *b, size_t n)
 {
     if (b->estado != VLIW_VIS_OK) return false;
@@ -214,6 +227,7 @@ static void formato(Buffer *b, const char *f, ...)
  * Escribe el cociente escalado y redondeado a seis decimales mediante enteros; denominador
  * cero produce cero sin cambiar el locale.
  */
+// Escribe porcentajes y proporciones con el formato esperado por la salida.
 static void cociente(Buffer *b, size_t numerador, size_t denominador, unsigned factor)
 {
     uint64_t escalado = denominador ? ((uint64_t)numerador * factor * UINT64_C(1000000)
@@ -224,6 +238,7 @@ static void cociente(Buffer *b, size_t numerador, size_t denominador, unsigned f
  * Serializa el índice y su representación especial según el protocolo del reporte; no reserva
  * ni cambia el plan.
  */
+// Distingue un índice válido de un valor ausente al mostrar resultados.
 static void indice(Buffer *b, size_t i)
 {
     if (i == VLIW_VACIO) texto(b, "null"); else formato(b, "%zu", i);
@@ -231,6 +246,7 @@ static void indice(Buffer *b, size_t i)
 
 /* Se permite texto descriptivo ajeno al ensamblador, pero no UTF-8 inválido:
  * exportarlo como bytes sueltos produciría JSON inválido o datos alterados. */
+// Evita emitir caracteres inválidos en los textos de salida.
 static bool utf8(const char *s)
 {
     if (!s) return true;
@@ -258,6 +274,7 @@ static bool utf8(const char *s)
  * Escribe un string JSON con controles escapados; NULL se representa como null y no como texto
  * vacío.
  */
+// Escapa comillas, saltos de línea y caracteres especiales del JSON.
 static void json_cadena(Buffer *b, const char *s)
 {
     if (!s) { texto(b, "null"); return; }
@@ -275,6 +292,7 @@ static void json_cadena(Buffer *b, const char *s)
  * Encierra el texto CSV entre comillas y duplica las comillas internas para conservar
  * separadores y saltos de línea.
  */
+// Protege comillas y separadores para que el CSV siga siendo válido.
 static void csv_cadena(Buffer *b, const char *s)
 {
     texto(b, "\"");
@@ -287,6 +305,7 @@ static void csv_cadena(Buffer *b, const char *s)
  * Busca la anotación prestada de una instrucción por su índice original; devuelve NULL si no
  * se anotó.
  */
+// Localiza el destino estructurado correspondiente a la instrucción.
 static const VliwDestino *destino(const Vista *v, size_t i)
 {
     if (v->destinos) for (size_t t = 0; t < v->destinos->cantidad; ++t)
@@ -297,6 +316,7 @@ static const VliwDestino *destino(const Vista *v, size_t i)
  * Comprueba pertenencia al conjunto de sucesores del bloque sin atribuir significado al orden
  * del arreglo.
  */
+// Comprueba si el CFG permite la conexión entre dos bloques.
 static bool sucesor(const VliwBloque *b, size_t i)
 {
     for (size_t j = 0; j < b->cantidad_sucesores; ++j) if (b->sucesores[j] == i) return true;
@@ -306,6 +326,7 @@ static bool sucesor(const VliwBloque *b, size_t i)
  * Rechaza destinos duplicados, índices y tipos inválidos o anotaciones incompatibles con el
  * control y el CFG ya verificado.
  */
+// Rechaza anotaciones de saltos que no coincidan con el plan y el CFG.
 static VliwVisualEstado validar_anotaciones(Vista *v, const VliwDestinos *ds,
     VliwVisualDiagnostico *d)
 {
@@ -338,6 +359,7 @@ static VliwVisualEstado validar_anotaciones(Vista *v, const VliwDestinos *ds,
  * Escribe las estadísticas estáticas de la vista en texto; los bundles de IMEM no se presentan
  * como ciclos dinámicos.
  */
+// Presenta los conteos y porcentajes del plan como texto legible.
 static void estadisticas_texto(Buffer *b, const Vista *v)
 {
     const VliwEstadisticas *a = &v->estadisticas;
@@ -357,6 +379,7 @@ static void estadisticas_texto(Buffer *b, const Vista *v)
  * Serializa estadísticas y cocientes estáticos, con denominadores explícitos y sin depender
  * del locale global.
  */
+// Representa las estadísticas con claves y valores JSON.
 static void estadisticas_json(Buffer *b, const Vista *v)
 {
     const VliwEstadisticas *a = &v->estadisticas;
@@ -377,6 +400,7 @@ static void estadisticas_json(Buffer *b, const Vista *v)
 
 /* Cada celda de terminal es ASCII segura. El límite visual nunca alcanza los
  * datos CSV/JSON. Se incluye el índice original para distinguir texto e id. */
+// Obtiene el texto de una operación o nop para una posición del bundle.
 static void celda(const Vista *v, size_t i, size_t ancho, char salida[161])
 {
     if (i == VLIW_VACIO) { strcpy(salida, "NOP"); return; }
@@ -404,6 +428,7 @@ static void celda(const Vista *v, size_t i, size_t ancho, char salida[161])
  * Recorre el plan y genera filas legibles por bundle, slots y PC; agrega dependencias,
  * destinos y estadísticas según las opciones.
  */
+// Construye una tabla con una fila por bundle y sus cuatro slots.
 static void tabla(Buffer *b, const Vista *v, const VliwVisualOpciones *o)
 {
     // Primero calculamos el ancho de cada columna: usamos la opción explícita o medimos las
@@ -455,6 +480,7 @@ static void tabla(Buffer *b, const Vista *v, const VliwVisualOpciones *o)
  * Genera una fila CSV por bundle con índices, textos y categorías; conserva los textos
  * completos y su escapado.
  */
+// Escribe el plan en CSV para poder abrirlo en una hoja de cálculo.
 static void csv(Buffer *b, const Vista *v)
 {
     texto(b, "bundle,pc,bloque,alu,lsu,bru,cripto,operaciones,inicio_bloque,proteccion,control,clase,alu_indice,lsu_indice,bru_indice,cripto_indice,alu_texto_ausente,lsu_texto_ausente,bru_texto_ausente,cripto_texto_ausente\r\n");
@@ -478,6 +504,7 @@ static void csv(Buffer *b, const Vista *v)
  * Exporta bundles, bloques, instrucciones, aristas y estadísticas; conserva índices originales
  * y anotaciones sin reinterpretar operandos.
  */
+// Incluye en JSON los bundles, bloques, instrucciones y dependencias.
 static void json(Buffer *b, const Vista *v)
 {
     texto(b, "{\"version\":1,\"resumen\":{\"naturaleza\":\"estatica\",\"unidad\":\"bundle_IMEM\",\"origen_pc\":0,\"plan_verificado\":true},\"bundles\":[");
@@ -531,6 +558,7 @@ static void json(Buffer *b, const Vista *v)
  * escapa bytes no imprimibles/no ASCII y marca el truncamiento con "...".
  * Las opciones de secciones solo afectan la tabla; JSON siempre es completo.
  * No requiere enlazar el emisor, el codificador ni el simulador. */
+// vliw_cadena_fisica.c llama a vliw_visualizar() para obtener c->visualizacion_json.
 VliwVisualEstado vliw_visualizar(const VliwEntrada *e, const VliwPlan *p,
     const VliwDestinos *ds, VliwVisualFormato f, const VliwVisualOpciones *op,
     char **salida, VliwVisualDiagnostico *d)
@@ -552,6 +580,7 @@ VliwVisualEstado vliw_visualizar(const VliwEntrada *e, const VliwPlan *p,
      * Elegimos únicamente la representación: todas consumen la misma vista verificada y
      * ninguna reordena instrucciones.
      */
+    // Elige la salida solicitada y ejecuta el escritor correspondiente.
     if (f == VLIW_VIS_TABLA) tabla(&b, &v, &o);
     else if (f == VLIW_VIS_CSV) csv(&b, &v);
     else json(&b, &v);

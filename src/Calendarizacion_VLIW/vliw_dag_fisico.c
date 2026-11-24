@@ -1,3 +1,5 @@
+// Calcula las dependencias físicas y la separación mínima en bundles para ejecutar sin conflictos.
+// Recibe operaciones, metadatos y CFG; entrega el grafo que guiará la calendarización S7.
 /* Construye un DAG de emisión con cobertura ponderada de riesgos físicos.
  * Usa I1-A2a/S2 y el CFG existente, sin duplicar decodificación ni producir BAL.
  * La reducción conserva distancias globales; ABI y autenticidad siguen externas. */
@@ -5,6 +7,7 @@
 #include <stdlib.h>
 #define VAC VLIW_VACIO
 #define MEM (VLIW_EF_LEE_MEMORIA|VLIW_EF_ESCRIBE_MEMORIA)
+// Considera los efectos globales cuando una operación no puede moverse libremente.
 #define GLOBAL (VLIW_EF_BOVEDA|VLIW_EF_ESTADO|VLIW_EF_EXCEPCION|VLIW_EF_DESCONOCIDOS|VLIW_EF_BARRERA)
 
 /* Publica diagnóstico opcional por valor; no reserva ni retiene entradas. */
@@ -26,6 +29,7 @@ void vliw_dag_liberar(VliwDag **dag)
 /* Contrasta el resultado recibido con un CFG reconstruido por su constructor
  * real. Sucesores son conjuntos; destinos conservan el orden de transferencias.
  * Cantidades se comparan antes de recorrer arreglos accesibles del cliente. */
+// Reconstruye el CFG y verifica que el recibido no tenga bloques o destinos alterados.
 static bool mismo_cfg(const VliwCfg *a,const VliwCfg *b)
 {
     size_t n=b->cantidad_operaciones,nb=b->cantidad_bloques,nt=b->cantidad_destinos;
@@ -55,6 +59,7 @@ static bool mismo_cfg(const VliwCfg *a,const VliwCfg *b)
 /* Compara campos significativos, nunca padding. I1-A2a es la referencia local:
  * rechaza máscaras virtuales, efectos omitidos o un opcode desactualizado.
  * Los bits pendientes parciales permanecen intactos y siguen siendo parciales. */
+// Compara únicamente los campos significativos de ambas operaciones, sin comparar memoria de relleno.
 static bool mismos_metadatos(const VliwMetadatosParciales *a,const VliwMetadatosParciales *b)
 {
     return a->operacion==b->operacion && a->familia==b->familia && a->slot==b->slot &&
@@ -65,6 +70,7 @@ static bool mismos_metadatos(const VliwMetadatosParciales *a,const VliwMetadatos
 
 /* Valida efectos combinados compatibles con S7/I1-A1. Una llamada exige
  * DESCONOCIDOS, sin inventar accesos LSU ni clobbers en sus máscaras GPR. */
+// Rechaza efectos incompatibles con el slot y el tipo de instrucción.
 static bool efectos_validos(const VliwCfgOperacion *o,unsigned ef)
 {
     return !(ef & ~(MEM|GLOBAL)) &&
@@ -75,6 +81,7 @@ static bool efectos_validos(const VliwCfgOperacion *o,unsigned ef)
 
 /* Reconoce barreras reales según S7: CRIPTO, efectos globales, call/ret.
  * La clasificación ABI proviene del flujo acreditado, nunca de x1. */
+// Reconoce operaciones que actúan como barreras y limitan el reordenamiento.
 static bool barrera(const VliwDagEntrada *e,size_t i)
 {
     const VliwCfgOperacion *o=&e->flujo->operaciones[i];
@@ -86,17 +93,23 @@ static bool barrera(const VliwDagEntrada *e,size_t i)
 /* Devuelve la restricción dominante y un tipo físicamente justificado. RAW y
  * barreras exigen tres bundles por N+3; los demás riesgos conservan orden1.
  * La prioridad solo elige representación cuando coinciden causas reales. */
+// Devuelve el tipo de riesgo entre dos operaciones y cuántos bundles deben separarlas.
 static size_t riesgo(const VliwDagEntrada *e,size_t i,size_t j,VliwTipoDependencia *tipo)
 {
     const VliwMetadatosParciales *a=&e->metadatos[i],*b=&e->metadatos[j];
     uint64_t ar=a->lee & ~UINT64_C(1),aw=a->escribe & ~UINT64_C(1);
     uint64_t br=b->lee & ~UINT64_C(1),bw=b->escribe & ~UINT64_C(1);
+    // Las barreras pueden exigir una separación de tres posiciones para proteger el pipeline.
     if(barrera(e,i) || barrera(e,j)) {*tipo=VLIW_DEP_BARRERA;return 3;}
+    // RAW: un consumidor lee un resultado pendiente; debe aparecer como mínimo en el bundle N+3.
     if(aw & br) {*tipo=VLIW_DEP_RAW;return VLIW_RAW_DISTANCIA;}
+    // WAR: conserva el orden para que la lectura ocurra antes de una escritura posterior.
     if(ar & bw) {*tipo=VLIW_DEP_WAR;return 1;}
+    // WAW: conserva el orden entre dos escrituras al mismo registro.
     if(aw & bw) {*tipo=VLIW_DEP_WAW;return 1;}
     // Sin análisis de alias acreditado se conserva también load/load, aunque
     // las direcciones o las rutas CFG parezcan distintas o excluyentes.
+    // Si no se puede demostrar que dos accesos son independientes, no se reordenan.
     if(((a->efectos_minimos|e->efectos_adicionales[i]) & MEM) &&
        ((b->efectos_minimos|e->efectos_adicionales[j]) & MEM)) {*tipo=VLIW_DEP_MEMORIA;return 1;}
     if(e->flujo->operaciones[i].control!=VLIW_CONTROL_NINGUNO ||
@@ -107,6 +120,7 @@ static size_t riesgo(const VliwDagEntrada *e,size_t i,size_t j,VliwTipoDependenc
 /* Añade una arista real a un vector propio de crecimiento geométrico acotado.
  * Un realloc fallido conserva el puntero anterior para la limpieza común.
  * El límite explícito permite rechazar densidad no verificada sin desbordar. */
+// Agrega una arista de dependencia y amplía el almacenamiento si se llena.
 static VliwDagEstado agregar(VliwDag *g,size_t *cap,VliwDependencia ar,VliwDagDiagnostico *d)
 {
     size_t m=g->cantidad_dependencias;
@@ -129,15 +143,19 @@ static VliwDagEstado agregar(VliwDag *g,size_t *cap,VliwDependencia ar,VliwDagDi
  * Al examinar i, las rutas a j que pasan por vértices posteriores ya existen;
  * solo añadimos una arista cuando ninguna ruta alcanza la separación exigida.
  * No copiamos backedges CFG: antes<después hace acíclico el DAG por construcción. */
+// Crea las aristas que obligan a respetar el orden y la separación entre operaciones.
 static VliwDagEstado construir(const VliwDagEntrada *e,VliwDag *g,uint16_t *dist,VliwDagDiagnostico *d)
 {
     size_t n=g->cantidad_operaciones,cap=0;
     for(size_t j=1;j<n;++j) for(size_t fin=j;fin>0;) {
         size_t i=--fin;VliwTipoDependencia tipo=VLIW_DEP_RAW;
+        // Analiza cada par de operaciones para determinar si hay un riesgo que preservar.
         size_t peso=riesgo(e,i,j,&tipo);
+        // Evita dependencias redundantes cuando el grafo ya impone la misma restricción.
         if(!peso || dist[i*n+j]>=peso) continue;
         VliwDagEstado estado=agregar(g,&cap,(VliwDependencia){i,j,tipo,peso},d);
         if(estado) return estado;
+        // Almacena la distancia mínima requerida por la dependencia detectada.
         dist[i*n+j]=(uint16_t)peso;
         if(peso>g->camino_critico) g->camino_critico=peso;
         for(size_t k=0;k<i;++k) if(dist[k*n+i]) {
@@ -145,6 +163,7 @@ static VliwDagEstado construir(const VliwDagEntrada *e,VliwDag *g,uint16_t *dist
             // Incluso un camino entre extremos sin riesgo directo consume
             // separación real. Rechazamos antes de truncar el entero de16 bits.
             if(valor>=VLIW_MAX_BUNDLES) return ERROR(VLIW_DAG_CAPACIDAD,j,"camino crítico no cabe en IMEM ordinaria");
+            // Considera las separaciones acumuladas al comprobar si una arista es necesaria.
             if(valor>dist[k*n+j]) dist[k*n+j]=(uint16_t)valor;
             if(valor>g->camino_critico) g->camino_critico=valor;
         }
@@ -155,8 +174,10 @@ static VliwDagEstado construir(const VliwDagEntrada *e,VliwDag *g,uint16_t *dist
 /* Coordina validación por capas, recursos privados y publicación única.
  * Revalidar CFG reutiliza sus reglas sin sustituirlas por una aproximación.
  * Los créditos externos no se convierten en certificación BAL ni en entrada S7. */
+// vliw_cadena_fisica.c llama aquí y guarda el DAG resultante en c->dag.
 VliwDagEstado vliw_dag_construir(const VliwDagEntrada *e,VliwDag **salida,VliwDagDiagnostico *d)
 {
+    // No puede construir dependencias sin instrucciones, metadatos y bloques válidos.
     if(!e || !salida || *salida || !e->flujo || !e->cfg)
         return ERROR(VLIW_DAG_ARGUMENTO,VAC,"entrada, flujo, CFG y salida inicial NULL requeridos");
     size_t n=e->flujo->cantidad_operaciones;
@@ -192,6 +213,7 @@ VliwDagEstado vliw_dag_construir(const VliwDagEntrada *e,VliwDag **salida,VliwDa
     else estado=construir(e,g,dist,d);
     free(dist);
     if(estado) {vliw_dag_liberar(&g);return estado;}
+    // Publica el DAG solo después de construir y validar todas sus aristas.
     *salida=g;
     return ERROR(VLIW_DAG_OK,VAC,"DAG físico construido; semántica y reubicaciones externas");
 }

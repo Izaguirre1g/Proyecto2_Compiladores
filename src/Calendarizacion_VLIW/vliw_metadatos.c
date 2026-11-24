@@ -1,3 +1,5 @@
+// Cada llamada analiza una instrucción de 32 bits y entrega los registros que usa, su slot y sus efectos.
+// vliw_cadena_fisica.c llama a vliw_metadatos_extraer() para analizar cada operación física con S2.
 /* Resume operandos y efectos mínimos de instrucciones físicas ya codificadas.
  * Utiliza exclusivamente S2 para reconocer ISA; devuelve datos parciales por
  * valor, sin parser, generación de código ni integración con el backend BAL.
@@ -17,10 +19,13 @@ static SimDecodeEstado informar(VliwMetadatosDiagnostico *d, SimDecodeEstado est
  * distingue esa ausencia, luego se valida el índice y finalmente se ignora x0,
  * cuyo valor no depende de escrituras. Rechaza un índice incoherente sin hacer
  * un desplazamiento fuera de rango; no toca la salida pública del cliente. */
+// Inserta el bit de un registro en la máscara, excepto si es x0 o no hay operando.
 static bool agregar_registro(uint8_t registro, uint64_t *mascara)
 {
+    // SIM_REG_AUSENTE indica que la instrucción no tiene ese operando; no es un error.
     if (registro==SIM_REG_AUSENTE) return true;
     if (registro>=32) return false;
+    // El bit N indica el registro xN; x0 no se incluye porque su valor siempre es cero.
     if (registro!=0) *mascara|=UINT64_C(1)<<registro;
     return true;
 }
@@ -30,9 +35,11 @@ static bool agregar_registro(uint8_t registro, uint64_t *mascara)
  * requisitos, pero no VliwEfecto; no se copia el validador ni se cambia su API.
  * Cero significa mínimos propios vacíos, no ausencia acreditada de efectos
  * externos. No consulta AUTH/INIT, memoria o bóveda ni ejecuta la instrucción. */
+// Devuelve efectos deducibles de la operación, como accesos a memoria o posibles excepciones.
 static unsigned efectos_minimos(SimOperacion op)
 {
     switch (op) {
+    // Distingue operaciones de carga (lectura de memoria) y de almacenamiento (escritura).
     case SIM_OP_CARGAI: case SIM_OP_CARGABAI:
         return VLIW_EF_LEE_MEMORIA;
     case SIM_OP_GUARDAP: case SIM_OP_GUARDAB:
@@ -55,16 +62,19 @@ static unsigned efectos_minimos(SimOperacion op)
 /* Coordina validación, decodificación y publicación de metadatos parciales.
  * Usa almacenamiento local hasta comprobar operandos; cualquier rechazo,
  * incluido NOP, conserva la salida previa. No necesita limpieza ni liberación. */
+// Esta función es llamada desde vliw_cadena_fisica.c; devuelve los metadatos de una operación.
 SimDecodeEstado vliw_metadatos_extraer(uint32_t palabra, unsigned slot,
     VliwMetadatosParciales *salida, VliwMetadatosDiagnostico *d)
 {
     if (!salida || slot>=VLIW_SLOTS)
         return informar(d,SIM_DECODE_ARGUMENTO,palabra,slot,"salida requerida y slot físico0..3");
     SimInstruccion real;
+    // S2 traduce la palabra de 32 bits a una estructura con operación, operandos y tipo de salto.
     SimDecodeEstado estado=sim_decode_palabra(palabra,slot,&real);
     // El retorno S2 decide si se pueden consumir sus operandos. No se aplica
     // el fallback ADD del hardware a identificadores reservados ni se convierte
     // una palabra inválida en NOP. NOP tampoco es una operación funcional35.
+    // Solo acepta instrucciones reconocidas; un NOP o una palabra inválida no modifica la salida.
     if (estado!=SIM_DECODE_OK)
         return informar(d,estado,palabra,slot,"S2 no reconoció una operación no-NOP válida en este slot");
     VliwMetadatosParciales parcial={0};
@@ -73,9 +83,11 @@ SimDecodeEstado vliw_metadatos_extraer(uint32_t palabra, unsigned slot,
     // Solo se usan fuentes/destinos expuestos por S2. En un store rs2 es dato
     // leído; en un load rd es destino. Feistel incluye rs2 y rd2 del par: no se
     // deducen operaciones extra a partir de sus dos escrituras.
+    // rs1 y rs2 forman la máscara de lectura; rd y rd2, la de escritura.
     if (!agregar_registro(real.rs1,&parcial.lee) || !agregar_registro(real.rs2,&parcial.lee) ||
         !agregar_registro(real.rd,&parcial.escribe) || !agregar_registro(real.rd2,&parcial.escribe))
         return informar(d,SIM_DECODE_CAMPOS,palabra,slot,"operandos S2 fuera del contrato de GPR");
+    // Añade los efectos mínimos y el tipo de salto que usarán las etapas siguientes.
     parcial.efectos_minimos=efectos_minimos(real.operacion);
     parcial.salto=real.salto;
     parcial.requiere_auth=real.requiere_auth; parcial.requiere_init=real.requiere_init;
@@ -85,6 +97,7 @@ SimDecodeEstado vliw_metadatos_extraer(uint32_t palabra, unsigned slot,
     parcial.pendientes=VLIW_META_PEND_PRODUCTOR|VLIW_META_PEND_CFG_DAG;
     if (real.salto!=SIM_SALTO_NINGUNO)
         parcial.pendientes|=VLIW_META_PEND_CONTROL_ABI|VLIW_META_PEND_DESTINOS;
+    // Copia la estructura parcial en la salida únicamente después de validarla.
     *salida=parcial;
     return informar(d,SIM_DECODE_OK,palabra,slot,"metadatos locales extraídos; información del productor pendiente");
 }

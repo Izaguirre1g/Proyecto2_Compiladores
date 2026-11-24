@@ -1,3 +1,6 @@
+// MAPA S2: palabra ISA de 32 bits + slot -> SimInstruccion.
+// Sirve a la cadena VLIW para metadatos y al simulador para ejecutar bundles.
+
 /* Interpreta las 34 operaciones ISA del procesador VLIW del Proyecto I.
  * Extrae campos y valida su codificación sin simular su ejecución. */
 #include "sim_decode.h"
@@ -5,6 +8,7 @@
 /* Correspondencia inversa de isa_defs.sv y codificacion_binaria.c. No puede
  * reutilizarse su tabla privada sin modificar el codificador aprobado.
  * Cada fila fija tipo de 7 bits, ID de 4 bits, slot y formato de operandos. */
+// Cada entrada de esta tabla especifica una operación ISA, su tipo/ID, slot obligatorio y formato de operandos.
 typedef struct {
     uint8_t tipo, id, slot;
     SimOperacion operacion;
@@ -51,6 +55,8 @@ static const Especificacion instrucciones[] = {
 
 /* Construye una salida segura antes de reconocer la operación. Conserva la
  * palabra para diagnóstico, pero no inventa x0 como fuente o destino ausente. */
+// AUXILIAR S2: crea el resultado base de decodificacion para una palabra y un slot.
+// Los campos de registros empiezan como AUSENTE hasta conocer el formato.
 static SimInstruccion vacia(uint32_t palabra, unsigned slot)
 {
     SimInstruccion i = {0};
@@ -58,7 +64,9 @@ static SimInstruccion vacia(uint32_t palabra, unsigned slot)
     i.slot = slot;
     /* Al bajar los bits altos y limitar a 7/4 bits se separan tipo e ID;
      * los operandos restantes no pueden contaminar estas comparaciones. */
+    // Los bits altos seleccionan la familia de codificación y el ID el opcode concreto.
     i.tipo = (uint8_t)((palabra >> 25) & 0x7fu);
+    // El ID interno de opcode NO es el identificador externo de una instruccion CFG.
     i.id = (uint8_t)((palabra >> 21) & 0x0fu);
     i.estado = SIM_DECODE_RESERVADA;
     i.rd = i.rd2 = i.rs1 = i.rs2 = SIM_REG_AUSENTE;
@@ -68,6 +76,8 @@ static SimInstruccion vacia(uint32_t palabra, unsigned slot)
 
 /* bit es la posición menos significativa del campo de registro. Desplazar
  * hasta ella y aplicar 0x1f conserva exactamente cinco bits: índices 0..31. */
+// AUXILIAR S2: extrae un número de registro de cinco bits.
+// El desplazamiento indica donde comienza el campo dentro de los 32 bits.
 static uint8_t registro(uint32_t palabra, unsigned bit)
 {
     return (uint8_t)((palabra >> bit) & 0x1fu);
@@ -76,6 +86,8 @@ static uint8_t registro(uint32_t palabra, unsigned bit)
 /* Obtiene el inmediato bajo de 5, 11 o 16 bits. La máscara elimina los campos
  * de registro que están encima. Con signo se resta el peso del bit alto y se
  * suman los bits bajos: evita convertir un uint32_t fuera del rango de int32_t. */
+// AUXILIAR S2: separa el inmediato y calcula su extension de signo cuando procede.
+// Conserva tanto los bits originales como su interpretacion numerica.
 static void inmediato(SimInstruccion *i, unsigned ancho, bool con_signo)
 {
     uint32_t signo = 1u << (ancho - 1);
@@ -90,16 +102,23 @@ static void inmediato(SimInstruccion *i, unsigned ancho, bool con_signo)
 /* Extrae operandos de una operación ya reconocida. Devuelve false cuando
  * infringe restricciones estáticas del ensamblador, que RTL no siempre revisa.
  * No comprueba valores del banco, destinos PC ni privilegios dinámicos. */
+// DECODIFICACION DE CAMPOS: interpreta registros e inmediatos según el formato ISA.
+// REG, IMM, memoria, control y CRIPTO no colocan sus operandos en los mismos bits.
 static bool operandos(SimInstruccion *i)
 {
+    // El formato define en que posiciones estan rd, rs1, rs2 o los bits inmediatos.
     switch (i->formato) {
+    // REG: tres campos de registro; no usa inmediato.
     case SIM_FMT_REG:
         /* REG: rd[20:16], rs1[15:11], rs2[10:6]. Los seis bits libres
          * inferiores se ignoran, tal como hace decoder_alu. */
+        // rd es el índice del registro destino, no su valor durante la ejecución.
         i->rd = registro(i->palabra, 16);
+        // rs1 identifica el registro fuente; su valor se leera más tarde en ID.
         i->rs1 = registro(i->palabra, 11);
         i->rs2 = registro(i->palabra, 6);
         break;
+    // IMM: un operando fuente en registro y otro en inmediato.
     case SIM_FMT_IMM:
         /* IMM intercambia las posiciones frente a REG: fuente [20:16],
          * destino [15:11]. top extiende a signo los 11 bits en todos los casos. */
@@ -114,6 +133,7 @@ static bool operandos(SimInstruccion *i)
             i->corrimiento = (uint8_t)(i->inmediato_bruto & 0x1fu);
         }
         break;
+    // LSU: distingue cargas (rd) de stores (rs2) sobre el mismo campo.
     case SIM_FMT_LSU:
         i->rs1 = registro(i->palabra, 16);
         /* [15:11] es destino en loads o fuente de datos en stores, nunca ambos.
@@ -123,17 +143,20 @@ static bool operandos(SimInstruccion *i)
         else i->rs2 = registro(i->palabra, 11);
         inmediato(i, 11, true);
         break;
+    // COND: dos registros y un desplazamiento relativo al PC del bundle.
     case SIM_FMT_COND:
         i->rs1 = registro(i->palabra, 16);
         i->rs2 = registro(i->palabra, 11);
         inmediato(i, 11, true);
         i->salto = SIM_SALTO_COND_PC;
         break;
+    // SYE: salto directo con inmediato de 16 bits.
     case SIM_FMT_SYE:
         i->rd = registro(i->palabra, 16);
         inmediato(i, 16, true);
         i->salto = SIM_SALTO_PC;
         break;
+    // SYER: salto a la dirección calculada desde un registro base.
     case SIM_FMT_SYER:
         i->rd = registro(i->palabra, 16);
         i->rs1 = registro(i->palabra, 11);
@@ -142,6 +165,7 @@ static bool operandos(SimInstruccion *i)
          * su destino ni se exige alineación del offset de syer. */
         i->salto = SIM_SALTO_REGISTRO;
         break;
+    // CRIPTO Feistel: considera pares de registros y una llave de la boveda.
     case SIM_FMT_FEISTEL:
     case SIM_FMT_ELL:
         /* Los campos compartidos cambian de significado: [16:12] es rd
@@ -167,6 +191,7 @@ static bool operandos(SimInstruccion *i)
                 (i->rs1 & 1u) || (i->rs2 & 1u)) return false;
         }
         break;
+    // CRIPTO direccionado: usa una dirección absoluta de memoria.
     case SIM_FMT_VCR:
     case SIM_FMT_CAMCON:
         /* Dirección absoluta [20:5], sin signo. No se confunde con registros
@@ -187,6 +212,7 @@ static bool operandos(SimInstruccion *i)
     }
     /* Los saltos directos expresan offsets en bytes múltiplos de 16 según el
      * ensamblador. Se valida ese contrato sin sumar PC ni decidir si se toman. */
+    // La ISA exige que los destinos PC-relativos mantengan alineacion de bundle.
     if ((i->salto == SIM_SALTO_PC || i->salto == SIM_SALTO_COND_PC) &&
         i->inmediato % SIM_CARGADOR_BYTES_BUNDLE != 0) return false;
     return true;
@@ -194,6 +220,8 @@ static bool operandos(SimInstruccion *i)
 
 /* Busca tipo/ID en la tabla y valida la unidad antes de extraer operandos.
  * La salida se reemplaza en cada llamada, también si la entrada es inválida. */
+// FUNCIÓN PRINCIPAL S2: convierte una palabra binaria en una SimInstruccion estructurada.
+// Valida el slot y busca la pareja tipo/ID en la tabla antes de extraer operandos.
 SimDecodeEstado sim_decode_palabra(uint32_t palabra, unsigned slot,
                                    SimInstruccion *salida)
 {
@@ -202,17 +230,20 @@ SimDecodeEstado sim_decode_palabra(uint32_t palabra, unsigned slot,
     if (slot >= SIM_CARGADOR_SLOTS) return salida->estado = SIM_DECODE_ARGUMENTO;
     /* Solo la palabra cero es el NOP canónico del ensamblador. Un opcode
      * desconocido que el hardware deja inactivo no se convierte aquí en NOP. */
+    // La palabra 0 representa NOP. Un opcode reservado no se interpreta como NOP.
     if (!palabra) {
         salida->estado = SIM_DECODE_NOP;
         salida->familia = SIM_FAMILIA_NOP;
         salida->operacion = SIM_OP_NOP;
         return salida->estado;
     }
+    // Se compara tipo/ID contra la tabla real; después se válida el slot y se leen operandos.
     for (size_t n = 0; n < sizeof instrucciones / sizeof *instrucciones; ++n) {
         const Especificacion *e = &instrucciones[n];
         if (e->tipo != salida->tipo || e->id != salida->id) continue;
         /* Se reconoce primero tipo/ID: una operación conocida en otro slot
          * produce SLOT, mientras que un ID no definido conserva RESERVADA. */
+        // Una operación reconocida en el slot equivocado se rechaza explicitamente.
         if (e->slot != slot) return salida->estado = SIM_DECODE_SLOT;
         SimInstruccion i = *salida;
         i.operacion = e->operacion;
@@ -223,6 +254,7 @@ SimDecodeEstado sim_decode_palabra(uint32_t palabra, unsigned slot,
         if (!operandos(&i)) return salida->estado = SIM_DECODE_CAMPOS;
         /* Los operandos se publican juntos después de validar. En un rechazo
          * no quedan registros parciales que S3 pueda consumir por accidente. */
+        // Solo se publica OK cuando también pasaron las restricciones del formato.
         i.estado = SIM_DECODE_OK;
         *salida = i;
         return salida->estado;
@@ -232,12 +264,15 @@ SimDecodeEstado sim_decode_palabra(uint32_t palabra, unsigned slot,
 
 /* Decodifica cada posición en su propia unidad, sin copiar ni modificar IMEM.
  * El resultado agregado no reemplaza los cuatro estados individuales. */
+// S2 POR BUNDLE: decodifica por separado ALU, LSU, BRU y CRIPTO.
+// Devuelve el primer error detectado sin dejar de completar los cuatro resultados.
 SimDecodeEstado sim_decode_bundle(const uint32_t palabras[SIM_CARGADOR_SLOTS],
                                   SimInstruccion salida[SIM_CARGADOR_SLOTS])
 {
     if (!palabras || !salida) return SIM_DECODE_ARGUMENTO;
     SimDecodeEstado primero = SIM_DECODE_OK;
     bool todos_nop = true;
+    // El bundle consta de cuatro decodificaciones independientes; un error no oculta los otros campos.
     for (unsigned s = 0; s < SIM_CARGADOR_SLOTS; ++s) {
         SimDecodeEstado estado = sim_decode_palabra(palabras[s], s, &salida[s]);
         if (estado != SIM_DECODE_NOP) todos_nop = false;
@@ -247,11 +282,14 @@ SimDecodeEstado sim_decode_bundle(const uint32_t palabras[SIM_CARGADOR_SLOTS],
             primero = estado;
     }
     if (primero != SIM_DECODE_OK) return primero;
+    // Solo si las cuatro palabras son cero, el bundle entero se clasifica NOP.
     return todos_nop ? SIM_DECODE_NOP : SIM_DECODE_OK;
 }
 
 /* Permite nombrar una operación sin reconstruir opcodes en el consumidor.
  * Un valor fuera del catálogo no se interpreta y se informa como inválido. */
+// AUXILIAR S2: devuelve el nombre ISA asociado al identificador interno.
+// Permite imprimir trazas sin volver a interpretar la palabra binaria.
 const char *sim_operacion_nombre(SimOperacion operacion)
 {
     if (operacion == SIM_OP_NOP) return "nop";
