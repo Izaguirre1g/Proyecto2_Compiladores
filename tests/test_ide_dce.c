@@ -251,6 +251,46 @@ static void prueba_cabecera_que_queda(void)
     ide_dce_liberar(&d);
 }
 
+/*
+ * Una declaración cuyo valor inicial es código muerto, pero que se queda
+ * porque la variable se usa después (j recibe su valor de verdad dentro
+ * del ciclo, y no justo debajo, así que no se puede unir). La línea NO se
+ * tacha: es "eliminada en parte". En cambio, una variable que nunca se usa
+ * (basura) sí se tacha completa.
+ */
+static void prueba_declaracion_que_queda(void)
+{
+    const char *texto =
+        "create_funk #declare_int# suma_doble() {\n"       /* 1 */
+        "    basura * declare_int : 0;\n"                  /* 2: muerta completa */
+        "    i * declare_int : 0;\n"                       /* 3 */
+        "    j * declare_int : 0;\n"                       /* 4: el 0 es muerto, se queda */
+        "    t * declare_int : 0;\n"                       /* 5 */
+        "    whale (i < 2) {\n"                            /* 6 */
+        "        j : i gauss 1;\n"                         /* 7 */
+        "        t : t gauss j;\n"                         /* 8 */
+        "        i : i gauss 1;\n"                         /* 9 */
+        "    } stop;\n"                                    /* 10 */
+        "    give t;\n"                                    /* 11 */
+        "}\n"                                              /* 12 */
+        "create_funk #declare_infinite_void# main() {\n"
+        "    r * declare_int[1] : [0];\n"
+        "    r[0] : suma_doble();\n"
+        "}\n";
+    IdeDce d;
+    VERIFICAR(ide_dce_analizar(texto, strlen(texto), "examples/dce/editor.bal", &d) == 0);
+    VERIFICAR(d.estado == IDE_DCE_LISTO);
+    const IdeDceLinea *basura = buscar(&d, 2), *j = buscar(&d, 4);
+    VERIFICAR(basura != NULL && basura->completa);
+    VERIFICAR(j != NULL && !j->completa);
+    VERIFICAR(d.codigo_nuevo != NULL);
+    if (d.codigo_nuevo != NULL) {
+        VERIFICAR(strstr(d.codigo_nuevo, "basura") == NULL);
+        VERIFICAR(strstr(d.codigo_nuevo, "j * declare_int : 0;") != NULL);
+    }
+    ide_dce_liberar(&d);
+}
+
 /* Un programa con errores no se analiza: hay que corregirlo antes. */
 static void prueba_con_errores(void)
 {
@@ -402,6 +442,7 @@ int main(int argc, char **argv)
     prueba_ensamblador(argc > 1 ? argv[1] : NULL);
     prueba_inalcanzable();
     prueba_cabecera_que_queda();
+    prueba_declaracion_que_queda();
     prueba_con_errores();
     prueba_sin_ir();
     prueba_sin_codigo_muerto();

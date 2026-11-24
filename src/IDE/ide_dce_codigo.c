@@ -349,15 +349,37 @@ int ide_dce_codigo_nuevo(const char *texto, size_t largo,
         }
     }
 
-    /* Las sentencias con bloque que tienen algo eliminado pero se quedan:
-     * su primera línea no se debe tachar en el editor. */
+    /*
+     * Las sentencias que tienen algo eliminado pero SIGUEN en el código
+     * nuevo: su primera línea no se debe tachar en el editor (se marca como
+     * eliminada solo en parte). Son dos casos:
+     *   - una sentencia con bloque (whether, whale...) que no se borra
+     *     entera, por ejemplo un whether cuya rama also se queda;
+     *   - una declaración cuyo valor inicial era código muerto, pero que la
+     *     fase 3 conserva tal cual porque la variable se usa después y no hay
+     *     una asignación justo debajo con la que unirla. Por ejemplo, en
+     *         j * declare_int : 0;      <- el 0 nunca se lee: muerto
+     *         ...
+     *         j : 0;                     <- aquí se le da el valor de verdad
+     *     la declaración tiene que quedarse para que j exista.
+     * Con ACCION_UNIR la línea SÍ se tacha: su texto desaparece y la
+     * asignación de abajo pasa a ser la declaración. Y si la sentencia está
+     * dentro de otra que se borra entera, también se tacha.
+     */
     if (estado == 0) {
         s->cabeceras_que_quedan = calloc(cantidad ? cantidad : 1, sizeof *s->cabeceras_que_quedan);
         if (s->cabeceras_que_quedan == NULL) estado = -1;
     }
     for (size_t k = 0; k < cantidad && estado == 0; ++k) {
         const Analisis *a = &an[k];
-        if (a->sen == NULL || !a->sen->es_otra || a->eliminadas == 0 || a->accion == ACCION_BORRAR) continue;
+        if (a->sen == NULL || a->eliminadas == 0 || a->accion == ACCION_BORRAR ||
+            a->accion == ACCION_UNIR) continue;
+        int adentro = 0;  /* ¿Dentro de una sentencia que se borra entera? */
+        for (size_t m = 0; m < cantidad && !adentro; ++m) {
+            adentro = m != k && an[m].sen != NULL && an[m].accion == ACCION_BORRAR &&
+                      an[m].i <= a->i && a->j <= an[m].j;
+        }
+        if (adentro) continue;
         s->cabeceras_que_quedan[s->cantidad_cabeceras++] = t.elementos[a->i].linea;
     }
 
