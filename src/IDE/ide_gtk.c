@@ -24,9 +24,9 @@
  *      lista muestra EL arreglo y un botón "Corregir". Para los errores del
  *      parser, el arreglo es el token que predice la tabla LL(1) (ver
  *      ide_arreglos.c y src/LL1/). Ctrl+. corrige el error de la línea del cursor.
- *   5. Clones: el botón "Buscar clones" compara el archivo abierto con los
- *      demás .bal de su carpeta. Los clones se pintan de amarillo y la
- *      pestaña "Clones" dice dónde está cada copia.
+ *   5. Clones: el botón "Buscar clones" busca código repetido dentro del
+ *      archivo abierto (no en otros archivos). Los clones se pintan de
+ *      amarillo y la pestaña "Clones" dice dónde está cada copia.
  *   6. Números de línea: a la izquierda del editor. El de la línea del cursor
  *      va en negrita y los de las líneas con errores van en rojo, para que
  *      coincidan con lo que dicen la lista de errores y la barra de estado.
@@ -1047,13 +1047,6 @@ static void al_mover_marca(GtkTextBuffer *buffer, GtkTextIter *posicion, GtkText
 /* Página de cada pestaña de abajo. */
 enum { PESTANA_ERRORES = 0, PESTANA_CLONES = 1, PESTANA_DCE = 2 };
 
-/* TRUE si el nombre es un programa BAL visible ("x.bal", pero no ".ide_x.bal"). */
-static gboolean es_archivo_bal(const char *nombre)
-{
-    size_t largo = strlen(nombre);
-    return nombre[0] != '.' && largo > 4 && strcmp(nombre + largo - 4, ".bal") == 0;
-}
-
 /* Quita los clones marcados: el fondo amarillo y la lista. */
 static void limpiar_clones(Ide *ide)
 {
@@ -1062,7 +1055,7 @@ static void limpiar_clones(Ide *ide)
     gtk_text_buffer_remove_tag(ide->buffer, ide->marca_clon, &inicio, &fin);
     vaciar_lista(ide->lista_clones);
     gtk_label_set_text(ide->resumen_clones,
-                       "Pulsa \"Buscar clones\" para comparar este archivo con los demás .bal de su carpeta.");
+                       "Pulsa \"Buscar clones\" para buscar código repetido en este archivo.");
 }
 
 /* Pinta de amarillo un fragmento del archivo abierto. */
@@ -1165,11 +1158,12 @@ static void al_elegir_clon(GtkListBox *lista, GtkListBoxRow *fila, gpointer dato
 /*
  * Botón "Buscar clones".
  *
- *   1. Junta los archivos: el texto del editor (aunque no esté guardado) y
- *      los demás .bal de la misma carpeta, leídos del disco.
- *   2. Busca los clones con clones_buscar (clones.c), igual que balc --clones.
- *   3. Muestra solo los clones que tocan el archivo abierto: los pinta de
- *      amarillo y los pone en la pestaña "Clones".
+ * Busca los clones SOLO dentro del archivo abierto (no se compara con otros
+ * .bal de la carpeta):
+ *   1. La única fuente es el texto del editor (aunque no esté guardado).
+ *   2. Busca los clones con clones_buscar (clones.c), igual que
+ *      "balc --clones archivo.bal" con un solo archivo.
+ *   3. Pinta de amarillo cada copia y la pone en la pestaña "Clones".
  */
 static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
 {
@@ -1177,94 +1171,40 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
     Ide *ide = datos;
     limpiar_clones(ide);
 
-    /* Un archivo que nunca se guardó no tiene carpeta: no hay con qué
-     * compararlo. Se avisa en vez de buscar en una carpeta cualquiera. */
-    if (ide->ruta == NULL) {
-        gtk_label_set_text(ide->resumen_clones,
-                           "Este archivo no está guardado. Guárdalo (o abre uno) en la carpeta "
-                           "de los otros .bal para compararlo con ellos.");
-        gtk_notebook_set_current_page(ide->pestanas, PESTANA_CLONES);
-        return;
-    }
-
-    /* Paso 1: el archivo abierto va primero, con el texto del editor. */
-    GArray *fuentes = g_array_new(FALSE, TRUE, sizeof(ClonFuente));
-    GPtrArray *por_liberar = g_ptr_array_new_with_free_func(g_free);
+    /* Paso 1: una sola fuente, el texto del editor. */
     gchar *texto = texto_del_editor(ide);
-    g_ptr_array_add(por_liberar, texto);
     ClonFuente actual = {nombre_actual(ide), texto, strlen(texto)};
-    g_array_append_val(fuentes, actual);
-
-    /* ...y después los demás .bal de su carpeta (sin repetir el abierto). */
-    gchar *carpeta = g_path_get_dirname(ide->ruta);
-    gchar *base_actual = g_path_get_basename(ide->ruta);
-    GDir *dir = g_dir_open(carpeta, 0, NULL);
-    const char *nombre;
-    while (dir != NULL && (nombre = g_dir_read_name(dir)) != NULL) {
-        if (!es_archivo_bal(nombre)) continue;
-        if (strcmp(nombre, base_actual) == 0) continue;
-
-        gchar *ruta = g_build_filename(carpeta, nombre, NULL);
-        gchar *contenido = NULL;
-        gsize largo = 0;
-        if (!g_file_get_contents(ruta, &contenido, &largo, NULL)) {
-            g_free(ruta);  /* No se pudo leer: se salta. */
-            continue;
-        }
-        g_ptr_array_add(por_liberar, ruta);
-        g_ptr_array_add(por_liberar, contenido);
-        ClonFuente otra = {ruta, contenido, largo};
-        g_array_append_val(fuentes, otra);
-    }
-    if (dir != NULL) g_dir_close(dir);
 
     /* Paso 2: buscar. */
     ClonLista lista = {0};
-    int resultado = clones_buscar((const ClonFuente *)(void *)fuentes->data, fuentes->len,
-                                  CLONES_MINIMO_TOKENS, &lista);
+    int resultado = clones_buscar(&actual, 1, CLONES_MINIMO_TOKENS, &lista);
 
-    /* Paso 3: mostrar los clones del archivo abierto. */
-    size_t mostrados = 0;
-    gboolean abierto_omitido = FALSE;
-    for (size_t i = 0; i < lista.omitidos; ++i) {
-        if (strcmp(lista.nombres_omitidos[i], nombre_actual(ide)) == 0) abierto_omitido = TRUE;
-    }
+    /* Paso 3: marcar cada copia. Como solo hay un archivo, todos los
+     * fragmentos son de este archivo. */
     for (size_t i = 0; resultado == 0 && i < lista.cantidad; ++i) {
         const Clon *c = &lista.elementos[i];
-        gboolean cuenta = FALSE;
         for (size_t j = 0; j < c->cantidad; ++j) {
-            if (strcmp(c->fragmentos[j].archivo, nombre_actual(ide)) != 0) continue;
             marcar_clon(ide, &c->fragmentos[j]);
             agregar_fila_clon(ide, c, j);
-            cuenta = TRUE;
         }
-        if (cuenta) mostrados++;
     }
 
     /* El resumen de arriba de la lista. */
     gchar *resumen;
     if (resultado != 0) {
         resumen = g_strdup("No se pudieron buscar los clones (falta de memoria).");
-    } else if (abierto_omitido) {
+    } else if (lista.omitidos > 0) {
         resumen = g_strdup("Este archivo tiene errores de sintaxis: corrígelos para buscar clones.");
-    } else if (fuentes->len == 1) {
-        /* Solo está el archivo abierto: se dice en qué carpeta se buscó. */
-        resumen = g_strdup_printf("%zu clon%s en este archivo · no hay otros .bal en la carpeta %s",
-                                  mostrados, mostrados == 1 ? "" : "es", carpeta);
     } else {
-        resumen = g_strdup_printf("%zu clon%s en este archivo · se compararon %u archivo%s .bal de la carpeta",
-                                  mostrados, mostrados == 1 ? "" : "es",
-                                  fuentes->len, fuentes->len == 1 ? "" : "s");
+        resumen = g_strdup_printf("%zu clon%s en este archivo",
+                                  lista.cantidad, lista.cantidad == 1 ? "" : "es");
     }
     gtk_label_set_text(ide->resumen_clones, resumen);
     gtk_notebook_set_current_page(ide->pestanas, PESTANA_CLONES);
 
     g_free(resumen);
     clones_liberar(&lista);
-    g_free(base_actual);
-    g_free(carpeta);
-    g_array_free(fuentes, TRUE);
-    g_ptr_array_free(por_liberar, TRUE);
+    g_free(texto);
 }
 
 /* ================================================================== */
