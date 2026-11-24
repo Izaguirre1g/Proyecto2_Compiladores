@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spilling de registros</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:15px system-ui,sans-serif;background:#f4f6f8;color:#182230}
+main{padding:22px;max-width:1500px;margin:auto}
+h1{font-size:25px;margin:0 0 8px}h2{font-size:18px;margin:28px 0 6px}
+p{line-height:1.5;margin:6px 0 12px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+code{background:#e9eef3;padding:2px 4px;border-radius:3px}
+.barra{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#fff;border:1px dashed #98a2b3;padding:14px;border-radius:9px}
+.barra.encima{background:#eef4ff;border-color:#175cd3}
+#estado{min-height:23px;margin:6px 0}.error{color:#b42318}
+.tarjetas{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:10px;margin:12px 0}
+.tarjeta{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:10px 12px}
+.tarjeta b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tarjeta span{font-size:12px;color:#667085}
+.tarjeta.k{background:#182230;color:#fff;border-color:#182230}.tarjeta.k span{color:#d0d5dd}
+.tarjeta.alerta b{color:#b42318}
+.caja{background:#fff;border:1px solid #d0d5dd;border-radius:9px;padding:14px}
+.dos{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px}
+@media (max-width:1000px){.dos{grid-template-columns:1fr}}
+.controles{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 10px;font-size:14px}
+button,select{padding:6px 11px;border:1px solid #98a2b3;border-radius:5px;background:#fff;font:inherit;font-size:14px;cursor:pointer}
+button.on{background:#182230;color:#fff;border-color:#182230}
+input[type=range]{flex:1;min-width:200px}
+.leyenda{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:#475467;margin:6px 0}
+.leyenda i{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.leyenda i.c{border-radius:2px}
+#grafo{width:100%;height:auto;display:block;background:#fcfcfd;border-radius:6px}
+.arista{stroke:#98a2b3;stroke-opacity:.12;stroke-width:1}
+.arista.hl{stroke:#182230;stroke-opacity:.7;stroke-width:1.6}
+.arista.viva{stroke:#f79009;stroke-opacity:.35}
+.nodo{cursor:pointer}
+.nodo circle.n{stroke:#fff;stroke-width:1.5}
+.nodo text{font:10px ui-monospace,Menlo,monospace;fill:#344054;pointer-events:none}
+.nodo.tenue{opacity:.18}
+.nodo.sel circle.n{stroke:#182230;stroke-width:3.5}
+.nodo.vivo circle.n{stroke:#f79009;stroke-width:3}
+#detalle{font-size:14px;max-height:760px;overflow:auto}
+#detalle h3{margin:0 0 6px;font-size:16px}
+#detalle ul{margin:4px 0 10px;padding-left:18px}#detalle li{margin:3px 0}
+.dato{display:flex;justify-content:space-between;border-bottom:1px solid #f2f4f7;padding:4px 0}
+.dato span:first-child{color:#667085}
+.regs{display:flex;gap:10px;margin:10px 0;flex-wrap:wrap}
+.reg{flex:1;min-width:110px;border-radius:8px;padding:10px;color:#fff}
+.reg small{display:block;opacity:.85}.reg b{font:600 17px ui-monospace,Menlo,monospace}
+.reg.vacio{background:#f2f4f7!important;color:#98a2b3}
+.ev{margin:5px 0;padding:6px 9px;border-radius:6px;font-size:14px;border-left:4px solid}
+.ev.store{background:#fef3f2;border-color:#d92d20}
+.ev.load{background:#fffaeb;border-color:#f79009}
+.ev.desalojo{background:#f2f4f7;border-color:#667085}
+.ir{background:#f9fafb;border:1px solid #eaecf0;border-radius:6px;padding:8px;margin:6px 0}
+.ir div.store{color:#b42318}.ir div.load{color:#b54708}
+.fuente{background:#182230;color:#e4e7ec;border-radius:6px;padding:8px 10px;margin:6px 0}
+.scroll{overflow:auto}
+svg text.eje{font:10px system-ui,sans-serif;fill:#667085}
+.nota{font-size:13px;color:#667085}
+#contenido[hidden]{display:none}
+.cfgwrap{position:relative;min-height:100px}
+.cfgwrap svg{position:absolute;left:0;top:0;pointer-events:none}
+.bb .conj{padding:7px 10px;font:13px/1.5 ui-monospace,Menlo,monospace}
+.bb .conj.in{background:#ecfdf3;border-bottom:2px solid #067647;color:#05603a}
+.bb .conj.out{background:#fef3f2;border-top:2px solid #b42318;color:#912018}
+.bb .conj b{font-family:system-ui,sans-serif}
+.bb .conj .muertas{display:block;font-size:11.5px;color:#98a2b3}
+.bb table.vars{border-collapse:collapse;width:100%;margin-top:4px;font-size:12px}
+.bb table.vars td{padding:2px 4px;border-top:1px solid rgba(0,0,0,.06);vertical-align:top}
+.bb table.vars td.var{font-weight:700;white-space:nowrap}
+.bb table.vars td.por{font-family:system-ui,sans-serif;font-size:11.5px}
+.bb table.vars .estado{display:inline-block;min-width:52px;text-align:center;border-radius:9px;padding:0 6px;font:700 11px system-ui,sans-serif}
+.bb .in tr.viva .estado{background:#067647;color:#fff}
+.bb .out tr.viva .estado{background:#b42318;color:#fff}
+.bb tr.muerta .estado{background:#e4e7ec;color:#475467}
+.bb tr.muerta td.var{color:#98a2b3;text-decoration:line-through}
+.bb tr.muerta td.por{color:#98a2b3}
+.bb tr.viva td.por{color:#344054}
+.bb .conj .muertas s{color:#98a2b3}
+.bb .instr{font:12px/1.55 ui-monospace,Menlo,monospace;padding:6px 0;overflow:auto;background:#fff}
+.bb.limitado .instr{max-height:300px}
+.bb .instr div{padding:0 10px;white-space:pre-wrap;word-break:break-word}
+.bb .instr div:hover{background:#f5f8ff}
+.bb .instr .n{color:#98a2b3;margin-right:6px}
+.bb .instr .v{color:#175cd3;font-weight:600}
+.bb .instr .store{color:#b42318}.bb .instr .load{color:#b54708}
+.bb{position:absolute;width:360px;background:#fff;border:1.5px solid #344054;border-radius:8px;font-size:13px;cursor:pointer;overflow:hidden}
+.bb.sel{border-color:#175cd3;box-shadow:0 0 0 3px #b2ccff}
+.bb .tit{padding:7px 9px;font-weight:700;background:#f9fafb}
+.bb .tit small{font-weight:400;color:#667085}
+.bb .fila{padding:5px 9px;border-top:1px solid #eaecf0;line-height:1.9}
+.bb .fila.in{background:#f6fef9}.bb .fila.out{background:#fffbfa}
+.bb .et{display:inline-block;min-width:38px;font-weight:700;font-size:12px}
+.bb .cuenta{float:right;font-size:11px;color:#667085}
+.bb .spill{font-size:12px;color:#475467}
+.chip{display:inline-block;font:12px/1.5 ui-monospace,Menlo,monospace;padding:0 7px;border-radius:10px;margin:1px 2px}
+.chip.viva-in{background:#067647;color:#fff}
+.chip.viva-out{background:#b42318;color:#fff}
+.chip.muerta{background:#f2f4f7;color:#98a2b3;text-decoration:line-through}
+.chip.use{background:#eef4ff;color:#175cd3;border:1px solid #b2ccff}
+.chip.def{background:#fdf2fa;color:#c11574;border:1px solid #fcceee}
+table.it{border-collapse:collapse;font-size:13px}
+table.it th,table.it td{border:1px solid #eaecf0;padding:6px 8px;vertical-align:top;text-align:left}
+table.it th{background:#f9fafb;white-space:nowrap}
+table.it th.final,table.it td.final{background:#ecfdf3}
+table.it td div{white-space:nowrap}
+table.it .cambio{background:#fef0c7;border-radius:3px;padding:0 3px}
+table.it .lin{color:#05603a}table.it .lout{color:#912018}
+</style>
+</head>
+<body><main>
+<h1>Spilling de registros</h1>
+<p>Genera el JSON con <code>python3 tools/spilling_json.py ejemplo_profe/03_SpillingDeRegistros.bal</code>
+y carga aquí <code>ejemplo_profe/03_SpillingDeRegistros.spilling.json</code>. Funciona sin conexión.</p>
+
+<div class="barra" id="zona">
+  <input type="file" id="archivo" accept=".json,application/json">
+  <span>o arrastra aquí el archivo <code>.spilling.json</code></span>
+</div>
+<div id="estado"></div>
+
+<div id="contenido" hidden>
+  <div class="tarjetas" id="tarjetas"></div>
+  <p class="nota" id="explica"></p>
+
+  <h2>1. Grafo de interferencia</h2>
+  <p class="nota">Cada nodo es un temporal <code>$tN</code>. Una arista une dos temporales que están vivos al mismo tiempo,
+  así que no pueden compartir registro. Colorear el grafo con <b>k</b> colores equivale a asignar los k registros:
+  dos vecinos nunca pueden tener el mismo color. El nodo que no alcanza color va a <b>spill</b> (a su ranura <code>$spillN</code>).
+  Haz clic en un nodo para ver sus vecinos y su historia de spill.</p>
+  <div class="dos">
+    <div class="caja">
+      <div class="controles">
+        <span>Colorear:</span>
+        <button id="bColK" class="on">Coloreo con k registros</button><button id="bColReal">Registro real de balc</button>
+      </div>
+      <p class="nota" id="resumenColor"></p>
+      <div class="controles">
+        <span>Disposición:</span>
+        <button id="bCirculo" class="on">Círculo</button><button id="bFuerzas">Fuerzas</button>
+        <span>Bloque:</span><select id="selBloque"></select>
+        <label><input type="checkbox" id="chkVivos" checked> marcar vivos en el paso actual</label>
+        <label><input type="checkbox" id="chkAislados"> ocultar temporales sin vecinos</label>
+      </div>
+      <div class="leyenda" id="leyendaGrafo"></div>
+      <svg id="grafo" viewBox="0 0 820 820"></svg>
+    </div>
+    <div class="caja" id="detalle"></div>
+  </div>
+
+  <h2>2. Paso a paso: qué hay en cada registro</h2>
+  <div class="caja">
+    <div class="controles">
+      <button id="bAnt">◀</button>
+      <input type="range" id="paso" min="0" value="0">
+      <button id="bSig">▶</button>
+      <span id="pasoTxt" class="mono"></span>
+      <button id="bSigSpill">siguiente spill ▶▶</button>
+    </div>
+    <div id="vistaPaso"></div>
+  </div>
+
+  <h2>3. Bloques básicos (CFG) con variables vivas</h2>
+  <div class="caja">
+    <p class="nota">Cada bloque muestra arriba el conjunto <b>IN</b> (variables vivas al entrar), en medio sus <b>instrucciones</b>
+    y abajo el conjunto <b>OUT</b> (variables vivas al salir). Son los conjuntos finales del análisis de vida:
+    IN = USE ∪ (OUT − DEF) y OUT = unión de los IN de los sucesores. Debajo de cada conjunto, en gris, las variables muertas.
+    En las instrucciones, las variables del programa aparecen con su nombre del <code>.bal</code>; pasa el cursor sobre un bloque para ver USE y DEF.
+    Haz clic en un bloque para filtrar el grafo.</p>
+    <div class="controles">
+      <span>Instrucciones:</span>
+      <button id="bIrOrig" class="on">IR del bloque</button><button id="bIrSpill">IR con spilling ($rN, spill_load/store)</button>
+      <label><input type="checkbox" id="chkAlto" checked> limitar alto de cada bloque</label>
+    </div>
+    <div class="scroll"><div id="cfg" class="cfgwrap"></div></div>
+  </div>
+
+  <h2>4. Iteraciones del análisis de vida hasta el conjunto final</h2>
+  <div class="caja">
+    <p class="nota">El análisis empieza con IN y OUT vacíos y recorre los bloques de atrás hacia adelante, repitiendo hasta que
+    ningún conjunto cambia (punto fijo). En amarillo, lo que cambió en esa iteración. La última columna es el conjunto final.</p>
+    <div class="scroll" id="iteraciones"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const NS='http://www.w3.org/2000/svg';
+const el=(tag,props={},...h)=>{const e=document.createElement(tag);Object.assign(e,props);for(const x of h)if(x!=null)e.append(x);return e;};
+const sv=(tag,attrs={},...h)=>{const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);for(const x of h)if(x!=null)e.append(x);return e;};
+const titulo=t=>sv('title',{},t);
+const COL_REG=['#175cd3','#067647','#7a5af8','#c11574','#0e9384','#b54708','#3538cd','#4e5ba6'];
+const COL_MEM='#fda29b',COL_SPILL='#d92d20',COL_LIMPIO='#12b76a';
+const colReg=r=>COL_REG[r%COL_REG.length];
+const num=t=>+t.slice(2);
+
+let D=null,S={paso:0,temp:null,bloque:'todos',layout:'circulo'},pos={},idx={};
+
+// ---------------------------------------------------------------- carga
+function validar(d){
+  if(!d||d.formato!=='bal-spilling'||!Array.isArray(d.temporales)||!Array.isArray(d.pasos))
+    throw new Error(d&&d.nivel==='O2'?'ese es el .o2.json; carga el .spilling.json que genera tools/spilling_json.py':'No es un JSON de tools/spilling_json.py (.spilling.json).');
+}
+function cargar(texto,nombre){
+  let d;
+  try{d=JSON.parse(texto);validar(d);}
+  catch(e){$('estado').replaceChildren(el('span',{className:'error',textContent:'No se pudo cargar el JSON: '+e.message}));$('contenido').hidden=true;return;}
+  D=d;S={paso:0,temp:null,bloque:'todos',layout:'circulo'};
+  idx={};D.temporales.forEach((t,i)=>idx[t.nombre]=t);
+  D.vecinos={};for(const t of D.temporales)D.vecinos[t.nombre]=new Set();
+  for(const [a,b] of D.interferencias){D.vecinos[a].add(b);D.vecinos[b].add(a);}
+  D.colK=colorearConK(D.k);D.colReal=colorReal();S.modo='k';
+  $('bColK').classList.add('on');$('bColReal').classList.remove('on');
+  $('estado').textContent='Cargado: '+nombre+(D.validado_contra_balc?' · coincide instrucción por instrucción con balc -O2':' · simulación (k distinto al de balc)');
+  $('contenido').hidden=false;
+  inicial();
+}
+
+function inicial(){
+  const m=D.metricas;
+  const items=[
+    [D.k,'k = registros físicos ('+D.registros.join(', ')+')','k'],
+    [m.temporales,'temporales $tN (virtuales)'],
+    [m.presion_max,'máx. temporales vivos a la vez',m.presion_max>D.k?'alerta':''],
+    [m.ranuras,'ranuras $spillN en memoria'],
+    [m.almacenes,'spill_store (registro → memoria)'],
+    [m.cargas,'spill_load (memoria → registro)'],
+    [m.desalojos,'desalojos (LRU)'],
+    [m.interferencias,'aristas de interferencia'],
+    [m.instrucciones_antes+' → '+m.instrucciones_despues,'instrucciones IR antes → después'],
+  ];
+  $('tarjetas').replaceChildren(...items.map(([v,t,c])=>el('div',{className:'tarjeta '+(c||'')},el('b',{textContent:v}),el('span',{textContent:t}))));
+  $('explica').textContent=`Algoritmo: ${D.algoritmo}. A cada temporal le corresponde una ranura fija $spillN. `+
+    `Cuando se necesita un registro y los ${D.k} están ocupados, se desaloja el que hace más tiempo que no se usa; `+
+    `si su valor cambió desde que se cargó, se guarda antes con spill_store. Si más adelante se vuelve a necesitar, se recarga con spill_load.`;
+  $('selBloque').replaceChildren(el('option',{value:'todos',textContent:'todos'}),...D.bloques.map(b=>el('option',{value:b.id,textContent:'B'+b.id})));
+  $('paso').max=D.pasos.length-1;
+  calcularLayout();dibujarTodo();
+}
+
+// ------------------------------------------------------------ coloreo
+/* Coloreo de grafos con k colores (Chaitin-Briggs):
+ * 1) simplificar: quitar nodos con grado < k y apilarlos; si no hay, quitar
+ *    el de menor costo (usos+defs)/grado como posible spill;
+ * 2) seleccionar: desapilar y darle el primer registro que no use ningún vecino;
+ *    si los k están ocupados, ese temporal va a spill. */
+function colorearConK(k){
+  const ns=D.temporales.map(t=>t.nombre),grado={},fuera=new Set(),pila=[];
+  for(const t of ns)grado[t]=D.vecinos[t].size;
+  while(pila.length<ns.length){
+    let elegido=null,pot=false;
+    for(const t of ns)if(!fuera.has(t)&&grado[t]<k){elegido=t;break;}
+    if(!elegido){pot=true;let mejor=Infinity;
+      for(const t of ns)if(!fuera.has(t)){const x=idx[t],costo=(x.defs.length+x.usos.length)/Math.max(grado[t],1);if(costo<mejor){mejor=costo;elegido=t;}}}
+    pila.push({t:elegido,grado:grado[elegido],pot});fuera.add(elegido);
+    for(const v of D.vecinos[elegido])if(!fuera.has(v))grado[v]--;
+  }
+  const color={},spill=new Set(),info={};
+  for(let i=pila.length-1;i>=0;i--){
+    const {t,grado:g,pot}=pila[i],usados=new Set();
+    for(const v of D.vecinos[t])if(color[v]!==undefined)usados.add(color[v]);
+    let c=0;while(c<k&&usados.has(c))c++;
+    if(c<k)color[t]=c;else spill.add(t);
+    info[t]={orden:pila.length-i,grado:g,pot,usados:[...usados].sort()};
+  }
+  return {color,spill,info};
+}
+/* Lo que hizo balc: el registro donde se escribió el temporal al definirse.
+ * Spill = el temporal tuvo spill_store o spill_load (algoritmo LRU local). */
+function colorReal(){
+  const color={},spill=new Set();
+  for(const p of D.pasos)for(const t of p.define){const r=p.registros.findIndex(R=>R.t===t);if(r>=0&&color[t]===undefined)color[t]=r;}
+  for(const t of D.temporales)if(t.spill)spill.add(t.nombre);
+  return {color,spill};
+}
+const coloreo=()=>S.modo==='k'?D.colK:D.colReal;
+
+function dibujarLeyenda(){
+  const C=coloreo(),ts=D.temporales.map(t=>t.nombre),cuenta=D.registros.map(()=>0);
+  for(const t of ts)if(C.color[t]!==undefined&&!(S.modo==='k'&&C.spill.has(t)))cuenta[C.color[t]]++;
+  $('leyendaGrafo').replaceChildren(
+    ...D.registros.map((r,i)=>el('span',{},el('i',{style:'background:'+colReg(i)}),`${r} (${cuenta[i]})`)),
+    el('span',{},el('i',{style:'background:#fff;border:2px dashed '+COL_SPILL}),`spill (${C.spill.size})`),
+    el('span',{},el('i',{style:'background:#fff;border:3px solid #f79009'}),'vivo en el paso actual'),
+    el('span',{textContent:'· tamaño = grado'}));
+  const n=ts.length;
+  $('resumenColor').textContent=S.modo==='k'
+    ?`Coloreo con k = ${D.k} (Chaitin-Briggs): ${n-C.spill.size} de ${n} temporales reciben uno de los ${D.k} registros y ${C.spill.size} van a spill. `+
+     `Ningún par de vecinos comparte color. Es el coloreo teórico; balc no usa este algoritmo sino LRU local (botón "Registro real de balc").`
+    :`Lo que hizo balc: cada nodo tiene el color del registro donde se escribió al definirse. Con LRU, vecinos pueden compartir registro `+
+     `en momentos distintos porque el primero se desaloja a memoria. ${C.spill.size} de ${n} temporales tuvieron spill (borde punteado rojo).`;
+}
+
+// --------------------------------------------------------------- grafo
+function tempsVisibles(){
+  const sinAislados=$('chkAislados').checked;
+  return D.temporales.filter(t=>(S.bloque==='todos'||t.bloques.includes(+S.bloque))&&(!sinAislados||t.grado>0)).map(t=>t.nombre);
+}
+function calcularLayout(){
+  const ts=tempsVisibles(),n=ts.length,C=410,R=345;pos={};
+  const orden=[...ts].sort((a,b)=>primerUso(a)-primerUso(b)||num(a)-num(b));
+  orden.forEach((t,i)=>{const ang=-Math.PI/2+2*Math.PI*i/Math.max(n,1);pos[t]={x:C+R*Math.cos(ang),y:C+R*Math.sin(ang)};});
+  if(S.layout==='fuerzas'&&n>1){
+    const set=new Set(ts),E=D.interferencias.filter(([a,b])=>set.has(a)&&set.has(b));
+    const k=Math.sqrt(700*700/n)*0.9;let temp=60;
+    for(let it=0;it<350;it++){
+      const disp={};for(const t of ts)disp[t]={x:0,y:0};
+      for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+        const a=pos[ts[i]],b=pos[ts[j]];let dx=a.x-b.x,dy=a.y-b.y,d=Math.hypot(dx,dy)||.01;
+        const f=k*k/d;dx/=d;dy/=d;disp[ts[i]].x+=dx*f;disp[ts[i]].y+=dy*f;disp[ts[j]].x-=dx*f;disp[ts[j]].y-=dy*f;}
+      for(const [u,v] of E){const a=pos[u],b=pos[v];let dx=a.x-b.x,dy=a.y-b.y,d=Math.hypot(dx,dy)||.01;
+        const f=d*d/k/6;dx/=d;dy/=d;disp[u].x-=dx*f;disp[u].y-=dy*f;disp[v].x+=dx*f;disp[v].y+=dy*f;}
+      for(const t of ts){const p=pos[t],q=disp[t],d=Math.hypot(q.x,q.y)||.01;
+        p.x+=q.x/d*Math.min(d,temp);p.y+=q.y/d*Math.min(d,temp);
+        p.x+=(C-p.x)*.01;p.y+=(C-p.y)*.01;}
+      temp=Math.max(temp*.985,1);
+    }
+    const xs=ts.map(t=>pos[t].x),ys=ts.map(t=>pos[t].y),mnx=Math.min(...xs),mxx=Math.max(...xs),mny=Math.min(...ys),mxy=Math.max(...ys);
+    const s=740/Math.max(mxx-mnx,mxy-mny,1);
+    for(const t of ts){pos[t]={x:40+(pos[t].x-mnx)*s,y:40+(pos[t].y-mny)*s};}
+  }
+}
+function primerUso(t){const x=idx[t];return Math.min(...x.defs,...x.usos,Infinity);}
+
+function dibujarGrafo(){
+  const g=$('grafo'),ts=tempsVisibles(),set=new Set(ts);
+  const paso=D.pasos[S.paso],vivos=new Set($('chkVivos').checked?[...paso.vivos,...paso.usa,...paso.define]:[]);
+  const enReg={};paso.registros.forEach((r,i)=>{if(r.t)enReg[r.t]=i;});
+  const maxG=Math.max(1,...ts.map(t=>idx[t].grado));
+  const aristas=sv('g');
+  for(const [a,b] of D.interferencias){
+    if(!set.has(a)||!set.has(b))continue;
+    let c='arista';
+    if(S.temp&&(a===S.temp||b===S.temp))c+=' hl';
+    else if(vivos.has(a)&&vivos.has(b))c+=' viva';
+    aristas.append(sv('line',{x1:pos[a].x,y1:pos[a].y,x2:pos[b].x,y2:pos[b].y,class:c}));
+  }
+  const nodos=sv('g');
+  const vec=S.temp?D.vecinos[S.temp]:null,C=coloreo();
+  for(const t of ts){
+    const x=idx[t],r=6+10*Math.sqrt(x.grado/maxG);
+    let c='nodo';
+    if(S.temp===t)c+=' sel';else if(vec&&!vec.has(t))c+=' tenue';
+    if(vivos.has(t)&&S.temp!==t)c+=' vivo';
+    const esSpill=C.spill.has(t),col=C.color[t];
+    // Modo k: el spill no tiene color. Modo real: color del registro + borde de spill.
+    const relleno=S.modo==='k'?(esSpill?'#fff':colReg(col)):(col!==undefined?colReg(col):'#fff');
+    const gr=sv('g',{class:c,transform:`translate(${pos[t].x},${pos[t].y})`},
+      esSpill?sv('circle',{r:r+4,fill:'none',stroke:COL_SPILL,'stroke-width':2,'stroke-dasharray':'3 2'}):null,
+      sv('circle',{r,class:'n',fill:relleno}),
+      esSpill&&S.modo==='k'?sv('text',{x:-3.5,y:3.5,style:'fill:#d92d20;font-weight:700'},'S'):null,
+      sv('text',{x:r+(esSpill?6:2),y:3},t),
+      titulo(`${t} → ${esSpill?'SPILL ('+x.ranura+')':'$r'+col}${S.modo==='real'&&esSpill?' · definido en $r'+col:''} · grado ${x.grado} · stores ${x.almacenes} · loads ${x.cargas}`+(enReg[t]!==undefined?` · en $r${enReg[t]} en este paso`:'')));
+    gr.onclick=()=>{S.temp=S.temp===t?null:t;dibujarGrafo();dibujarDetalle();};
+    nodos.append(gr);
+  }
+  g.replaceChildren(aristas,nodos);
+  dibujarLeyenda();
+}
+
+function dibujarDetalle(){
+  const c=$('detalle');
+  if(!S.temp){
+    const paso=D.pasos[S.paso];
+    c.replaceChildren(el('h3',{textContent:'Selecciona un temporal'}),
+      el('p',{className:'nota',textContent:'El color de cada nodo es su registro. Borde punteado rojo: spill. Borde naranja: vivo en el paso actual.'}),
+      el('div',{className:'dato'},el('span',{textContent:'Paso actual'}),el('span',{className:'mono',textContent:'#'+paso.i+'  '+paso.texto})),
+      el('div',{className:'dato'},el('span',{textContent:'Vivos en este paso'}),el('span',{textContent:paso.vivos.length+' (k = '+D.k+')'})),
+      el('h3',{textContent:'Temporales con más vecinos',style:'margin-top:14px'}),
+      el('ul',{},...[...D.temporales].sort((a,b)=>b.grado-a.grado).slice(0,10).map(t=>{
+        const li=el('li',{},el('a',{href:'#',textContent:t.nombre,onclick:e=>{e.preventDefault();S.temp=t.nombre;dibujarGrafo();dibujarDetalle();}}),` grado ${t.grado} · ${t.almacenes} store / ${t.cargas} load`);return li;})));
+    return;
+  }
+  const t=idx[S.temp],hist=[],K=D.colK,ik=K.info[S.temp];
+  const colorK=K.spill.has(S.temp)?`spill: sus vecinos ya usan ${ik.usados.map(c=>'$r'+c).join(', ')}`:`$r${K.color[S.temp]}`;
+  const realDef=D.colReal.color[S.temp]!==undefined?'$r'+D.colReal.color[S.temp]:'—';
+  for(const p of D.pasos)for(const e of p.eventos)if(e.temporal===S.temp||e.por===S.temp)hist.push([p,e]);
+  const ir=i=>{const p=D.pasos[i];return el('li',{},el('a',{href:'#',className:'mono',textContent:'#'+i+' '+p.texto,onclick:ev=>{ev.preventDefault();irPaso(i);}}));};
+  c.replaceChildren(
+    el('h3',{className:'mono',textContent:t.nombre}),
+    ...[[`Coloreo con k=${D.k}`,colorK],['Orden al simplificar',`${ik.orden} de ${D.temporales.length} (grado restante ${ik.grado}${ik.pot?', posible spill':''})`],
+      ['Registro real en balc',realDef],['Ranura en memoria',t.ranura],['Grado (interfiere con)',t.grado+' temporales'],['Registros que ocupó',t.registros.map(r=>'$r'+r).join(', ')||'—'],
+      ['spill_store',t.almacenes],['spill_load',t.cargas],['Veces desalojado',t.desalojos],['Bloques',t.bloques.map(b=>'B'+b).join(', ')],
+      ['¿Tuvo spill?',t.spill?'sí':'no']].map(([a,b])=>el('div',{className:'dato'},el('span',{textContent:a}),el('span',{textContent:b}))),
+    el('h3',{textContent:'Se define en',style:'margin-top:12px'}),el('ul',{},...t.defs.map(ir)),
+    el('h3',{textContent:'Se usa en'}),el('ul',{},...(t.usos.length?t.usos.map(ir):[el('li',{textContent:'—'})])),
+    el('h3',{textContent:'Historia de spill'}),
+    hist.length?el('div',{},...hist.map(([p,e])=>{const d=evento(e);d.style.cursor='pointer';d.prepend(el('b',{textContent:'#'+p.i+' '}));d.onclick=()=>irPaso(p.i);return d;})):el('p',{className:'nota',textContent:'Nunca salió de su registro.'}),
+    el('h3',{textContent:'Vecinos en el grafo'}),
+    el('p',{className:'mono',textContent:[...D.vecinos[S.temp]].sort((a,b)=>num(a)-num(b)).join(' ')||'—'}));
+}
+
+// ----------------------------------------------------------- paso a paso
+function evento(e){
+  let txt;
+  if(e.tipo==='desalojo')txt=`${e.temporal} sale de $r${e.registro} para dejar lugar a ${e.por}. `+(e.sucio?`Su valor cambió, así que se guarda en ${e.ranura}.`:`Su valor ya estaba en ${e.ranura}; no hace falta guardarlo.`);
+  else if(e.tipo==='store')txt=`spill_store ${e.ranura}, $r${e.registro}: ${e.temporal} se guarda en memoria `+({desalojo:`(lo desaloja ${e.por})`,'fin de bloque':'(fin de bloque: se guardan los registros modificados)',llamada:'(antes de una llamada)'}[e.motivo]||'');
+  else txt=`spill_load: ${e.temporal} vuelve de ${e.ranura} a $r${e.registro}`;
+  return el('div',{className:'ev '+e.tipo,textContent:txt});
+}
+function dibujarPaso(){
+  const p=D.pasos[S.paso],ant=S.paso>0&&D.pasos[S.paso-1].bloque===p.bloque?D.pasos[S.paso-1]:null;
+  $('paso').value=S.paso;$('pasoTxt').textContent=`paso ${S.paso+1}/${D.pasos.length} · B${p.bloque}`;
+  const regs=el('div',{className:'regs'},...p.registros.map((r,i)=>{
+    const antes=ant?ant.registros[i].t:null,cambio=r.t!==antes;
+    return el('div',{className:'reg'+(r.t?'':' vacio'),style:'background:'+colReg(i)},
+      el('small',{textContent:`$r${i}`+(r.sucio?' · modificado':r.t?' · igual a memoria':'')}),
+      el('b',{textContent:r.t||'libre'}),
+      el('small',{textContent:r.t?(cambio?(antes?`antes: ${antes}`:'nuevo'):'sin cambio'):''}));
+  }));
+  const fuente=D.fuente&&D.fuente[p.linea-1]!=null?el('div',{className:'fuente mono',textContent:`línea ${p.linea}:  ${D.fuente[p.linea-1].trim()}`}):null;
+  const sobra=p.vivos.length-D.k;
+  $('vistaPaso').replaceChildren(
+    el('div',{className:'dos'},
+      el('div',{},
+        fuente,
+        el('div',{},el('b',{textContent:'Instrucción IR original: '}),el('span',{className:'mono',textContent:`#${p.i}  ${p.texto}`})),
+        el('div',{className:'nota',textContent:`usa: ${p.usa.join(', ')||'—'} · define: ${p.define.join(', ')||'—'}`}),
+        el('h3',{textContent:'Registros después de la instrucción',style:'font-size:15px;margin:12px 0 0'}),regs,
+        el('h3',{textContent:'Eventos de spill',style:'font-size:15px;margin:10px 0 4px'}),
+        p.eventos.length?el('div',{},...p.eventos.map(evento)):el('p',{className:'nota',textContent:'Ninguno: todos los operandos ya estaban en registros.'})),
+      el('div',{},
+        el('b',{textContent:'IR generada (con registros físicos)'}),
+        el('div',{className:'ir mono'},...p.genera.map(g=>el('div',{className:g.tipo||'',textContent:g.texto}))),
+        el('div',{className:'dato'},el('span',{textContent:'Temporales vivos'}),el('span',{textContent:p.vivos.length})),
+        el('div',{className:'dato'},el('span',{textContent:'k (registros)'}),el('span',{textContent:D.k})),
+        el('div',{className:'dato'},el('span',{textContent:'No caben en registros'}),el('span',{textContent:sobra>0?sobra+' (van a memoria)':'0',style:sobra>0?'color:#b42318;font-weight:600':''})),
+        el('p',{className:'mono',style:'margin-top:8px',textContent:p.vivos.join(' ')||'—'}))));
+}
+function irPaso(i){S.paso=Math.max(0,Math.min(D.pasos.length-1,i));dibujarPaso();dibujarGrafo();if(!S.temp)dibujarDetalle();}
+
+// ------------------------------------------------------------------- CFG
+function dibujarCFG(){
+  const B=D.bloques,cont=$('cfg'),nivel={},cola=[B[0]?.id];if(B.length)nivel[B[0].id]=0;
+  const porId={};B.forEach(b=>porId[b.id]=b);
+  while(cola.length){const id=cola.shift();for(const s of porId[id]?.sucesores||[])if(nivel[s]===undefined&&porId[s]){nivel[s]=nivel[id]+1;cola.push(s);}}
+  for(const b of B)if(nivel[b.id]===undefined)nivel[b.id]=Math.max(0,...Object.values(nivel))+1;
+  const filas={};for(const b of B)(filas[nivel[b.id]]??=[]).push(b);
+  const V=D.variables||{},nom=x=>V[x]?V[x].nombre:x,esVar=x=>x.startsWith('__bal_v');
+  const chip=(x,cls)=>el('span',{className:'chip '+cls,textContent:nom(x),title:x+(V[x]&&V[x].linea?` · declarada en la línea ${V[x].linea}`:'')});
+  const vacio=()=>el('span',{className:'nota',textContent:'∅'});
+  // Universo: todas las variables de la función del bloque (vivas o muertas).
+  const universo=b=>{const s=new Set(Object.keys(V).filter(x=>!b.funcion||!V[x].funcion||V[x].funcion==='global'||V[x].funcion===b.funcion));
+    for(const x of [...(b.in||[]),...(b.out||[])])s.add(x);return [...s];};
+  const cajas={};
+  const svg=sv('svg');cont.replaceChildren(svg);
+  // Texto de una instrucción con __bal_vN reemplazado por el nombre del .bal (resaltado).
+  const instruccion=(texto,cls,n)=>{const d=el('div',{className:cls||''});if(n!=null)d.append(el('span',{className:'n',textContent:String(n).padStart(3,' ')}));
+    let ult=0;for(const m of texto.matchAll(/__bal_v\d+/g)){d.append(texto.slice(ult,m.index),el('span',{className:'v',textContent:nom(m[0]),title:m[0]}));ult=m.index+m[0].length;}
+    d.append(texto.slice(ult));return d;};
+  /* Lista cada variable con su estado y el motivo:
+   * IN:  viva si el bloque la lee antes de asignarla, o si pasa sin tocarse y sigue viva a la salida.
+   * OUT: viva si algún sucesor la tiene en su IN (la va a leer). */
+  const conjunto=(etq,set,U,clase,b,USE,DEF,OUT)=>{
+    const vivas=U.filter(x=>set.has(x));
+    const motivo=x=>{
+      if(etq==='IN'){
+        if(USE.has(x))return 'se lee en este bloque antes de asignarle valor';
+        if(set.has(x))return 'no se toca aquí, pero se usa después';
+        if(DEF.has(x))return 'aquí se le asigna valor antes de leerla';
+        return 'su valor no se lee de aquí en adelante';
+      }
+      const lo=b.sucesores.filter(s=>(porId[s]?.in||[]).includes(x)).map(s=>'B'+s);
+      if(lo.length)return 'la lee '+lo.join(' y ');
+      return b.sucesores.length?`ningún sucesor (${b.sucesores.map(s=>'B'+s).join(', ')}) la lee`:'fin de la función';
+    };
+    const filasV=U.map(x=>el('tr',{className:set.has(x)?'viva':'muerta'},
+      el('td',{className:'var',textContent:nom(x),title:x+(V[x]&&V[x].linea?` · declarada en la línea ${V[x].linea}`:'')}),
+      el('td',{},el('span',{className:'estado',textContent:set.has(x)?'VIVA':'muerta'})),
+      el('td',{className:'por',textContent:motivo(x)})));
+    return el('div',{className:'conj '+clase},
+      el('div',{},el('b',{textContent:`${etq} (${etq==='IN'?'al entrar':'al salir'}) = `}),`{ ${vivas.map(nom).join(', ')} }`),
+      U.length?el('table',{className:'vars'},el('tbody',{},...filasV)):el('div',{className:'muertas',textContent:'sin variables'}));};
+  const soloSpill=$('bIrSpill').classList.contains('on');
+  for(const b of B){
+    const U=universo(b),IN=new Set(b.in||b.vivos_entrada||[]),OUT=new Set(b.out||b.vivos_salida||[]);
+    const use=(b.gen||[]).filter(esVar),def=(b.kill||[]).filter(esVar);
+    const pasos=D.pasos.slice(b.inicio,b.fin);
+    const lineas=soloSpill
+      ?pasos.flatMap(p=>p.genera.map(g=>instruccion(g.texto,g.tipo,null)))
+      :pasos.map(p=>instruccion(p.texto,'',p.i));
+    const caja=el('div',{className:'bb'+(String(S.bloque)===String(b.id)?' sel':'')+($('chkAlto').checked?' limitado':''),
+        title:`B${b.id}\nUSE (lee antes de asignar): ${use.map(nom).join(', ')||'∅'}\nDEF (asigna): ${def.map(nom).join(', ')||'∅'}\n`+
+              `spill: ${b.almacenes} store · ${b.cargas} load · ${b.desalojos} desalojos · vivos máx ${b.presion_max} (k=${D.k})`},
+      conjunto('IN',IN,U,'in',b,new Set(use),new Set(def),OUT),
+      el('div',{className:'tit'},`B${b.id} `,el('small',{textContent:`· ${lineas.length} instrucciones`+(b.funcion?` · ${b.funcion}`:'')+
+        (soloSpill?` · ${b.almacenes} store / ${b.cargas} load`:'')})),
+      el('div',{className:'instr'},...lineas),
+      conjunto('OUT',OUT,U,'out',b,new Set(use),new Set(def),OUT));
+    caja.onclick=()=>{S.bloque=String(S.bloque)===String(b.id)?'todos':String(b.id);$('selBloque').value=S.bloque;calcularLayout();dibujarGrafo();dibujarCFG();
+      if(S.bloque!=='todos')irPaso(b.inicio);};
+    cont.append(caja);cajas[b.id]=caja;
+  }
+  // Medir las cajas ya dibujadas y acomodarlas por niveles.
+  const bw=360,gx=80,gy=60,niveles=Object.keys(filas).map(Number).sort((a,b)=>a-b);
+  const h={};for(const b of B)h[b.id]=cajas[b.id].offsetHeight;
+  const maxF=Math.max(...Object.values(filas).map(f=>f.length)),W=Math.max(cont.parentElement.clientWidth-4,maxF*(bw+gx)+gx+100);
+  const p={};let y=10;
+  for(const nv of niveles){const f=filas[nv];
+    f.forEach((b,i)=>{p[b.id]={x:(W-f.length*(bw+gx)+gx)/2+i*(bw+gx),y};cajas[b.id].style.left=p[b.id].x+'px';cajas[b.id].style.top=y+'px';});
+    y+=Math.max(...f.map(b=>h[b.id]))+gy;}
+  cont.style.width=W+'px';cont.style.height=y+'px';svg.setAttribute('width',W);svg.setAttribute('height',y);
+  svg.append(sv('defs',{},sv('marker',{id:'fl',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto'},sv('path',{d:'M0,0 L10,5 L0,10Z',fill:'#475467'}))));
+  for(const b of B)for(const t of b.sucesores){if(!p[t])continue;const a=p[b.id],c=p[t],ha=h[b.id];
+    let d;
+    if(c.y<=a.y){ // arco de regreso (ciclo): por el lado exterior
+      const izq=a.x+bw/2<W/2,sx=izq?0:bw,dx=izq?-75:75;
+      d=`M${a.x+sx},${a.y+ha-20} C${a.x+sx+dx},${a.y+ha} ${c.x+sx+dx},${c.y} ${c.x+sx},${c.y+20}`;
+    }else d=`M${a.x+bw/2},${a.y+ha} L${c.x+bw/2},${c.y}`;
+    svg.append(sv('path',{d,fill:'none',stroke:'#475467','stroke-width':1.6,'marker-end':'url(#fl)'}));}
+}
+
+function dibujarIteraciones(){
+  const c=$('iteraciones'),IT=D.iteraciones_vida;
+  if(!IT){c.replaceChildren(el('p',{className:'nota',textContent:'Este JSON es de una versión anterior: vuelve a generarlo con tools/spilling_json.py.'}));return;}
+  const V=D.variables||{},nom=x=>V[x]?V[x].nombre:x,ult=IT.length-1;
+  const lista=(arr,prev)=>{const ps=new Set(prev);
+    return arr.length?arr.map((x,i)=>el('span',{className:ps.has(x)?'':'cambio',textContent:nom(x)+(i<arr.length-1?', ':'')})):[el('span',{textContent:'∅'})];};
+  const head=el('tr',{},el('th',{textContent:'Bloque'}),
+    ...IT.slice(1).map((_,i)=>el('th',{className:i+1===ult?'final':'',textContent:i+1===ult?`Iteración ${i+1}: conjunto final (ya no cambia)`:`Iteración ${i+1}`})));
+  const filas=D.bloques.map((b,j)=>el('tr',{},el('td',{textContent:`B${b.id} → ${b.sucesores.map(s=>'B'+s).join(', ')||'fin'}`}),
+    ...IT.slice(1).map((it,i)=>{const prev=IT[i][j],cur=it[j];
+      return el('td',{className:i+1===ult?'final':''},
+        el('div',{className:'lin'},el('b',{textContent:'IN: '}),...lista(cur.in,prev.in)),
+        el('div',{className:'lout'},el('b',{textContent:'OUT: '}),...lista(cur.out,prev.out)));})));
+  c.replaceChildren(el('table',{className:'it'},el('thead',{},head),el('tbody',{},...filas)),
+    el('p',{className:'nota',textContent:`Se necesitaron ${ult} recorridos; el último confirma que nada cambió (punto fijo).`}));
+}
+
+function dibujarTodo(){dibujarGrafo();dibujarDetalle();dibujarPaso();dibujarCFG();dibujarIteraciones();}
+
+// ------------------------------------------------------------- eventos UI
+$('bIrOrig').onclick=()=>{$('bIrOrig').classList.add('on');$('bIrSpill').classList.remove('on');dibujarCFG();};
+$('bIrSpill').onclick=()=>{$('bIrSpill').classList.add('on');$('bIrOrig').classList.remove('on');dibujarCFG();};
+$('chkAlto').onchange=dibujarCFG;
+$('bColK').onclick=()=>{S.modo='k';$('bColK').classList.add('on');$('bColReal').classList.remove('on');dibujarGrafo();};
+$('bColReal').onclick=()=>{S.modo='real';$('bColReal').classList.add('on');$('bColK').classList.remove('on');dibujarGrafo();};
+$('bCirculo').onclick=()=>{S.layout='circulo';$('bCirculo').classList.add('on');$('bFuerzas').classList.remove('on');calcularLayout();dibujarGrafo();};
+$('bFuerzas').onclick=()=>{S.layout='fuerzas';$('bFuerzas').classList.add('on');$('bCirculo').classList.remove('on');calcularLayout();dibujarGrafo();};
+$('selBloque').onchange=e=>{S.bloque=e.target.value;calcularLayout();dibujarGrafo();dibujarCFG();};
+$('chkVivos').onchange=dibujarGrafo;
+$('chkAislados').onchange=()=>{calcularLayout();dibujarGrafo();};
+$('paso').oninput=e=>irPaso(+e.target.value);
+$('bAnt').onclick=()=>irPaso(S.paso-1);$('bSig').onclick=()=>irPaso(S.paso+1);
+$('bSigSpill').onclick=()=>{for(let i=S.paso+1;i<D.pasos.length;i++)if(D.pasos[i].eventos.some(e=>e.tipo!=='desalojo')){irPaso(i);return;}};
+document.addEventListener('keydown',e=>{if(!D||e.target.tagName==='INPUT'&&e.target.type!=='range')return;
+  if(e.key==='ArrowRight'){irPaso(S.paso+1);e.preventDefault();}if(e.key==='ArrowLeft'){irPaso(S.paso-1);e.preventDefault();}});
+function leer(f){if(!f)return;const r=new FileReader();r.onload=()=>cargar(r.result,f.name);r.readAsText(f);}
+$('archivo').onchange=e=>leer(e.target.files[0]);
+const zona=$('zona');
+zona.ondragover=e=>{e.preventDefault();zona.classList.add('encima');};
+zona.ondragleave=()=>zona.classList.remove('encima');
+zona.ondrop=e=>{e.preventDefault();zona.classList.remove('encima');leer(e.dataTransfer.files[0]);};
+</script>
+</main></body>
+</html>

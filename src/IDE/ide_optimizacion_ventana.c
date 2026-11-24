@@ -483,3 +483,16 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
     gtk_box_pack_start(GTK_BOX(columna), pestanas, TRUE, TRUE, 0);
     gtk_widget_show_all(ventana_opt);
 }
+
+/* El callback pertenece al editor, que sigue vivo mientras existe esta ventana.
+ * No retenemos una copia antigua del fuente ni alteramos la comparación. */
+void ide_optimizacion_agregar_spilling(GCallback accion, gpointer datos)
+{
+    if (!ventana_opt) return;
+    GtkWidget *caja = gtk_bin_get_child(GTK_BIN(ventana_opt));
+    GtkWidget *boton = gtk_button_new_with_label("Visualizar Spilling");
+    gtk_widget_set_tooltip_text(boton, "Genera JSON con O2 desde el editor actual y abre el HTML original.");
+    g_signal_connect(boton, "clicked", accion, datos);
+    gtk_box_pack_start(GTK_BOX(caja), boton, FALSE, FALSE, 0);
+    gtk_widget_show(boton);
+}

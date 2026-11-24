@@ -3,6 +3,7 @@
  * Solo muestra los textos que ya preparó ide_ensamblador.c; no genera nada.
  */
 #include "ide_ensamblador_ventana.h"
+#include "ide_herramientas_ventana.h"
 
 /* La ventana abierta (solo hay una): NULL si está cerrada. */
 static GtkWidget *ventana_asm = NULL;
@@ -82,6 +83,7 @@ void ide_mostrar_ensamblador(GtkWindow *padre, const IdeEnsamblador *a, const ch
     GtkWidget *columna = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(columna), 8);
     gtk_box_pack_start(GTK_BOX(columna), encabezado, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(columna), ide_boton_exportar(GTK_WINDOW(ventana_asm), a), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(columna), pestanas, TRUE, TRUE, 0);
     gtk_container_add(GTK_CONTAINER(ventana_asm), columna);
     gtk_widget_show_all(ventana_asm);
