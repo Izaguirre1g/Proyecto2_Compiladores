@@ -26,7 +26,8 @@
  *      ide_arreglos.c y src/LL1/). Ctrl+. corrige el error de la línea del cursor.
  *   5. Clones: el botón "Buscar clones" busca código repetido dentro del
  *      archivo abierto (no en otros archivos). Los clones se pintan de
- *      amarillo y la pestaña "Clones" dice dónde está cada copia.
+ *      amarillo y la pestaña "Clones" dice dónde está cada copia. Después
+ *      de pulsarlo, se vuelven a buscar solos con cada cambio del código.
  *   6. Números de línea: a la izquierda del editor. El de la línea del cursor
  *      va en negrita y los de las líneas con errores van en rojo, para que
  *      coincidan con lo que dicen la lista de errores y la barra de estado.
@@ -46,7 +47,12 @@
  *      y "Ver IR y variables vivas" abre el detalle (ide_dce_ventana.c).
  *      "Aplicar al código" cambia el código por el código sin el código
  *      muerto (ide_dce_codigo.c): el backend genera el ensamblador desde el
- *      código, así que el ensamblador y el binario salen de él.
+ *      código, así que el ensamblador y el binario salen de él. Después
+ *      de pulsarlo, el DCE se repite solo con cada cambio del código.
+ *   8b. Todo al día: con cada cambio del código, medio segundo después de
+ *      la última tecla (revisar_codigo), se vuelven a calcular los errores
+ *      y, si ya se pidieron, el código muerto y los clones. Mientras tanto,
+ *      sus marcas viejas se borran para no mostrar algo que ya no es cierto.
  *   9. Ensamblador: el botón "Ensamblador" genera el ensamblador VLIW del
  *      código del editor, el mismo de "balc -s", y lo muestra con su
  *      codificación binaria (ide_ensamblador.c e ide_ensamblador_ventana.c).
@@ -144,6 +150,12 @@ typedef struct {
     int digitos_numeros;        /* Cifras que caben en la columna de números de línea. */
     IdeDce dce;                 /* Último resultado del botón "Código muerto". */
     gboolean dce_mostrado;      /* TRUE si ese resultado está marcado en el editor. */
+    /* Análisis que se vuelven a hacer SOLOS con cada cambio del código (en
+     * la misma revisión que los errores), una vez que se pulsó su botón. */
+    gboolean dce_activo;        /* Se pulsó "Código muerto". */
+    gboolean clones_activo;     /* Se pulsó "Buscar clones". */
+    gchar *dce_aviso;           /* Mensaje de "Aplicar al código" para la próxima
+                                 * revisión del DCE (NULL si no hay). */
     IdeHistorial historial;     /* Cambios del texto, para Ctrl+Z y Ctrl+Y (ide_historial.c). */
     gboolean aplicando_historial;  /* TRUE mientras se deshace o rehace: esos
                                     * cambios no se anotan otra vez. */
@@ -453,13 +465,15 @@ static void liberar_arreglos(Ide *ide)
 
 static void al_pulsar_corregir(GtkWidget *boton, gpointer datos);
 static void limpiar_dce(Ide *ide, const char *mensaje);
+static void reanalizar_marcas(Ide *ide);
+static void limpiar_clones(Ide *ide);
 static void al_pulsar_ensamblador(GtkWidget *boton, gpointer datos);
 static void aplicar_colores(Ide *ide);
 
 /* Lo que dice la pestaña "Código muerto" antes de usar el botón. */
 #define DCE_SIN_ANALIZAR "Pulsa \"Código muerto\" para eliminar el código muerto de este archivo " \
                          "con el análisis de variables vivas."
-#define DCE_CODIGO_CAMBIO "El código cambió: pulsa \"Código muerto\" para analizarlo otra vez."
+#define DCE_CODIGO_CAMBIO "El código cambió: se analiza otra vez al dejar de escribir..."
 
 
 /* Agrega una fila a la lista de errores de abajo. */
@@ -570,6 +584,7 @@ static gboolean revisar_codigo(gpointer datos)
     if (resultado != 0) {
         gtk_label_set_text(ide->barra_estado,
                            "No se pudo revisar el código (¿la carpeta permite escribir?)");
+        reanalizar_marcas(ide);
         return G_SOURCE_REMOVE;
     }
 
@@ -580,6 +595,10 @@ static gboolean revisar_codigo(gpointer datos)
         agregar_fila_error(ide, i);
     }
     actualizar_estado(ide);
+
+    /* Paso 4: con el mismo texto, volver a calcular el código muerto y los
+     * clones, para que sus marcas nunca queden de una versión vieja. */
+    reanalizar_marcas(ide);
     return G_SOURCE_REMOVE;
 }
 
@@ -1024,8 +1043,11 @@ static void al_cambiar_texto(GtkTextBuffer *buffer, gpointer datos)
     }
     ajustar_margen_numeros(ide);  /* Por si ahora hacen falta más cifras. */
     aplicar_colores(ide);         /* Volver a colorear el código. */
-    /* Las líneas marcadas por el DCE ya pueden no coincidir: se borran. */
-    if (ide->dce_mostrado) limpiar_dce(ide, DCE_CODIGO_CAMBIO);
+    /* Las marcas del DCE y de los clones ya pueden no coincidir con el
+     * texto: se borran ya, y revisar_codigo las vuelve a calcular cuando se
+     * deja de escribir (si su botón se había pulsado). */
+    if (ide->dce_activo || ide->dce_mostrado) limpiar_dce(ide, DCE_CODIGO_CAMBIO);
+    if (ide->clones_activo) limpiar_clones(ide);
     programar_revision(ide);
 }
 
@@ -1156,7 +1178,7 @@ static void al_elegir_clon(GtkListBox *lista, GtkListBoxRow *fila, gpointer dato
 }
 
 /*
- * Botón "Buscar clones".
+ * Buscar clones (botón "Buscar clones" y cada cambio del código).
  *
  * Busca los clones SOLO dentro del archivo abierto (no se compara con otros
  * .bal de la carpeta):
@@ -1164,11 +1186,11 @@ static void al_elegir_clon(GtkListBox *lista, GtkListBoxRow *fila, gpointer dato
  *   2. Busca los clones con clones_buscar (clones.c), igual que
  *      "balc --clones archivo.bal" con un solo archivo.
  *   3. Pinta de amarillo cada copia y la pone en la pestaña "Clones".
+ * mostrar_pestana: TRUE con el botón (se pasa a la pestaña "Clones"); FALSE
+ * cuando se repite sola al cambiar el código (no se cambia de pestaña).
  */
-static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
+static void buscar_clones(Ide *ide, gboolean mostrar_pestana)
 {
-    (void)boton;
-    Ide *ide = datos;
     limpiar_clones(ide);
 
     /* Paso 1: una sola fuente, el texto del editor. */
@@ -1200,11 +1222,20 @@ static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
                                   lista.cantidad, lista.cantidad == 1 ? "" : "es");
     }
     gtk_label_set_text(ide->resumen_clones, resumen);
-    gtk_notebook_set_current_page(ide->pestanas, PESTANA_CLONES);
+    if (mostrar_pestana) gtk_notebook_set_current_page(ide->pestanas, PESTANA_CLONES);
 
     g_free(resumen);
     clones_liberar(&lista);
     g_free(texto);
+}
+
+/* Botón "Buscar clones": busca ahora y, desde aquí, con cada cambio. */
+static void al_pulsar_buscar_clones(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    ide->clones_activo = TRUE;
+    buscar_clones(ide, TRUE);
 }
 
 /* ================================================================== */
@@ -1419,19 +1450,23 @@ static void agregar_fila_dce(Ide *ide, const IdeDceLinea *l)
 }
 
 /*
- * Botón "Código muerto".
+ * Código muerto (botón "Código muerto" y cada cambio del código).
  *   1. Corre semántico -> IR -> variables vivas -> DCE sobre el texto del
  *      editor (ide_dce.c), aunque no esté guardado.
  *   2. Tacha las líneas eliminadas completas y pone en gris las que solo
  *      perdieron una parte.
  *   3. Llena la pestaña "Código muerto" con una fila por línea y el resumen.
+ * mostrar_pestana: TRUE con el botón (se pasa a la pestaña "Código muerto");
+ * FALSE cuando se repite solo al cambiar el código.
  */
-static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
+static void analizar_dce(Ide *ide, gboolean mostrar_pestana)
 {
-    (void)boton;
-    Ide *ide = datos;
     limpiar_dce(ide, "");
-    gtk_notebook_set_current_page(ide->pestanas, PESTANA_DCE);
+    if (mostrar_pestana) gtk_notebook_set_current_page(ide->pestanas, PESTANA_DCE);
+
+    /* Si se acaba de aplicar el DCE, su mensaje va primero en el resumen. */
+    gchar *aviso = ide->dce_aviso;
+    ide->dce_aviso = NULL;
 
     gchar *texto = texto_del_editor(ide);
     int estado = ide_dce_analizar(texto, strlen(texto), ide->ruta, &ide->dce);
@@ -1440,12 +1475,15 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
     if (estado != 0) {
         gtk_label_set_text(ide->resumen_dce, "No se pudo analizar (falta de memoria o "
                                              "no se pudo escribir el archivo temporal).");
+        g_free(aviso);
         return;
     }
     if (ide->dce.estado == IDE_DCE_CON_ERRORES) {
         gtk_label_set_text(ide->resumen_dce, "Este archivo tiene errores: corrígelos "
-                                             "(pestaña Errores) para eliminar el código muerto.");
+                                             "(pestaña Errores) para eliminar el código muerto. "
+                                             "Se analiza solo al corregirlos.");
         ide_dce_liberar(&ide->dce);
+        g_free(aviso);
         return;
     }
     if (ide->dce.estado == IDE_DCE_SIN_IR) {
@@ -1454,6 +1492,7 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
         gtk_label_set_text(ide->resumen_dce, mensaje);
         g_free(mensaje);
         ide_dce_liberar(&ide->dce);
+        g_free(aviso);
         return;
     }
 
@@ -1467,6 +1506,10 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
     /* El resumen: cuánto se eliminó y qué se conservó. */
     const DceResultado *r = &ide->dce.resultado;
     GString *resumen = g_string_new(NULL);
+    if (aviso != NULL) {
+        g_string_append_printf(resumen, "%s\n", aviso);
+        g_free(aviso);
+    }
     if (r->cantidad_eliminadas == 0) {
         g_string_append(resumen, "No hay código muerto: cada asignación se lee después "
                                  "o es parte del resultado final de main.");
@@ -1519,6 +1562,27 @@ static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
     ide->dce_mostrado = TRUE;
 }
 
+/* Botón "Código muerto": analiza ahora y, desde aquí, con cada cambio. */
+static void al_pulsar_dce(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    ide->dce_activo = TRUE;
+    analizar_dce(ide, TRUE);
+}
+
+/*
+ * Vuelve a calcular las marcas del editor que dependen del código: el
+ * código muerto y los clones, solo los que ya se pidieron con su botón.
+ * La llama revisar_codigo, así que pasa medio segundo después de la última
+ * tecla, con el mismo texto con el que se revisaron los errores.
+ */
+static void reanalizar_marcas(Ide *ide)
+{
+    if (ide->dce_activo) analizar_dce(ide, FALSE);
+    if (ide->clones_activo) buscar_clones(ide, FALSE);
+}
+
 /*
  * Botón "Aplicar al código": cambia el código del editor por el código nuevo
  * sin el código muerto (ide_dce_codigo.c). El backend genera el ensamblador
@@ -1563,7 +1627,10 @@ static void al_pulsar_aplicar_dce(GtkWidget *boton, gpointer datos)
         : g_strdup(cuenta);
     g_free(cuenta);
     gtk_label_set_text(ide->resumen_dce, mensaje);
-    g_free(mensaje);
+    /* El cambio de texto hace que el DCE se repita solo: el mensaje se
+     * guarda para que siga arriba del resumen nuevo. */
+    g_free(ide->dce_aviso);
+    ide->dce_aviso = mensaje;
 
     /* Si la ventana del ensamblador está abierta, mostrar el del código nuevo. */
     if (ide_ensamblador_abierta()) al_pulsar_ensamblador(NULL, ide);
@@ -1595,6 +1662,11 @@ static void cargar_texto(Ide *ide, const char *texto, const char *ruta)
     ide_historial_vaciar(&ide->historial);
     limpiar_clones(ide);  /* Los clones eran del archivo anterior. */
     limpiar_dce(ide, DCE_SIN_ANALIZAR);  /* Y el código muerto también. */
+    /* Con otro archivo, se vuelven a pedir con su botón. */
+    ide->dce_activo = FALSE;
+    ide->clones_activo = FALSE;
+    g_free(ide->dce_aviso);
+    ide->dce_aviso = NULL;
     GtkTextIter inicio;
     gtk_text_buffer_get_start_iter(ide->buffer, &inicio);
     gtk_text_buffer_place_cursor(ide->buffer, &inicio);
@@ -1885,6 +1957,7 @@ static void al_destruir(GtkWidget *widget, gpointer datos)
     liberar_arreglos(ide);
     diag_liberar(&ide->errores);
     ide_dce_liberar(&ide->dce);
+    g_free(ide->dce_aviso);
     ide_historial_vaciar(&ide->historial);
     g_free(ide->ruta);
     gtk_main_quit();
