@@ -33,6 +33,11 @@
  *   7. Tabla LL(1): el botón "Tabla LL(1)" abre una ventana con la tabla
  *      M[A, a], las producciones y PRIMERO/SIGUIENTE, que son lo que usan
  *      las sugerencias y las correcciones (ver ide_tabla_ll1.c).
+ *   7b. Tabla de símbolos: el botón "Tabla de símbolos" abre una ventana con
+ *      la tabla que arma el análisis semántico (symbol_table.c): cada
+ *      símbolo con su clase, tipo, ámbito, almacén y desplazamiento, los
+ *      ámbitos con su tabla hash y el listado de sim_imprimir
+ *      (ide_simbolos.c y ide_simbolos_ventana.c).
  *   8. Código muerto: el botón "Código muerto" hace la eliminación de código
  *      muerto con variables vivas sobre el código del editor (ide_dce.c).
  *      Las líneas eliminadas completas se tachan; las que solo perdieron una
@@ -95,6 +100,7 @@
 #include "ide_optimizacion_ventana.h"
 #include "ide_nucleo.h"
 #include "ide_tabla_ll1.h"
+#include "ide_simbolos_ventana.h"
 
 /* Milisegundos que se espera, después de la última tecla, para revisar el código. */
 #define ESPERA_ANALISIS_MS 500
@@ -2033,6 +2039,17 @@ static void al_pulsar_tabla_ll1(GtkWidget *boton, gpointer datos)
     ide_mostrar_tabla_ll1(GTK_WINDOW(ide->ventana));
 }
 
+/* Botón "Tabla de símbolos": abre la ventana con la tabla de símbolos del
+ * código del editor (ide_simbolos.c usa src/Analisis_Semantico/symbol_table.c). */
+static void al_pulsar_simbolos(GtkWidget *boton, gpointer datos)
+{
+    (void)boton;
+    Ide *ide = datos;
+    gchar *texto = texto_del_editor(ide);
+    ide_mostrar_simbolos(GTK_WINDOW(ide->ventana), texto, ide->ruta, nombre_actual(ide));
+    g_free(texto);
+}
+
 /* Crea un botón para la barra de arriba y lo conecta a su función. */
 static void agregar_boton(GtkWidget *barra, const char *texto, GCallback funcion, Ide *ide)
 {
@@ -2063,6 +2080,7 @@ static void construir_ventana(Ide *ide)
     agregar_boton(barra, "Guardar _como", G_CALLBACK(al_pulsar_guardar_como), ide);
     agregar_boton(barra, "Buscar c_lones", G_CALLBACK(al_pulsar_buscar_clones), ide);
     agregar_boton(barra, "_Tabla LL(1)", G_CALLBACK(al_pulsar_tabla_ll1), ide);
+    agregar_boton(barra, "Tabla de _símbolos", G_CALLBACK(al_pulsar_simbolos), ide);
     agregar_boton(barra, "Código _muerto", G_CALLBACK(al_pulsar_dce), ide);
     agregar_boton(barra, "_Ensamblador", G_CALLBACK(al_pulsar_ensamblador), ide);
     agregar_boton(barra, "Loop _unrolling", G_CALLBACK(al_pulsar_unrolling), ide);
