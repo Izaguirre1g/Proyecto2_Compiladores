@@ -354,3 +354,6 @@ make test-ir-vliw
 
 Contrato, offsets, advertencias de ABI y responsabilidades:
 [docs/contrato_memoria_spilling.md](docs/contrato_memoria_spilling.md).
+
+Las acciones **Proyecto I**, los HTML originales de AST/Spilling y la exportación
+ASM/BALB/MEM se describen en [Herramientas del IDE](docs/ide-herramientas.md).
