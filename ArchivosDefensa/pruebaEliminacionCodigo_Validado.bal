@@ -3,8 +3,8 @@
 create_funk #declare_int# multiplicacion_matrices(A * declare_int[], B * declare_int[], C * declare_int[]) {
     temporal_externo * declare_int : 0;
     basura1 * declare_int : 0;
-    basura2 * declare_int : 0;
-    desperdicio * declare_int : 0;
+    basura2 * declare_int : 1;
+    desperdicio * declare_int : 4;
     i * declare_int : 0;
     j * declare_int : 0;
     baseA * declare_int : 0;
