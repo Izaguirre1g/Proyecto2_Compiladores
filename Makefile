@@ -874,14 +874,16 @@ test-clones: tests/test_clones balc
 GTK_CFLAGS = $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS = $(shell pkg-config --libs gtk+-3.0)
 
-ide: balc-ide
+IDE_TOOLS_SRC = $(IDE)/ide_herramientas.c $(IDE)/ide_herramientas_ventana.c
+
+ide: balc balc-ide
 
 # Las listas de fuentes repiten archivos (por ejemplo ir_defuse.c está en
 # IDE_RO_SRC y en IDE_DCE_SRC, y el botón -O0 / -O2 usa casi todo balc):
 # $(sort ...) las ordena y deja cada archivo UNA vez; si no, el enlazador da
 # "multiple definition". IDE_OPT_SRC se define al final de este Makefile.
-balc-ide: $(IDE_SIM_SRC) include/ide_simbolos.h include/ide_simbolos_ventana.h include/symbol_table.h $(IDE)/ide_gtk.c $(IDE)/ide_historial.c include/ide_historial.h $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c include/ide_reordenamiento.h include/ide_reordenamiento_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
-	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(sort $(IDE_SIM_SRC) $(IDE)/ide_gtk.c $(IDE)/ide_historial.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) $(IDE_OPT_SRC)) -o $@ $(GTK_LIBS) -lm
+balc-ide: $(IDE_TOOLS_SRC) include/ide_herramientas.h include/ide_herramientas_ventana.h $(IDE_SIM_SRC) include/ide_simbolos.h include/ide_simbolos_ventana.h include/symbol_table.h $(IDE)/ide_gtk.c $(IDE)/ide_historial.c include/ide_historial.h $(IDE)/ide_colores.c include/ide_colores.h $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c include/ide_unrolling.h include/ide_unrolling_ventana.h $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c include/ide_reordenamiento.h include/ide_reordenamiento_ventana.h $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) include/metricas.h include/metricas_ventana.h $(IDE_DCE_SRC) $(IDE_ASM_SRC) include/ide_ensamblador.h include/ide_ensamblador_ventana.h $(CLONES)/clones.c $(IDE_ANALISIS_SRC) include/ide_tabla_ll1.h include/ide_dce.h include/ide_dce_ventana.h include/dce.h include/clones.h include/ide_analisis.h include/ide_mensajes.h include/ide_arreglos.h include/ide_nucleo.h include/diagnosticos.h $(SINTACTICO)/parser.h
+	$(CC) $(CPPFLAGS) $(GTK_CFLAGS) $(CFLAGS) $(sort $(IDE_TOOLS_SRC) $(IDE_SIM_SRC) $(IDE)/ide_gtk.c $(IDE)/ide_historial.c $(IDE)/ide_colores.c $(IDE)/ide_tabla_ll1.c $(IDE)/ide_dce_ventana.c $(IDE)/ide_ensamblador_ventana.c $(IDE_LU_SRC) $(IDE)/ide_unrolling_ventana.c $(IDE_RO_SRC) $(IDE)/ide_reordenamiento_ventana.c $(METRICAS)/metricas_ventana.c $(MET_SRC) $(SIM_SRC) $(IDE_DCE_SRC) $(IDE_ASM_SRC) $(CLONES)/clones.c $(IDE_ANALISIS_SRC) $(IDE_OPT_SRC)) -o $@ $(GTK_LIBS) -lm
 
 # Eliminacion de codigo muerto (DCE) con analisis de variables vivas, sobre
 # la IR. La prueba arma la IR desde programas BAL (examples/dce/) con el parser,
@@ -1015,3 +1017,20 @@ test-ide-optimizacion-comparador:
 
 # Un cambio del contrato privado también debe recompilar sus consumidores.
 tests/test_ide_optimizacion tests/test_pruebas_obligatorias: $(IDE)/ide_optimizacion_interno.h
+
+# Adaptadores del menú Proyecto I y exportación (solo GTK/GIO existentes).
+
+# Pruebas sin servidor gráfico de los adaptadores usados por las acciones GTK.
+IDE_HERR_TEST_SRC = $(IDE)/ide_herramientas.c $(BINARIO)/codificacion_binaria.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+.PHONY: test-ide-herramientas
+tests/test_ide_herramientas: tests/test_ide_herramientas.c $(IDE_HERR_TEST_SRC) include/ide_herramientas.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(shell pkg-config --cflags gio-2.0) tests/test_ide_herramientas.c $(IDE_HERR_TEST_SRC) -o $@ $(shell pkg-config --libs gio-2.0)
+test-ide-herramientas: tests/test_ide_herramientas balc
+	./tests/test_ide_herramientas
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/test_ide_herramientas.py
+
+.PHONY: test-ide-herramientas-gtk
+tests/test_ide_herramientas_gtk: tests/test_ide_herramientas_gtk.c $(IDE_TOOLS_SRC) $(BINARIO)/codificacion_binaria.c $(LEXICO)/lexer.c $(LEXER_GEN) $(LEXICO)/token.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(GTK_CFLAGS) $^ -o $@ $(GTK_LIBS)
+test-ide-herramientas-gtk: tests/test_ide_herramientas_gtk balc
+	./tests/test_ide_herramientas_gtk

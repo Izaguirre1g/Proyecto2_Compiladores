@@ -27,4 +27,7 @@
 void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *ruta,
                               const char *nombre);
 
+/* Agrega una acción que obtiene el código vigente del editor al pulsarla. */
+void ide_optimizacion_agregar_spilling(GCallback accion, gpointer datos);
+
 #endif
