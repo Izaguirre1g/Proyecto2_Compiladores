@@ -298,12 +298,47 @@ int main(void)
         VERIFICAR(lista.cantidad == 0);
         clones_liberar(&lista);
 
-        /* Pero con un mínimo más bajo, sí aparecen. */
+        /* Ni siquiera con un mínimo más bajo: una sentencia suelta no es
+         * una estructura, así que nunca se reporta. */
         VERIFICAR(clones_buscar(fuentes, 1, 4, &lista) == 0);
+        VERIFICAR(lista.cantidad == 0);
+        clones_liberar(&lista);
+
+        /* En cambio, un ciclo repetido sí es una estructura y sí se reporta. */
+        const char *ciclos =
+            "create_funk #declare_infinite_void# main() {\n"
+            "    i * declare_int : 0;\n"
+            "    whale (i < 3) { i : i gauss 1; } stop;\n"
+            "    whale (i < 9) { i : i gauss 2; } stop;\n"
+            "}\n";
+        ClonFuente fuentes_ciclos[] = {fuente("g.bal", ciclos)};
+        VERIFICAR(clones_buscar(fuentes_ciclos, 1, 4, &lista) == 0);
         VERIFICAR(lista.cantidad == 1);
         if (lista.cantidad == 1) {
-            VERIFICAR(strcmp(lista.elementos[0].que, "asignacion") == 0);
+            VERIFICAR(strcmp(lista.elementos[0].que, "ciclo whale") == 0);
+            VERIFICAR(lista.elementos[0].tipo == CLON_TIPO_2);
         }
+        clones_liberar(&lista);
+    }
+
+    /* Prueba 6b: declaraciones y llamadas con la misma forma (otros datos)
+     * no son clones, por largas que sean. */
+    {
+        const char *main_datos =
+            "create_funk #declare_int# f(a * declare_int[], n * declare_int) { give n; }\n"
+            "create_funk #declare_infinite_void# main() {\n"
+            "    r * declare_int[6] : [0, 0, 0, 0, 0, 0];\n"
+            "    e * declare_int[6] : [34, 18, 25, 41, 29, 52];\n"
+            "    g * declare_int[3] : [5, 15, 25];\n"
+            "    p * declare_int[3] : [7, 3, 5];\n"
+            "    r[0] : f(e, 6);\n"
+            "    r[1] : f(g, 3);\n"
+            "    r[2] : f(p, 3);\n"
+            "}\n";
+        ClonFuente fuentes[] = {fuente("datos.bal", main_datos)};
+        ClonLista lista = {0};
+        VERIFICAR(clones_buscar(fuentes, 1, CLONES_MINIMO_TOKENS, &lista) == 0);
+        VERIFICAR(lista.cantidad == 0);
         clones_liberar(&lista);
     }
 

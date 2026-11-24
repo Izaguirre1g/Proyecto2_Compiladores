@@ -34,9 +34,11 @@
  *      subárboles iguales tienen la misma huella, igual que en el DAG
  *      (diapositiva 17), donde dos cálculos iguales caen en el mismo nodo.
  *   2. Para el Tipo II, la huella ignora el texto de los nombres y valores.
- *   3. Solo se reportan funciones, bloques y sentencias de un tamaño mínimo
- *      (en tokens), y solo el clon más grande: si dos funciones son copia, no
- *      se listan también todas sus sentencias.
+ *   3. Solo se reportan ESTRUCTURAS de un tamaño mínimo (en tokens):
+ *      funciones, bloques y sentencias con cuerpo (whether, whale, cycle,
+ *      seek). Una sentencia suelta (declaración, asignación, llamada, give...)
+ *      nunca es clon aunque repita su forma. Y solo el clon más grande: si dos
+ *      funciones son copia, no se listan también todas sus sentencias.
  */
 
 #include <stddef.h>

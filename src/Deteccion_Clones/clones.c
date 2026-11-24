@@ -271,36 +271,30 @@ static int subarboles_iguales(const ListaNodos *lista, size_t a, size_t b, int m
 
 /*
  * ¿Qué se repite? Devuelve el nombre para mostrar, o NULL si este nodo no
- * se reporta (una expresión suelta, un tipo, una lista de parámetros...).
- * Se reportan las funciones, los bloques y las sentencias; la sentencia se
- * nombra por su primer token (y, si empieza con un nombre, por el segundo:
- * "x * ..." declara, "x : ..." asigna, "x(...)" llama).
+ * se reporta.
+ *
+ * Solo se reportan ESTRUCTURAS: funciones, bloques y sentencias que tienen
+ * un cuerpo (whether, whale, cycle, seek). Una sentencia suelta (una
+ * declaración, asignación, llamada, give, add, remove o una constante) no
+ * es código copiado aunque se repita su forma: por ejemplo,
+ *     gastos  * declare_int[3] : [5, 15, 25];
+ *     impares * declare_int[3] : [7, 3, 5];
+ * siguen el mismo camino en la gramática, pero son solo dos datos distintos.
+ * Tampoco se reportan expresiones sueltas, tipos ni listas de parámetros.
  */
 static const char *descripcion(const InfoNodo *info)
 {
     if (info->simbolo == NT_FUNCION) return "funcion";
     if (info->simbolo == NT_BLOQUE) return "bloque";
-    if (info->simbolo == NT_CONSTANTE) return "constante";
     if (info->simbolo != NT_SENTENCIA || info->primero == NULL) return NULL;
 
+    /* De las sentencias, solo las que tienen un cuerpo entre llaves. */
     switch (info->primero->tipo) {
         case TOKEN_WHETHER: return "condicional whether";
         case TOKEN_WHALE: return "ciclo whale";
         case TOKEN_CYCLE: return "ciclo cycle";
         case TOKEN_SEEK: return "bloque seek";
-        case TOKEN_GIVE: return "give";
-        case TOKEN_ADD: return "add";
-        case TOKEN_REMOVE: return "remove";
-        case TOKEN_DECLARE_LIST: return "declaracion de lista";
-        case TOKEN_IDENTIFIER:
-            if (info->tokens < 2) return "sentencia";
-            switch (info->primero[1].tipo) {
-                case TOKEN_STAR: return "declaracion";
-                case TOKEN_LPAREN: return "llamada";
-                default: return "asignacion";
-            }
-        default:
-            return "sentencia";
+        default: return NULL;  /* Sentencia suelta: no se reporta. */
     }
 }
 
