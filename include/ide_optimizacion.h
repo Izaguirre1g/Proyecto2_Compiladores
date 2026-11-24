@@ -54,6 +54,8 @@ typedef struct {
     int compilado;            /* 1 si se generó el binario. */
     char *motivo;             /* Si compilado es 0: por qué no (en español). */
     char *ensamblador;        /* El .asm del nivel. */
+    unsigned char *balb;     /* BALB propio de esta compilación, para exportar sin recompilar. */
+    size_t largo_balb;
     size_t bundles;           /* Bundles del programa. */
     size_t instrucciones;     /* Instrucciones del programa sin contar los NOP (conteo
                                * estático, en el ensamblador: lo que ocupa código). */

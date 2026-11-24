@@ -1034,3 +1034,10 @@ tests/test_ide_herramientas_gtk: tests/test_ide_herramientas_gtk.c $(IDE_TOOLS_S
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(GTK_CFLAGS) $^ -o $@ $(GTK_LIBS)
 test-ide-herramientas-gtk: tests/test_ide_herramientas_gtk balc
 	./tests/test_ide_herramientas_gtk
+
+# Exportación por nivel: requiere GTK y una sesión gráfica.
+.PHONY: test-ide-exportar-niveles
+tests/test_ide_exportar_niveles: tests/test_ide_exportar_niveles.c $(sort $(IDE_OPT_PRUEBA_SRC) $(IDE_TOOLS_SRC)) include/ide_herramientas_ventana.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(GTK_CFLAGS) tests/test_ide_exportar_niveles.c $(sort $(IDE_OPT_PRUEBA_SRC) $(IDE_TOOLS_SRC)) -o $@ $(GTK_LIBS) -lm
+test-ide-exportar-niveles: tests/test_ide_exportar_niveles
+	./tests/test_ide_exportar_niveles

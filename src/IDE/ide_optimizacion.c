@@ -646,6 +646,10 @@ static int nivel_tradicional(IdeOptNivel *n, const char *codigo, const char *tex
         if (mediana(texto, largo, ruta, nivel, &primera, &n->tiempos) != 0 ||
             met_buscar_fin(n->ensamblador, &fin) != 0 ||
             simular(n, a.balb, a.largo_balb, fin, MET_ANCHO_FIN_O0, ruta) != 0) estado = -1;
+        /* Conservamos el mismo contenedor que se acaba de simular. */
+        n->balb = a.balb;
+        n->largo_balb = a.largo_balb;
+        a.balb = NULL;
     }
     ide_ensamblador_liberar(&a);
     return estado;
@@ -732,6 +736,9 @@ int ide_optimizacion_analizar(const char *texto, size_t largo, const char *ruta,
             c.ir_antes = c.ir_despues = c.ir_spilling = NULL;
             if (mediana(texto, largo, ruta, 2, &primera, &o2->tiempos) != 0 ||
                 simular(o2, c.balb, c.largo_balb, c.pc_fin, O2_ANCHO_FIN, ruta) != 0) estado = -1;
+            o2->balb = c.balb;
+            o2->largo_balb = c.largo_balb;
+            c.balb = NULL;
         }
         liberar_o2(&c);
     }
@@ -751,6 +758,7 @@ static void liberar_nivel(IdeOptNivel *n)
 {
     free(n->motivo);
     free(n->ensamblador);
+    free(n->balb);
     met_liberar(&n->simulacion);
     if (n->valores != NULL)
         for (size_t i = 0; i < n->cantidad_variables; ++i) free(n->valores[i]);

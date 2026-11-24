@@ -70,6 +70,13 @@ static void verificar_los_dos(const char *ruta, const IdeOptimizacion *r)
     VERIFICAR(r->o0.simulacion.estado == MET_LISTO && r->o1.simulacion.estado == MET_LISTO &&
               r->o2.simulacion.estado == MET_LISTO);
     VERIFICAR(r->mismo_o1 == 1 && r->mismo_o2 == 1 && r->mismo_resultado == 1);
+    /* Cada nivel retiene el BALB que se simuló, incluidos cabecera y datos. */
+    const IdeOptNivel *niveles[] = {&r->o0, &r->o1, &r->o2};
+    for (int i = 0; i < 3; ++i) {
+        VERIFICAR(niveles[i]->balb != NULL);
+        VERIFICAR(niveles[i]->largo_balb >= 48 + niveles[i]->bundles * 16);
+        if (niveles[i]->balb) VERIFICAR(memcmp(niveles[i]->balb, "BALB", 4) == 0);
+    }
     VERIFICAR(r->o1_codigo != NULL && r->o1.tiempos.total > 0.0);
     /* Conteos de instrucciones (pestaña Instrucciones): cada nivel tiene
      * instrucciones en su código, y hay IR antes y después de optimizar. */

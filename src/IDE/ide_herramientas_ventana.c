@@ -215,18 +215,23 @@ void ide_elegir_asm(GtkWindow *padre)
     g_free(raiz); g_free(ruta);
 }
 
-typedef struct { GtkWindow *padre; gchar *asm_texto; GBytes *bin; } Exportacion;
+typedef struct {
+    GtkWindow *padre;
+    gchar *asm_texto, *nombre, *titulo;
+    GBytes *bin;
+} Exportacion;
 static void liberar_exportacion(gpointer datos, GClosure *closure)
 {
     (void)closure;
     Exportacion *e = datos;
-    g_free(e->asm_texto); g_bytes_unref(e->bin); g_free(e);
+    g_free(e->asm_texto); g_free(e->nombre); g_free(e->titulo);
+    g_bytes_unref(e->bin); g_free(e);
 }
 static void exportar(GtkWidget *boton, gpointer datos)
 {
     (void)boton;
     Exportacion *e = datos;
-    gchar *ruta = elegir_salida(e->padre, "Exportar O0: ASM, contenedor BALB y MEM de instrucciones", "programa.asm");
+    gchar *ruta = elegir_salida(e->padre, e->titulo, e->nombre);
     if (!ruta) return;
     gchar *base = g_str_has_suffix(ruta, ".asm") ? g_strndup(ruta, strlen(ruta) - 4) : g_strdup(ruta);
     gchar *rutas[] = {g_strconcat(base, ".asm", NULL), g_strconcat(base, ".bin", NULL), g_strconcat(base, ".mem", NULL)};
@@ -246,9 +251,36 @@ GtkWidget *ide_boton_exportar(GtkWindow *padre, const IdeEnsamblador *a)
 {
     Exportacion *e = g_new0(Exportacion, 1);
     e->padre = padre; e->asm_texto = g_strdup(a->ensamblador);
+    e->nombre = g_strdup("programa.asm");
+    e->titulo = g_strdup("Exportar O0: ASM, contenedor BALB y MEM de instrucciones");
     e->bin = g_bytes_new(a->balb, a->largo_balb);
     GtkWidget *b = gtk_button_new_with_label("Exportar archivos...");
     gtk_widget_set_tooltip_text(b, "O0 de esta ventana: .asm, .bin BALB completo y .mem de instrucciones; no es O2.");
+    g_signal_connect_data(b, "clicked", G_CALLBACK(exportar), e, liberar_exportacion, 0);
+    return b;
+}
+
+/* Reutiliza el mismo diálogo, codificador MEM y confirmación de reemplazos.
+ * Las copias pertenecen al botón: destruir o actualizar la comparación no
+ * invalida un resultado retenido por la ventana. No ejecuta ningún backend. */
+GtkWidget *ide_boton_exportar_nivel(GtkWindow *padre, const IdeOptNivel *nivel,
+                                   const char *nombre, const char *etiqueta)
+{
+    GtkWidget *b = gtk_button_new_with_label("Exportar");
+    if (!nivel->compilado || !nivel->ensamblador || !nivel->balb || !nivel->largo_balb) {
+        gtk_widget_set_sensitive(b, FALSE);
+        return b;
+    }
+    Exportacion *e = g_new0(Exportacion, 1);
+    e->padre = padre;
+    e->asm_texto = g_strdup(nivel->ensamblador);
+    e->bin = g_bytes_new(nivel->balb, nivel->largo_balb);
+    gchar *base = g_path_get_basename(nombre);
+    if (g_str_has_suffix(base, ".bal")) base[strlen(base) - 4] = '\0';
+    e->nombre = g_strdup_printf("%s_%s.asm", base, etiqueta);
+    e->titulo = g_strdup_printf("Exportar %s: ASM, contenedor BALB y MEM de instrucciones", etiqueta);
+    gtk_widget_set_tooltip_text(b, e->titulo);
+    g_free(base);
     g_signal_connect_data(b, "clicked", G_CALLBACK(exportar), e, liberar_exportacion, 0);
     return b;
 }

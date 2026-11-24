@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "ide_optimizacion.h"
+#include "ide_herramientas_ventana.h"
 #include "ide_optimizacion_interno.h"
 #include "metricas_ventana.h"
 
@@ -57,11 +58,14 @@ static GtkWidget *vista_de_texto(const char *texto)
 }
 
 /* Un título en negrita encima de un widget. */
-static GtkWidget *con_titulo(const char *titulo, GtkWidget *contenido)
+static GtkWidget *con_titulo(const char *titulo, GtkWidget *contenido, GtkWidget *accion)
 {
     GtkWidget *caja = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gchar *marcado = g_markup_printf_escaped("<b>%s</b>", titulo);
-    gtk_box_pack_start(GTK_BOX(caja), parrafo(marcado), FALSE, FALSE, 0);
+    GtkWidget *encabezado = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(encabezado), parrafo(marcado), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(encabezado), accion, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(caja), encabezado, FALSE, FALSE, 0);
     g_free(marcado);
     gtk_box_pack_start(GTK_BOX(caja), contenido, TRUE, TRUE, 0);
     return caja;
@@ -474,7 +478,8 @@ void ide_mostrar_optimizacion(GtkWindow *padre, const char *texto, const char *r
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), pestana_resultado(r), gtk_label_new("Resultado de main"));
     GtkWidget *asm_niveles[3];
     for (int i = 0; i < 3; ++i)
-        asm_niveles[i] = con_titulo(NOMBRES[i], vista_de_texto(nivel_i(r, i)->ensamblador));
+        asm_niveles[i] = con_titulo(NOMBRES[i], vista_de_texto(nivel_i(r, i)->ensamblador),
+            ide_boton_exportar_nivel(GTK_WINDOW(ventana_opt), nivel_i(r, i), nombre, NOMBRES[i] + 1));
     gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), lado_a_lado(asm_niveles, 3), gtk_label_new("Ensamblador"));
     if (r->o1_codigo != NULL)
         gtk_notebook_append_page(GTK_NOTEBOOK(pestanas), vista_de_texto(r->o1_codigo), gtk_label_new("Código de -O1"));
