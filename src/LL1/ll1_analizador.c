@@ -61,9 +61,9 @@ static int copiar_pila(Pila *destino, const Pila *origen)
 static int expandir(Pila *pila, int p)
 {
     const Ll1Produccion *prod = &ll1_producciones[p];
-    pila->cantidad--;  /* Desapilar la cabeza. */
-    for (int i = ll1_largo_cuerpo(prod) - 1; i >= 0; --i) {
-        if (apilar(pila, prod->cuerpo[i]) != 0) return -1;
+    pila->cantidad--;                                    // 1. Saca A (la cabeza) del tope
+    for (int i = ll1_largo_cuerpo(prod) - 1; i >= 0; --i) {  // 2. Recorre el cuerpo del ÚLTIMO al primero
+        if (apilar(pila, prod->cuerpo[i]) != 0) return -1;  //    y apila cada símbolo
     }
     return 0;
 }
